@@ -26,7 +26,7 @@ import {
   showNotification,
   resetTrayStatusAfterDelay,
 } from "./notifications.js";
-import { serverForRepo } from "./server.js";
+import { pollAllServers, serverForRepo } from "./server.js";
 import {
   loadConfigs,
   allConfigs,
@@ -97,6 +97,7 @@ function showRepoWindow(repositoryID) {
   let primaryScreenBounds = screen.getPrimaryDisplay().bounds;
   if (repositoryWindows[repositoryID]) {
     repositoryWindows[repositoryID].focus();
+    pollAllServers();
     return;
   }
 
@@ -174,6 +175,11 @@ function showRepoWindow(repositoryID) {
    */
   repositoryWindow.once("ready-to-show", function () {
     repositoryWindow.show();
+    pollAllServers();
+  });
+
+  repositoryWindow.on("focus", function () {
+    pollAllServers();
   });
 
   /**
