@@ -27,11 +27,9 @@ import (
 )
 
 const (
-	appName               = "KopiaUI"
-	singleInstanceID      = "io.kopia.kopiaui-wails"
-	logFileName           = "kopiaui-wails.log"
-	maxNotificationLength = 500
-	warningSeverity       = 10
+	appName          = "KopiaUI"
+	singleInstanceID = "io.kopia.kopiaui-wails"
+	logFileName      = "kopiaui-wails.log"
 )
 
 var isWindows = runtime.GOOS == "windows"
@@ -53,12 +51,16 @@ type shell struct {
 	app       *application.App
 	tray      *application.SystemTray
 	notifier  *notifications.NotificationService
+	policy    *notificationPolicy
 	configs   *configStore
 	kopiaPath string
 	logPath   string
 
 	mu      sync.Mutex
 	servers map[string]*repoServer
+
+	tooltipMu    sync.Mutex
+	tooltipReset *time.Timer
 
 	trayDirty chan struct{}
 }
@@ -82,6 +84,7 @@ func run() error {
 		servers:   map[string]*repoServer{},
 		trayDirty: make(chan struct{}, 1),
 		notifier:  notifications.New(),
+		policy:    newNotificationPolicy(),
 	}
 
 	logger, closeLog := s.openLog()
@@ -122,6 +125,11 @@ func run() error {
 			return
 		}
 
+		if result.Response.ActionIdentifier == actionDismiss {
+			return
+		}
+
+		// clicking the toast itself or "View Details" opens the repository window.
 		if repoID, ok := result.Response.UserInfo["repo"].(string); ok {
 			s.showRepoWindow(repoID)
 		}
@@ -167,6 +175,16 @@ func (s *shell) startup() {
 		s.app.Quit()
 
 		return
+	}
+
+	if err := s.notifier.RegisterNotificationCategory(notifications.NotificationCategory{
+		ID: errorCategoryID,
+		Actions: []notifications.NotificationAction{
+			{ID: actionViewDetails, Title: "View Details"},
+			{ID: actionDismiss, Title: "Dismiss"},
+		},
+	}); err != nil {
+		slog.Warn("unable to register notification actions", "err", err)
 	}
 
 	for _, id := range s.configs.list() {
@@ -330,32 +348,67 @@ func (s *shell) browseDirectory(path string) {
 	}
 }
 
-// notify shows a desktop notification for a message printed by a repository
-// server, filtered by the notification level chosen in the tray menu.
+// notify handles a notification printed by a repository server: it applies the
+// notification level and the per-source error cooldown, shows a toast and puts
+// errors and warnings in the tray tooltip for a while (see notifications.go).
 func (s *shell) notify(repoID string, msg notificationMessage) {
-	switch s.configs.notificationLevel() {
-	case notifyDisabled:
+	d := s.policy.evaluate(s.configs.notificationLevel(), msg)
+
+	if d.tooltip != "" {
+		s.showTrayStatus(d.tooltip, d.tooltipFor)
+	}
+
+	if d.suppressedFor > 0 {
+		slog.Info("suppressing repeated error notification",
+			"repo", repoID, "title", d.title,
+			"cooldownRemaining", d.suppressedFor.Round(time.Minute))
+
 		return
-	case notifyWarnErrors:
-		if msg.Severity < warningSeverity {
-			return
-		}
 	}
 
-	body := msg.Body
-	if len(body) > maxNotificationLength {
-		body = body[:maxNotificationLength] + "..."
+	if !d.showToast {
+		return
 	}
 
-	err := s.notifier.SendNotification(notifications.NotificationOptions{
+	opts := notifications.NotificationOptions{
 		ID:    fmt.Sprintf("%s-%d", repoID, time.Now().UnixNano()),
-		Title: msg.Subject,
-		Body:  body,
+		Title: d.title,
+		Body:  d.body,
 		Data:  map[string]any{"repo": repoID},
-	})
+	}
+
+	var err error
+
+	if d.kind == kindError {
+		opts.CategoryID = errorCategoryID
+		err = s.notifier.SendNotificationWithActions(opts)
+	} else {
+		err = s.notifier.SendNotification(opts)
+	}
+
 	if err != nil {
 		slog.Warn("unable to show notification", "err", err)
+		return
 	}
+
+	slog.Info("notification shown", "repo", repoID, "kind", d.kind, "title", d.title)
+}
+
+// showTrayStatus shows text in the tray tooltip and restores the default
+// tooltip after the given duration. A newer status replaces an older one.
+func (s *shell) showTrayStatus(text string, duration time.Duration) {
+	application.InvokeAsync(func() { s.tray.SetTooltip(text) })
+
+	s.tooltipMu.Lock()
+	defer s.tooltipMu.Unlock()
+
+	if s.tooltipReset != nil {
+		s.tooltipReset.Stop()
+	}
+
+	s.tooltipReset = time.AfterFunc(duration, func() {
+		application.InvokeAsync(func() { s.tray.SetTooltip(defaultTrayTooltip) })
+	})
 }
 
 // statusChanged schedules a tray menu refresh; refreshes are coalesced.
@@ -382,7 +435,7 @@ func (s *shell) setupTray() {
 		s.tray.SetIcon(trayIconPNG)
 	}
 
-	s.tray.SetTooltip(appName)
+	s.tray.SetTooltip(defaultTrayTooltip)
 	s.tray.OnClick(s.showAllWindows)
 	s.tray.OnRightClick(s.tray.OpenMenu)
 
@@ -429,10 +482,13 @@ func (s *shell) rebuildTrayMenu() {
 	notif := menu.AddSubmenu("Notifications")
 	level := s.configs.notificationLevel()
 
-	for _, opt := range []struct{ label, value string }{
-		{"Enabled", notifyAll},
-		{"Warnings And Errors", notifyWarnErrors},
-		{"Disabled", notifyDisabled},
+	for _, opt := range []struct {
+		label string
+		value int
+	}{
+		{"Enabled", levelAll},
+		{"Warnings And Errors", levelWarningsAndErrors},
+		{"Disabled", levelDisabled},
 	} {
 		value := opt.value
 

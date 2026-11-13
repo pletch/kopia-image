@@ -12,13 +12,11 @@ import (
 )
 
 const (
-	configFileSuffix  = ".config"
-	defaultRepoID     = "repository"
-	settingsFileName  = "kopiaui-wails.json"
-	notifyAll         = "all"
-	notifyWarnErrors  = "warnings"
-	notifyDisabled    = "disabled"
-	defaultNotifyMode = notifyWarnErrors
+	configFileSuffix = ".config"
+	defaultRepoID    = "repository"
+
+	// notificationsFileName is shared with Electron KopiaUI (app/public/notifications.js).
+	notificationsFileName = "notifications.json"
 )
 
 // configStore mirrors app/public/config.js: it discovers repository configs
@@ -30,11 +28,11 @@ type configStore struct {
 	portable bool
 	firstRun bool
 	repos    map[string]bool
-	settings settings
+	level    int
 }
 
-type settings struct {
-	NotificationLevel string `json:"notificationLevel"`
+type notificationSettings struct {
+	Level int `json:"level"`
 }
 
 // portableConfigDirs returns the directories checked for a portable config,
@@ -99,7 +97,7 @@ func newConfigStore() (*configStore, error) {
 		c.firstRun = true
 	}
 
-	c.loadSettings()
+	c.loadNotificationLevel()
 
 	return c, nil
 }
@@ -162,39 +160,36 @@ func (c *configStore) configFile(id string) string {
 	return filepath.Join(c.dir, id+configFileSuffix)
 }
 
-func (c *configStore) settingsFile() string {
-	return filepath.Join(c.dir, settingsFileName)
+func (c *configStore) notificationsFile() string {
+	return filepath.Join(c.dir, notificationsFileName)
 }
 
-func (c *configStore) loadSettings() {
-	c.settings = settings{NotificationLevel: defaultNotifyMode}
+func (c *configStore) loadNotificationLevel() {
+	c.level = levelWarningsAndErrors
 
-	b, err := os.ReadFile(c.settingsFile())
+	b, err := os.ReadFile(c.notificationsFile())
 	if err != nil {
 		return
 	}
 
-	_ = json.Unmarshal(b, &c.settings)
-
-	switch c.settings.NotificationLevel {
-	case notifyAll, notifyWarnErrors, notifyDisabled:
-	default:
-		c.settings.NotificationLevel = defaultNotifyMode
+	var ns notificationSettings
+	if json.Unmarshal(b, &ns) == nil && ns.Level >= levelDisabled && ns.Level <= levelAll {
+		c.level = ns.Level
 	}
 }
 
-func (c *configStore) notificationLevel() string {
+func (c *configStore) notificationLevel() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return c.settings.NotificationLevel
+	return c.level
 }
 
-func (c *configStore) setNotificationLevel(level string) {
+func (c *configStore) setNotificationLevel(level int) {
 	c.mu.Lock()
-	c.settings.NotificationLevel = level
-	b, _ := json.MarshalIndent(c.settings, "", "  ")
+	c.level = level
 	c.mu.Unlock()
 
-	_ = os.WriteFile(c.settingsFile(), b, 0o600)
+	b, _ := json.Marshal(notificationSettings{Level: level})
+	_ = os.WriteFile(c.notificationsFile(), b, 0o600)
 }
