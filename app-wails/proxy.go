@@ -4,6 +4,7 @@ import (
 	"bytes"
 	_ "embed"
 	"encoding/json"
+	"html/template"
 	"io"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -22,13 +24,60 @@ const (
 //go:embed shim.js
 var shimJS []byte
 
-// The page shown while the repository server starts. It reloads itself until
-// the proxy can reach the server.
-const startingPage = `<!doctype html><html><head><meta charset="utf-8">
-<meta http-equiv="refresh" content="1"><title>KopiaUI is Loading...</title>
-<style>body{font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;color:#555}
-@media (prefers-color-scheme:dark){body{background:#1e1e1e;color:#bbb}}</style></head>
-<body><div>Starting Kopia server&hellip;</div></body></html>`
+// startupPage is shown instead of the web UI while the repository server is
+// starting (reloading every second) or after it failed to start or exited.
+var startupPage = template.Must(template.New("startup").Parse(`<!doctype html>
+<html><head><meta charset="utf-8">
+{{if not .Failed}}<meta http-equiv="refresh" content="1">{{end}}
+<title>{{if .Failed}}Kopia server problem{{else}}KopiaUI is Loading...{{end}}</title>
+<style>
+:root{--bg:#fff;--fg:#333;--muted:#666;--border:#ddd;--code:#f5f5f5;--accent:#0d6efd;--danger:#b02a37}
+@media (prefers-color-scheme:dark){:root{--bg:#1e1e1e;--fg:#ddd;--muted:#aaa;--border:#444;--code:#2a2a2a;--accent:#6ea8fe;--danger:#ea868f}}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif}
+.wrap{max-width:860px;margin:0 auto;padding:32px 24px}
+.center{display:flex;align-items:center;justify-content:center;height:100vh;color:var(--muted)}
+h1{font-size:20px;margin:0 0 8px;color:var(--danger)}
+p{margin:0 0 16px}
+.actions{display:flex;gap:8px;margin:0 0 20px}
+button{font:inherit;padding:6px 14px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--fg);cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+pre{background:var(--code);border:1px solid var(--border);border-radius:6px;padding:12px;font-size:12px;line-height:1.4;max-height:55vh;overflow:auto;white-space:pre-wrap;word-break:break-all}
+</style></head>
+<body>
+{{if .Failed}}<div class="wrap">
+<h1>The Kopia server for this repository is not available</h1>
+<p>{{.Reason}}</p>
+<div class="actions">
+<form method="post" action="/__kopiaui/restart"><button class="primary" type="submit">Restart Server</button></form>
+<form method="post" action="/__kopiaui/open-log"><button type="submit">Open Log File</button></form>
+</div>
+{{if .Logs}}<p>Last lines from the server:</p><pre>{{range .Logs}}{{.}}
+{{end}}</pre>{{end}}
+</div>
+{{else}}<div class="center">Starting Kopia server&hellip;{{if .Elapsed}} ({{.Elapsed}}){{end}}</div>{{end}}
+</body></html>`))
+
+type startupPageData struct {
+	Failed  bool
+	Reason  string
+	Elapsed string
+	Logs    []string
+}
+
+func writeStartupPage(w http.ResponseWriter, p startupProblem) {
+	data := startupPageData{Failed: p.failed, Reason: p.reason, Logs: p.logs}
+
+	if !p.failed && p.elapsed >= 3*time.Second {
+		data.Elapsed = p.elapsed.Truncate(time.Second).String()
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+
+	if err := startupPage.Execute(w, data); err != nil {
+		slog.Warn("unable to render startup page", "err", err)
+	}
+}
 
 // proxyHandler is the Wails asset handler. Every request from a repository
 // window carries that window's name, which identifies the repository server
@@ -64,14 +113,12 @@ func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	address, password, transport, ok := srv.connection()
 	if !ok {
 		if r.Method == http.MethodGet && !strings.HasPrefix(r.URL.Path, "/api/") {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.Header().Set("Cache-Control", "no-store")
-			_, _ = io.WriteString(w, startingPage)
+			writeStartupPage(w, srv.startupProblem())
 
 			return
 		}
 
-		http.Error(w, "kopia server is starting", http.StatusServiceUnavailable)
+		http.Error(w, "kopia server is not available", http.StatusServiceUnavailable)
 
 		return
 	}
@@ -162,6 +209,30 @@ func (h *proxyHandler) serveShim(w http.ResponseWriter, r *http.Request, repoID 
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"path": path})
+
+	case "restart":
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		if h.host.server(repoID) == nil {
+			http.Error(w, "unknown repository window", http.StatusNotFound)
+			return
+		}
+
+		slog.Info("restarting server from error page", "repo", repoID)
+		h.host.startServer(repoID)
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+
+	case "open-log":
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		h.host.browseDirectory(h.host.logPath)
+		http.Redirect(w, r, "/", http.StatusSeeOther)
 
 	case "browse-dir":
 		if r.Method != http.MethodPost {

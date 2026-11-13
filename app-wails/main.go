@@ -52,6 +52,7 @@ type shell struct {
 	tray      *application.SystemTray
 	notifier  *notifications.NotificationService
 	policy    *notificationPolicy
+	windows   *windowStateStore
 	configs   *configStore
 	kopiaPath string
 	logPath   string
@@ -85,6 +86,7 @@ func run() error {
 		trayDirty: make(chan struct{}, 1),
 		notifier:  notifications.New(),
 		policy:    newNotificationPolicy(),
+		windows:   newWindowStateStore(configs.dir),
 	}
 
 	logger, closeLog := s.openLog()
@@ -117,7 +119,10 @@ func run() error {
 				s.showAllWindows()
 			},
 		},
-		OnShutdown: s.stopAllServers,
+		OnShutdown: func() {
+			s.windows.flush()
+			s.stopAllServers()
+		},
 	})
 
 	s.notifier.OnNotificationResponse(func(result notifications.NotificationResult) {
@@ -261,6 +266,7 @@ func (s *shell) showRepoWindow(repoID string) {
 		return
 	}
 
+	// Created hidden so the remembered geometry is applied before it appears.
 	w := s.app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:            windowName(repoID),
 		Title:           appName,
@@ -270,6 +276,31 @@ func (s *shell) showRepoWindow(repoID string) {
 		MinHeight:       400,
 		URL:             "/",
 		InitialPosition: application.WindowCentered,
+		Hidden:          true,
+	})
+
+	geometry, restored := s.windows.restore(s.screens())
+	if restored {
+		b := geometry.Bounds
+		w.SetBounds(application.Rect{X: b.X, Y: b.Y, Width: b.Width, Height: b.Height})
+	}
+
+	trackBounds := func(*application.WindowEvent) {
+		if w.IsMinimised() || w.IsMaximised() {
+			return
+		}
+
+		b := w.Bounds()
+		s.windows.updateBounds(s.screens(), rect{X: b.X, Y: b.Y, Width: b.Width, Height: b.Height})
+	}
+
+	w.OnWindowEvent(events.Common.WindowDidMove, trackBounds)
+	w.OnWindowEvent(events.Common.WindowDidResize, trackBounds)
+	w.OnWindowEvent(events.Common.WindowMaximise, func(*application.WindowEvent) {
+		s.windows.updateMaximized(s.screens(), true)
+	})
+	w.OnWindowEvent(events.Common.WindowUnMaximise, func(*application.WindowEvent) {
+		s.windows.updateMaximized(s.screens(), false)
 	})
 
 	w.OnWindowEvent(events.Common.WindowFocus, func(*application.WindowEvent) {
@@ -294,7 +325,28 @@ func (s *shell) showRepoWindow(repoID string) {
 	})
 
 	w.Show()
+
+	if restored && geometry.Maximized {
+		w.Maximise()
+	}
+
 	s.pollAll()
+}
+
+// screens describes the current monitor layout for windowStateStore.
+func (s *shell) screens() []screenInfo {
+	all := s.app.Screen.GetAll()
+	result := make([]screenInfo, 0, len(all))
+
+	for _, sc := range all {
+		result = append(result, screenInfo{
+			Bounds:   rect{X: sc.Bounds.X, Y: sc.Bounds.Y, Width: sc.Bounds.Width, Height: sc.Bounds.Height},
+			WorkArea: rect{X: sc.WorkArea.X, Y: sc.WorkArea.Y, Width: sc.WorkArea.Width, Height: sc.WorkArea.Height},
+			Scale:    sc.ScaleFactor,
+		})
+	}
+
+	return result
 }
 
 func (s *shell) showAllWindows() {

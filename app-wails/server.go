@@ -26,6 +26,8 @@ const (
 	idlePollInterval     = 5 * time.Minute
 	statusRequestTimeout = 3 * time.Second
 	maxLogLines          = 200
+	serverStartTimeout   = 30 * time.Second
+	errorPageLogLines    = 40
 	serverControlUser    = "server-control"
 	uiUser               = "kopia"
 )
@@ -63,6 +65,8 @@ type repoServer struct {
 	transport       *http.Transport
 	jar             map[string]*http.Cookie
 	status          serverStatus
+	startedAt       time.Time
+	lastExit        string
 	logLines        []string
 	pollStop        chan struct{}
 	pollKick        chan struct{}
@@ -119,8 +123,14 @@ func (s *repoServer) start() error {
 	slog.Info("starting kopia server", "repo", s.id, "exe", s.host.kopiaPath)
 
 	if err := cmd.Start(); err != nil {
+		s.mu.Lock()
+		s.lastExit = fmt.Sprintf("Unable to start %v: %v", s.host.kopiaPath, err)
+		s.mu.Unlock()
+
 		return fmt.Errorf("unable to start %v: %w", s.host.kopiaPath, err)
 	}
+
+	s.appendLog("--- starting kopia server ---")
 
 	stop := make(chan struct{})
 	kick := make(chan struct{}, 1)
@@ -133,6 +143,8 @@ func (s *repoServer) start() error {
 	s.status = serverStatus{StartingUp: true}
 	s.pollStop = stop
 	s.pollKick = kick
+	s.startedAt = time.Now()
+	s.lastExit = ""
 	s.mu.Unlock()
 
 	s.host.statusChanged()
@@ -148,7 +160,9 @@ func (s *repoServer) start() error {
 
 		s.mu.Lock()
 		if s.cmd == cmd {
+			// exited on its own rather than through stop().
 			s.resetLocked()
+			s.lastExit = fmt.Sprintf("The Kopia server exited unexpectedly (%v).", err)
 		}
 		s.mu.Unlock()
 
@@ -361,6 +375,49 @@ func (s *repoServer) cookies() []*http.Cookie {
 	}
 
 	return result
+}
+
+// startupProblem describes why the server cannot be reached yet.
+type startupProblem struct {
+	failed  bool
+	reason  string
+	elapsed time.Duration
+	logs    []string
+}
+
+// startupProblem reports whether a server that is not reachable is still
+// starting or has failed: it exited, never started, or did not print its
+// address within serverStartTimeout.
+func (s *repoServer) startupProblem() startupProblem {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var p startupProblem
+
+	switch {
+	case s.cmd == nil:
+		p.failed = true
+
+		p.reason = s.lastExit
+		if p.reason == "" {
+			p.reason = "The Kopia server is not running."
+		}
+
+	default:
+		p.elapsed = time.Since(s.startedAt)
+
+		if p.elapsed > serverStartTimeout {
+			p.failed = true
+			p.reason = fmt.Sprintf("The Kopia server did not finish starting within %v.", serverStartTimeout)
+		}
+	}
+
+	if p.failed {
+		n := min(len(s.logLines), errorPageLogLines)
+		p.logs = append([]string(nil), s.logLines[len(s.logLines)-n:]...)
+	}
+
+	return p
 }
 
 func (s *repoServer) statusSnapshot() serverStatus {
