@@ -7,6 +7,8 @@
 // proxy (see proxy.go).
 package main
 
+//go:generate go run ./tools/genres
+
 import (
 	_ "embed"
 	"fmt"
