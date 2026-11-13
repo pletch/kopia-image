@@ -40,6 +40,12 @@ var trayIconICO []byte
 //go:embed icons/kopia-tray.png
 var trayIconPNG []byte
 
+// appIconICO is the window icon. Wails looks for an icon resource (ID 3) in the
+// executable first and falls back to Options.Icon when there is none.
+//
+//go:embed icons/app.ico
+var appIconICO []byte
+
 // shell holds the application state shared by the tray, windows and servers.
 type shell struct {
 	app       *application.App
@@ -84,6 +90,7 @@ func run() error {
 	s.app = application.New(application.Options{
 		Name:        appName,
 		Description: "Kopia backup UI (Wails prototype)",
+		Icon:        appIconICO,
 		Logger:      logger,
 		LogLevel:    slog.LevelInfo,
 		Services:    []application.Service{application.NewService(s.notifier)},
