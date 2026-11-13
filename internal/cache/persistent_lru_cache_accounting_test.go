@@ -54,7 +54,7 @@ func TestPersistentLRUCache_CacheHitsPreserveHardLimit(t *testing.T) {
 	)
 
 	data := blobtesting.DataMap{}
-	cs := testutil.EnsureType[cache.Storage](t, blobtesting.NewMapStorageWithLimit(data, nil, timeNow, -1))
+	cs := testutil.EnsureType[cache.Storage](t, blobtesting.NewMapStorageWithLimit(data, nil, timeNow, 0))
 
 	pc, err := cache.NewPersistentCache(ctx, "testing", cs, cacheprot.ChecksumProtection([]byte{1, 2, 3}), cache.SweepSettings{
 		MaxSizeBytes:   limitBytes,
