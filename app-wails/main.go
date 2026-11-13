@@ -10,6 +10,7 @@ package main
 //go:generate go run ./tools/genres
 
 import (
+	"bytes"
 	_ "embed"
 	"fmt"
 	"io"
@@ -27,12 +28,31 @@ import (
 )
 
 const (
-	appName          = "KopiaUI"
+	// appName is used for toast notifications (shown as their source) and the
+	// launch-at-startup entry. It differs from Electron KopiaUI's on purpose.
+	appName          = "KopiaUI Wails"
+	windowTitle      = "KopiaUI (Wails prototype)"
 	singleInstanceID = "io.kopia.kopiaui-wails"
 	logFileName      = "kopiaui-wails.log"
+
+	// quitArg asks a running instance to quit; used by the installer.
+	quitArg = "--quit"
 )
 
 var isWindows = runtime.GOOS == "windows"
+
+// buildVersion is set at build time with -ldflags "-X main.buildVersion=...".
+var buildVersion = "dev"
+
+func hasArg(args []string, want string) bool {
+	for _, a := range args {
+		if a == want {
+			return true
+		}
+	}
+
+	return false
+}
 
 //go:embed icons/kopia-tray.ico
 var trayIconICO []byte
@@ -89,10 +109,16 @@ func run() error {
 		windows:   newWindowStateStore(configs.dir),
 	}
 
-	logger, closeLog := s.openLog()
-	defer closeLog()
+	// Log output is buffered until this process knows it is the primary
+	// instance, so a second launch cannot rotate or truncate the log of the
+	// running one.
+	logOut := &deferredWriter{}
+	logger := slog.New(slog.NewTextHandler(logOut, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	s.logPath = filepath.Join(s.configs.dir, logFileName)
 
 	slog.SetDefault(logger)
+
+	webviewDir := webviewDataDir()
 
 	s.app = application.New(application.Options{
 		Name:        appName,
@@ -106,6 +132,7 @@ func run() error {
 		},
 		Windows: application.WindowsOptions{
 			DisableQuitOnLastWindowClosed: true,
+			WebviewUserDataPath:           webviewDir,
 		},
 		Linux: application.LinuxOptions{
 			DisableQuitOnLastWindowClosed: true,
@@ -115,7 +142,14 @@ func run() error {
 		},
 		SingleInstance: &application.SingleInstanceOptions{
 			UniqueID: singleInstanceID,
-			OnSecondInstanceLaunch: func(application.SecondInstanceData) {
+			OnSecondInstanceLaunch: func(data application.SecondInstanceData) {
+				if hasArg(data.Args, quitArg) {
+					slog.Info("quit requested by another process")
+					s.app.Quit()
+
+					return
+				}
+
 				s.showAllWindows()
 			},
 		},
@@ -124,6 +158,19 @@ func run() error {
 			s.stopAllServers()
 		},
 	})
+
+	// Past this point this is the only instance: a second instance hands its
+	// arguments to the first one and exits inside application.New.
+	if hasArg(os.Args[1:], quitArg) {
+		return nil // nothing to quit, no other instance is running
+	}
+
+	closeLog := s.openLog(logOut)
+	defer closeLog()
+
+	slog.Info("KopiaUI Wails prototype", "version", buildVersion)
+
+	ensureWebViewProfileFree(webviewDir)
 
 	s.notifier.OnNotificationResponse(func(result notifications.NotificationResult) {
 		if result.Error != nil {
@@ -151,20 +198,46 @@ func run() error {
 	return s.app.Run()
 }
 
-func (s *shell) openLog() (*slog.Logger, func()) {
-	s.logPath = filepath.Join(s.configs.dir, logFileName)
-
+// openLog rotates the previous log and directs log output to a new file.
+func (s *shell) openLog(out *deferredWriter) func() {
 	// keep one previous log for troubleshooting.
 	_ = os.Rename(s.logPath, s.logPath+".1")
 
 	f, err := os.OpenFile(s.logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
-		return slog.New(slog.NewTextHandler(os.Stderr, nil)), func() {}
+		out.setTarget(os.Stderr)
+		return func() {}
 	}
 
-	var w io.Writer = f
+	out.setTarget(f)
 
-	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug})), func() { _ = f.Close() }
+	return func() { _ = f.Close() }
+}
+
+// deferredWriter buffers writes until a target is set, then forwards them.
+type deferredWriter struct {
+	mu     sync.Mutex
+	buf    bytes.Buffer
+	target io.Writer
+}
+
+func (w *deferredWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.target == nil {
+		return w.buf.Write(p)
+	}
+
+	return w.target.Write(p)
+}
+
+func (w *deferredWriter) setTarget(t io.Writer) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	_, _ = w.buf.WriteTo(t)
+	w.target = t
 }
 
 func (s *shell) startup() {
@@ -269,7 +342,7 @@ func (s *shell) showRepoWindow(repoID string) {
 	// Created hidden so the remembered geometry is applied before it appears.
 	w := s.app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:            windowName(repoID),
-		Title:           appName,
+		Title:           windowTitle,
 		Width:           1000,
 		Height:          700,
 		MinWidth:        600,
@@ -496,6 +569,9 @@ func (s *shell) setupTray() {
 
 func (s *shell) rebuildTrayMenu() {
 	menu := s.app.NewMenu()
+
+	menu.Add("KopiaUI Wails prototype " + buildVersion).SetEnabled(false)
+	menu.AddSeparator()
 
 	for _, id := range s.configs.list() {
 		label := "<starting up>"

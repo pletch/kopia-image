@@ -5,6 +5,7 @@ go 1.27.4
 require (
 	github.com/tc-hib/winres v0.3.1
 	github.com/wailsapp/wails/v3 v3.1.0
+	golang.org/x/sys v0.48.0
 )
 
 require (
@@ -15,6 +16,5 @@ require (
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646 // indirect
 	golang.org/x/image v0.45.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/term v0.46.0 // indirect
 )

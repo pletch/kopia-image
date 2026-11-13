@@ -35,7 +35,7 @@ const (
 
 	errorTooltipDuration   = 15 * time.Second
 	warningTooltipDuration = 7 * time.Second
-	defaultTrayTooltip     = "KopiaUI - Click to manage backups"
+	defaultTrayTooltip     = "KopiaUI (Wails) - Click to manage backups"
 	maxTrayTooltipLength   = 120
 	trayTooltipBodyLength  = 50
 	maxToastBodyLength     = 300
