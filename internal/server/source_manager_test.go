@@ -7,12 +7,14 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/kopia/kopia/internal/clock"
 	"github.com/kopia/kopia/internal/repotesting"
 	"github.com/kopia/kopia/internal/testutil"
 	"github.com/kopia/kopia/internal/uitask"
 	"github.com/kopia/kopia/notification/notifydata"
 	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/snapshot"
+	"github.com/kopia/kopia/snapshot/policy"
 	"github.com/kopia/kopia/snapshot/upload"
 )
 
@@ -75,4 +77,45 @@ func TestSourceManagerSnapshotInternalCancelBeforeWriterCreation(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("snapshotInternal did not return after task cancellation")
 	}
+}
+
+func TestSourceManagerBackoffAfterFailedScheduledSnapshot(t *testing.T) {
+	sm := &sourceManager{
+		pol: policy.SchedulingPolicy{
+			IntervalSeconds: int64(time.Hour.Seconds()),
+		},
+		snapshotRequests: make(chan struct{}, 1),
+	}
+
+	initialSnapshotTime := clock.Now().Add(time.Minute)
+	sm.nextSnapshotTime = &initialSnapshotTime
+	sm.scheduleSnapshotNow()
+
+	_, ok := sm.getNextSnapshotTime()
+	require.False(t, ok, "queued snapshot should clear the next snapshot time")
+
+	beforeBackoff := clock.Now()
+
+	sm.backoffBeforeNextSnapshot()
+
+	nextSnapshotTime, ok := sm.getNextSnapshotTime()
+	require.True(t, ok, "failed scheduled snapshot should be retried")
+	require.WithinDuration(t, beforeBackoff.Add(failedSnapshotRetryInterval), nextSnapshotTime, time.Second)
+}
+
+func TestSourceManagerBackoffAfterFailedManualSnapshot(t *testing.T) {
+	sm := &sourceManager{
+		pol: policy.SchedulingPolicy{
+			Manual: true,
+		},
+		snapshotRequests: make(chan struct{}, 1),
+	}
+
+	initialSnapshotTime := clock.Now().Add(time.Minute)
+	sm.nextSnapshotTime = &initialSnapshotTime
+	sm.scheduleSnapshotNow()
+	sm.backoffBeforeNextSnapshot()
+
+	_, ok := sm.getNextSnapshotTime()
+	require.False(t, ok, "manual snapshot should not be retried")
 }
