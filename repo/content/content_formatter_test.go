@@ -29,7 +29,7 @@ func TestFormatters(t *testing.T) {
 
 	for _, hashAlgo := range hashing.SupportedAlgorithms() {
 		t.Run(hashAlgo, func(t *testing.T) {
-			for _, encryptionAlgo := range encryption.SupportedAlgorithms(true) {
+			for _, encryptionAlgo := range encryption.SupportedAlgorithms() {
 				t.Run(encryptionAlgo, func(t *testing.T) {
 					ctx := testlogging.Context(t)
 
@@ -75,14 +75,12 @@ func verifyEndToEndFormatter(ctx context.Context, t *testing.T, hashAlgo, encryp
 	st := blobtesting.NewMapStorage(data, keyTime, nil)
 
 	bm, err := NewManagerForTesting(testlogging.Context(t), st, mustCreateFormatProvider(t, &format.ContentFormat{
-		Hash:       hashAlgo,
-		Encryption: encryptionAlgo,
-		HMACSecret: hmacSecret,
-		MutableParameters: format.MutableParameters{
-			Version:     1,
-			MaxPackSize: maxPackSize,
-		},
-		MasterKey: make([]byte, 32), // zero key, does not matter
+		Hash:        hashAlgo,
+		Encryption:  encryptionAlgo,
+		HMACSecret:  hmacSecret,
+		Version:     1,
+		MaxPackSize: maxPackSize,
+		MasterKey:   make([]byte, 32), // zero key, does not matter
 	}), nil, nil)
 	require.NoErrorf(t, err, "can't create content manager with hash %v and encryption %v", hashAlgo, encryptionAlgo)
 

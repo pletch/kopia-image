@@ -1,3 +1,5 @@
+//go:build !no_extra_providers
+
 package cli
 
 import (
@@ -27,7 +29,7 @@ func (c *storageRcloneFlags) Setup(_ StorageProviderServices, cmd *kingpin.CmdCl
 	cmd.Flag("rclone-debug", "Log rclone output").Hidden().BoolVar(&c.opt.Debug)
 	cmd.Flag("rclone-nowait-for-transfers", "Don't wait for transfers when closing storage").Hidden().BoolVar(&c.opt.NoWaitForTransfers)
 	cmd.Flag("list-parallelism", "Set list parallelism").Hidden().IntVar(&c.opt.ListParallelism)
-	cmd.Flag("atomic-writes", "Assume provider writes are atomic").Default("true").BoolVar(&c.opt.AtomicWrites)
+	cmd.Flag("atomic-writes", "Assume provider writes are atomic").Default(trueStr).BoolVar(&c.opt.AtomicWrites)
 	cmd.Flag("rclone-startup-timeout", "Time in seconds to wait for rclone to start").Default("15s").DurationVar(&c.opt.StartupTimeout.Duration)
 
 	commonThrottlingFlags(cmd, &c.opt.Limits)
@@ -47,4 +49,12 @@ func (c *storageRcloneFlags) Connect(ctx context.Context, isCreate bool, formatV
 
 	//nolint:wrapcheck
 	return rclone.New(ctx, &c.opt, isCreate)
+}
+
+func init() {
+	mustRegisterStorageProvider(
+		"rclone",
+		"a rclone-based provider [Not maintained]",
+		func() StorageFlags { return &storageRcloneFlags{} },
+	)
 }

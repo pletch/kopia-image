@@ -3,6 +3,7 @@ package repo
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -211,7 +212,17 @@ func openAPIServer(ctx context.Context, si *APIServerInfo, cliOpts ClientOptions
 		grpcKeepaliveTimeout: options.TestOnlyGRPCKeepaliveTimeout,
 	}
 
-	return openGRPCAPIRepository(ctx, si, password, par)
+	res, err := openGRPCAPIRepository(ctx, si, password, par)
+	if err == nil { // no error
+		return res, nil
+	}
+
+	// close on error to avoid leaking ref-counted resources
+	if err2 := par.Close(ctx); err2 != nil {
+		err = stderrors.Join(err, err2)
+	}
+
+	return nil, err
 }
 
 // openDirect opens the repository that directly manipulates blob storage..
@@ -363,24 +374,22 @@ func openWithConfig(ctx context.Context, st blob.Storage, cliOpts ClientOptions,
 	)
 
 	dr := &directRepository{
-		cmgr:  cm,
-		omgr:  om,
-		blobs: st,
-		mmgr:  manifests,
-		sm:    scm,
-		immutableDirectRepositoryParameters: immutableDirectRepositoryParameters{
-			cachingOptions:   *cacheOpts,
-			fmgr:             fmgr,
-			timeNow:          cmOpts.TimeNow,
-			cliOpts:          cliOpts,
-			configFile:       configFile,
-			nextWriterID:     &atomic.Int32{},
-			throttler:        throttler,
-			metricsRegistry:  mr,
-			refCountedCloser: closer,
-			beforeFlush:      options.BeforeFlush,
-			logManager:       logManager,
-		},
+		cmgr:             cm,
+		omgr:             om,
+		blobs:            st,
+		mmgr:             manifests,
+		sm:               scm,
+		cachingOptions:   *cacheOpts,
+		fmgr:             fmgr,
+		timeNow:          cmOpts.TimeNow,
+		cliOpts:          cliOpts,
+		configFile:       configFile,
+		nextWriterID:     &atomic.Int32{},
+		throttler:        throttler,
+		metricsRegistry:  mr,
+		refCountedCloser: closer,
+		beforeFlush:      options.BeforeFlush,
+		logManager:       logManager,
 	}
 
 	return dr, nil

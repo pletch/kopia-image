@@ -921,6 +921,31 @@ func (r *grpcInnerSession) SendNotification(ctx context.Context, templateName st
 	})
 }
 
+func (r *grpcRepositoryClient) GetCapacity(ctx context.Context) (blob.Capacity, error) {
+	return maybeRetry(ctx, r, func(ctx context.Context, sess *grpcInnerSession) (blob.Capacity, error) {
+		return sess.getCapacity(ctx)
+	})
+}
+
+func (r *grpcInnerSession) getCapacity(ctx context.Context) (blob.Capacity, error) {
+	return sendAndReceive(ctx, r, &apipb.SessionRequest{
+		Request: &apipb.SessionRequest_GetCapacity{
+			GetCapacity: &apipb.GetCapacityRequest{},
+		},
+	}, func(resp *apipb.SessionResponse) (blob.Capacity, error) {
+		switch rr := resp.GetResponse().(type) {
+		case *apipb.SessionResponse_GetCapacity:
+			return blob.Capacity{
+				SizeB: rr.GetCapacity.GetCapacity().GetSizeB(),
+				FreeB: rr.GetCapacity.GetCapacity().GetFreeB(),
+			}, nil
+
+		default:
+			return blob.Capacity{}, unhandledSessionResponse(resp)
+		}
+	})
+}
+
 func (r *grpcRepositoryClient) Time() time.Time {
 	return clock.Now()
 }
@@ -1030,6 +1055,8 @@ func (r *grpcRepositoryClient) ContentInfo(ctx context.Context, contentID conten
 	})
 }
 
+const maxUInt8 = 255
+
 func (r *grpcInnerSession) contentInfo(ctx context.Context, contentID content.ID) (content.Info, error) {
 	return sendAndReceive(ctx, r, &apipb.SessionRequest{
 		Request: &apipb.SessionRequest_GetContentInfo{
@@ -1045,6 +1072,11 @@ func (r *grpcInnerSession) contentInfo(ctx context.Context, contentID content.ID
 				return content.Info{}, errors.Wrap(err, "invalid content ID")
 			}
 
+			fv := rr.GetContentInfo.GetInfo().GetFormatVersion()
+			if fv > maxUInt8 {
+				return content.Info{}, errors.Errorf("invalid format version: %v", fv)
+			}
+
 			return content.Info{
 				ContentID:        contentID,
 				PackedLength:     rr.GetContentInfo.GetInfo().GetPackedLength(),
@@ -1052,7 +1084,7 @@ func (r *grpcInnerSession) contentInfo(ctx context.Context, contentID content.ID
 				PackBlobID:       blob.ID(rr.GetContentInfo.GetInfo().GetPackBlobId()),
 				PackOffset:       rr.GetContentInfo.GetInfo().GetPackOffset(),
 				Deleted:          rr.GetContentInfo.GetInfo().GetDeleted(),
-				FormatVersion:    byte(rr.GetContentInfo.GetInfo().GetFormatVersion()),
+				FormatVersion:    byte(fv),
 				OriginalLength:   rr.GetContentInfo.GetInfo().GetOriginalLength(),
 			}, nil
 		default:
@@ -1071,6 +1103,8 @@ func errorFromSessionResponse(rr *apipb.ErrorResponse) error {
 		return content.ErrContentNotFound
 	case apipb.ErrorResponse_STREAM_BROKEN:
 		return errors.Wrap(io.EOF, rr.GetMessage())
+	case apipb.ErrorResponse_NOT_A_VOLUME:
+		return blob.ErrNotAVolume
 	default:
 		return errors.New(rr.GetMessage())
 	}
@@ -1266,7 +1300,12 @@ func openGRPCAPIRepository(ctx context.Context, si *APIServerInfo, password stri
 	var transportCreds credentials.TransportCredentials
 
 	if si.TrustedServerCertificateFingerprint != "" {
-		transportCreds = credentials.NewTLS(tlsutil.TLSConfigTrustingSingleCertificate(si.TrustedServerCertificateFingerprint))
+		c, err := tlsutil.TLSConfigTrustingSingleCertificate(si.TrustedServerCertificateFingerprint)
+		if err != nil {
+			return nil, errors.Wrap(err, "creating TLS config")
+		}
+
+		transportCreds = credentials.NewTLS(c)
 	} else {
 		transportCreds = credentials.NewClientTLSFromCert(nil, "")
 	}
@@ -1325,7 +1364,8 @@ func openGRPCAPIRepository(ctx context.Context, si *APIServerInfo, password stri
 	par.registerEarlyCloseFunc(
 		func(_ context.Context) error {
 			return errors.Wrap(connManager.close(), "error closing GRPC connection")
-		})
+		},
+	)
 
 	rep, err := newGRPCAPIRepositoryForConnection(ctx, connManager, WriteSessionOptions{}, true, par)
 	if err != nil {

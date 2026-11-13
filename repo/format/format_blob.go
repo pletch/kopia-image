@@ -92,7 +92,9 @@ func RecoverFormatBlob(ctx context.Context, st blob.Storage, blobID blob.ID, opt
 		if foundMetadata.BlobID != "" {
 			return errors.Errorf("found multiple blocks with a given prefix: %v", blobID)
 		}
+
 		foundMetadata = bm
+
 		return nil
 	}); err != nil {
 		return nil, errors.Wrap(err, "error")
@@ -169,11 +171,11 @@ func verifyFormatBlobChecksum(b []byte) ([]byte, bool) {
 
 // WriteKopiaRepositoryBlob writes `kopia.repository` blob to a given storage.
 func (f *KopiaRepositoryJSON) WriteKopiaRepositoryBlob(ctx context.Context, st blob.Storage, blobCfg BlobStorageConfiguration) error {
-	return f.WriteKopiaRepositoryBlobWithID(ctx, st, blobCfg, KopiaRepositoryBlobID)
+	return f.writeKopiaRepositoryBlobWithID(ctx, st, blobCfg, KopiaRepositoryBlobID)
 }
 
-// WriteKopiaRepositoryBlobWithID writes `kopia.repository` blob to a given storage under an alternate blobID.
-func (f *KopiaRepositoryJSON) WriteKopiaRepositoryBlobWithID(ctx context.Context, st blob.Storage, blobCfg BlobStorageConfiguration, id blob.ID) error {
+// writeKopiaRepositoryBlobWithID writes `kopia.repository` blob to a given storage under an alternate blobID.
+func (f *KopiaRepositoryJSON) writeKopiaRepositoryBlobWithID(ctx context.Context, st blob.Storage, blobCfg BlobStorageConfiguration, id blob.ID) error {
 	buf := gather.NewWriteBuffer()
 	e := json.NewEncoder(buf)
 	e.SetIndent("", "  ")
@@ -221,9 +223,9 @@ func addFormatBlobChecksumAndLength(fb []byte) ([]byte, error) {
 	}
 
 	// return <length><checksummed-bytes><length>
-	result := append([]byte(nil), byte(l), byte(l>>8)) //nolint:mnd
+	result := append([]byte(nil), byte(0xFF&l), byte(l>>8)) //nolint:mnd
 	result = append(result, checksummedFormatBytes...)
-	result = append(result, byte(l), byte(l>>8)) //nolint:mnd
+	result = append(result, byte(0xFF&l), byte(l>>8)) //nolint:mnd
 
 	return result, nil
 }

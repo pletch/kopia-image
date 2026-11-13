@@ -11,6 +11,7 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/kopia/kopia/fs"
+	"github.com/kopia/kopia/fs/localfs"
 	"github.com/kopia/kopia/fs/virtualfs"
 	"github.com/kopia/kopia/notification"
 	"github.com/kopia/kopia/notification/notifydata"
@@ -32,7 +33,7 @@ type commandSnapshotCreate struct {
 	snapshotCreateCheckpointInterval      time.Duration
 	snapshotCreateFailFast                bool
 	snapshotCreateForceHash               float64
-	snapshotCreateParallelUploads         int
+	snapshotCreateParallelUploads         uint
 	snapshotCreateStartTime               string
 	snapshotCreateEndTime                 string
 	snapshotCreateForceEnableActions      bool
@@ -43,6 +44,8 @@ type commandSnapshotCreate struct {
 	flushPerSource                        bool
 	sourceOverride                        string
 	sendSnapshotReport                    bool
+
+	snapshotCreateStreamingReads bool
 
 	pins []string
 
@@ -64,7 +67,7 @@ func (c *commandSnapshotCreate) setup(svc appServices, parent commandParent) {
 	cmd.Flag("description", "Free-form snapshot description.").StringVar(&c.snapshotCreateDescription)
 	cmd.Flag("fail-fast", "Fail fast when creating snapshot.").Envar(svc.EnvName("KOPIA_SNAPSHOT_FAIL_FAST")).BoolVar(&c.snapshotCreateFailFast)
 	cmd.Flag("force-hash", "Force hashing of source files for a given percentage of files [0.0 .. 100.0]").Default("0").Float64Var(&c.snapshotCreateForceHash)
-	cmd.Flag("parallel", "Upload N files in parallel").PlaceHolder("N").Default("0").IntVar(&c.snapshotCreateParallelUploads)
+	cmd.Flag("parallel", "Upload N files in parallel").PlaceHolder("N").Default("0").UintVar(&c.snapshotCreateParallelUploads)
 	cmd.Flag("start-time", "Override snapshot start timestamp.").StringVar(&c.snapshotCreateStartTime)
 	cmd.Flag("end-time", "Override snapshot end timestamp.").StringVar(&c.snapshotCreateEndTime)
 	cmd.Flag("force-enable-actions", "Enable snapshot actions even if globally disabled on this client").Hidden().BoolVar(&c.snapshotCreateForceEnableActions)
@@ -74,7 +77,9 @@ func (c *commandSnapshotCreate) setup(svc appServices, parent commandParent) {
 	cmd.Flag("pin", "Create a pinned snapshot that will not expire automatically").StringsVar(&c.pins)
 	cmd.Flag("flush-per-source", "Flush writes at the end of each source").Hidden().BoolVar(&c.flushPerSource)
 	cmd.Flag("override-source", "Override the source of the snapshot.").StringVar(&c.sourceOverride)
-	cmd.Flag("send-snapshot-report", "Send a snapshot report notification using configured notification profiles").Default("true").BoolVar(&c.sendSnapshotReport)
+	cmd.Flag("send-snapshot-report", "Send a snapshot report notification using configured notification profiles").Default(trueStr).BoolVar(&c.sendSnapshotReport)
+	cmd.Flag("hint-streaming-reads", "[EXPERIMENTAL] Hint the OS to release memory used for I/O after reading files that are being backed up, aiming at reducing the memory footprint during backups (Linux only, best-effort).").
+		Default(falseStr).Hidden().BoolVar(&c.snapshotCreateStreamingReads)
 
 	c.logDirDetail = -1
 	c.logEntryDetail = -1
@@ -86,7 +91,7 @@ func (c *commandSnapshotCreate) setup(svc appServices, parent commandParent) {
 	c.out.setup(svc)
 
 	c.svc = svc
-	cmd.Action(svc.repositoryWriterAction(c.run))
+	cmd.Action(svc.repositoryWriterActionWithMaintenance(c.run))
 }
 
 //nolint:gocyclo
@@ -122,6 +127,8 @@ func (c *commandSnapshotCreate) run(ctx context.Context, rep repo.RepositoryWrit
 		return errors.New("description too long")
 	}
 
+	localfsOpts := localfs.Options{StreamingReads: c.snapshotCreateStreamingReads}
+
 	u := c.setupUploader(rep)
 
 	var finalErrors []string
@@ -139,7 +146,7 @@ func (c *commandSnapshotCreate) run(ctx context.Context, rep repo.RepositoryWrit
 			break
 		}
 
-		fsEntry, sourceInfo, setManual, err := c.getContentToSnapshot(ctx, snapshotDir, rep)
+		fsEntry, sourceInfo, setManual, err := c.getContentToSnapshot(ctx, snapshotDir, rep, localfsOpts)
 		if err != nil {
 			finalErrors = append(finalErrors, fmt.Sprintf("failed to prepare source: %s", err))
 		}
@@ -257,7 +264,7 @@ func (c *commandSnapshotCreate) setupUploader(rep repo.RepositoryWriter) *upload
 	c.svc.onTerminate(u.Cancel)
 
 	u.ForceHashPercentage = c.snapshotCreateForceHash
-	u.ParallelUploads = c.snapshotCreateParallelUploads
+	u.ParallelUploads = parallelismAsInt(c.snapshotCreateParallelUploads)
 
 	u.FailFast = c.snapshotCreateFailFast
 	u.Progress = c.svc.getProgress()
@@ -457,7 +464,7 @@ func shouldSnapshotSource(ctx context.Context, src snapshot.SourceInfo, rep repo
 
 // the setManual return value is true when a snapshot is manually created, such
 // as when overriding the source info or snapshotting from stdin.
-func (c *commandSnapshotCreate) getContentToSnapshot(ctx context.Context, dir string, rep repo.RepositoryWriter) (fsEntry fs.Entry, info snapshot.SourceInfo, setManual bool, err error) {
+func (c *commandSnapshotCreate) getContentToSnapshot(ctx context.Context, dir string, rep repo.RepositoryWriter, opts localfs.Options) (fsEntry fs.Entry, info snapshot.SourceInfo, setManual bool, err error) {
 	var absDir string
 
 	absDir, err = filepath.Abs(dir)
@@ -488,7 +495,7 @@ func (c *commandSnapshotCreate) getContentToSnapshot(ctx context.Context, dir st
 		})
 		setManual = true
 	} else {
-		fsEntry, err = getLocalFSEntry(ctx, absDir)
+		fsEntry, err = getLocalFSEntry(ctx, absDir, opts)
 		if err != nil {
 			return nil, info, false, errors.Wrap(err, "unable to get local filesystem entry")
 		}

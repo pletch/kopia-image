@@ -17,6 +17,7 @@ import (
 
 	"github.com/kopia/kopia/internal/apiclient"
 	"github.com/kopia/kopia/internal/clock"
+	"github.com/kopia/kopia/internal/envflag"
 	"github.com/kopia/kopia/internal/passwordpersist"
 	"github.com/kopia/kopia/internal/releasable"
 	"github.com/kopia/kopia/notification"
@@ -27,6 +28,11 @@ import (
 	"github.com/kopia/kopia/repo/logging"
 	"github.com/kopia/kopia/repo/maintenance"
 	"github.com/kopia/kopia/snapshot/snapshotmaintenance"
+)
+
+const (
+	falseStr = "false"
+	trueStr  = "true"
 )
 
 var log = logging.Module("kopia/cli")
@@ -83,6 +89,7 @@ type appServices interface {
 	directRepositoryReadAction(act func(ctx context.Context, rep repo.DirectRepository) error) func(ctx *kingpin.ParseContext) error
 	repositoryReaderAction(act func(ctx context.Context, rep repo.Repository) error) func(ctx *kingpin.ParseContext) error
 	repositoryWriterAction(act func(ctx context.Context, rep repo.RepositoryWriter) error) func(ctx *kingpin.ParseContext) error
+	repositoryWriterActionWithMaintenance(act func(ctx context.Context, rep repo.RepositoryWriter) error) func(ctx *kingpin.ParseContext) error
 	repositoryHintAction(act func(ctx context.Context, rep repo.Repository) []string) func() []string
 	baseActionWithContext(act func(ctx context.Context) error) func(ctx *kingpin.ParseContext) error
 	openRepository(ctx context.Context, mustBeConnected bool) (repo.Repository, error)
@@ -184,7 +191,7 @@ type App struct {
 }
 
 func (c *App) enableTestOnlyFlags() bool {
-	return c.isInProcessTest || os.Getenv("KOPIA_TESTONLY_FLAGS") != ""
+	return c.isInProcessTest || envflag.Bool("KOPIA_TESTONLY_FLAGS")
 }
 
 func (c *App) getProgress() *cliProgress {
@@ -265,22 +272,22 @@ func (c *App) setup(app *kingpin.Application) {
 		return nil
 	}).Bool()
 
-	app.Flag("auto-maintenance", "Automatic maintenance").Default("true").Hidden().BoolVar(&c.enableAutomaticMaintenance)
+	app.Flag("auto-maintenance", "Automatic maintenance").Default(trueStr).Hidden().BoolVar(&c.enableAutomaticMaintenance)
 
 	// hidden flags to control auto-update behavior.
 	app.Flag("initial-update-check-delay", "Initial delay before first time update check").Default("24h").Hidden().Envar(c.EnvName("KOPIA_INITIAL_UPDATE_CHECK_DELAY")).DurationVar(&c.initialUpdateCheckDelay)
 	app.Flag("update-check-interval", "Interval between update checks").Default("168h").Hidden().Envar(c.EnvName("KOPIA_UPDATE_CHECK_INTERVAL")).DurationVar(&c.updateCheckInterval)
 	app.Flag("update-available-notify-interval", "Interval between update notifications").Default("1h").Hidden().Envar(c.EnvName("KOPIA_UPDATE_NOTIFY_INTERVAL")).DurationVar(&c.updateAvailableNotifyInterval)
 	app.Flag("config-file", "Specify the config file to use").Default("repository.config").Envar(c.EnvName("KOPIA_CONFIG_PATH")).StringVar(&c.configPath)
-	app.Flag("trace-storage", "Enables tracing of storage operations.").Default("true").Hidden().BoolVar(&c.traceStorage)
+	app.Flag("trace-storage", "Enables tracing of storage operations.").Default(trueStr).Hidden().BoolVar(&c.traceStorage)
 	app.Flag("timezone", "Format time according to specified time zone (local, utc, original or time zone name)").Hidden().StringVar(&timeZone)
 	app.Flag("password", "Repository password.").Envar(c.EnvName("KOPIA_PASSWORD")).Short('p').StringVar(&c.password)
-	app.Flag("persist-credentials", "Persist credentials").Default("true").Envar(c.EnvName("KOPIA_PERSIST_CREDENTIALS_ON_CONNECT")).BoolVar(&c.persistCredentials)
+	app.Flag("persist-credentials", "Persist credentials").Default(trueStr).Envar(c.EnvName("KOPIA_PERSIST_CREDENTIALS_ON_CONNECT")).BoolVar(&c.persistCredentials)
 	app.Flag("disable-repository-log", "Disable repository log").Hidden().Envar(c.EnvName("KOPIA_DISABLE_REPOSITORY_LOG")).BoolVar(&c.disableRepositoryLog)
 	app.Flag("dangerous-commands", "Enable dangerous commands that could result in data loss and repository corruption.").Hidden().Envar(c.EnvName("KOPIA_DANGEROUS_COMMANDS")).StringVar(&c.DangerousCommands)
 	app.Flag("track-releasable", "Enable tracking of releasable resources.").Hidden().Envar(c.EnvName("KOPIA_TRACK_RELEASABLE")).StringsVar(&c.trackReleasable)
 	app.Flag("upgrade-owner-id", "Repository format upgrade owner-id.").Hidden().Envar(c.EnvName("KOPIA_REPO_UPGRADE_OWNER_ID")).StringVar(&c.upgradeOwnerID)
-	app.Flag("upgrade-no-block", "Do not block when repository format upgrade is in progress, instead exit with a message.").Hidden().Default("false").Envar(c.EnvName("KOPIA_REPO_UPGRADE_NO_BLOCK")).BoolVar(&c.doNotWaitForUpgrade)
+	app.Flag("upgrade-no-block", "Do not block when repository format upgrade is in progress, instead exit with a message.").Hidden().Default(falseStr).Envar(c.EnvName("KOPIA_REPO_UPGRADE_NO_BLOCK")).BoolVar(&c.doNotWaitForUpgrade)
 	app.Flag("error-notifications", "Send notification on errors").Hidden().
 		Envar(c.EnvName("KOPIA_SEND_ERROR_NOTIFICATIONS")).
 		Default(errorNotificationsNonInteractive).
@@ -325,21 +332,8 @@ type commandParent interface {
 // NewApp creates a new instance of App.
 func NewApp() *App {
 	return &App{
-		progress: &cliProgress{},
-		cliStorageProviders: []StorageProvider{
-			{"from-config", "the provided configuration file", func() StorageFlags { return &storageFromConfigFlags{} }},
-
-			{"azure", "an Azure blob storage", func() StorageFlags { return &storageAzureFlags{} }},
-			{"b2", "a B2 bucket [DEPRECATED]", func() StorageFlags { return &storageB2Flags{} }},
-			{"filesystem", "a filesystem", func() StorageFlags { return &storageFilesystemFlags{} }},
-			{"gcs", "a Google Cloud Storage bucket", func() StorageFlags { return &storageGCSFlags{} }},
-			{"gdrive", "a Google Drive folder [Not maintained]", func() StorageFlags { return &storageGDriveFlags{} }},
-
-			{"rclone", "a rclone-based provider [Not maintained]", func() StorageFlags { return &storageRcloneFlags{} }},
-			{"s3", "an S3 bucket", func() StorageFlags { return &storageS3Flags{} }},
-			{"sftp", "an SFTP storage", func() StorageFlags { return &storageSFTPFlags{} }},
-			{"webdav", "a WebDAV storage", func() StorageFlags { return &storageWebDAVFlags{} }},
-		},
+		progress:            &cliProgress{},
+		cliStorageProviders: getRegisteredStorageProviders(),
 
 		// testability hooks
 		exitWithError: func(err error) {
@@ -373,7 +367,7 @@ func (c *App) Attach(app *kingpin.Application) {
 
 // safetyFlagVar defines c --safety=none|full flag that sets the SafetyParameters.
 func safetyFlagVar(cmd *kingpin.CmdClause, result *maintenance.SafetyParameters) {
-	var str string
+	str := "full"
 
 	*result = maintenance.SafetyFull
 
@@ -446,32 +440,52 @@ func (c *App) directRepositoryWriteAction(act func(ctx context.Context, rep repo
 		return repo.DirectWriteSession(ctx, rep, repo.WriteSessionOptions{
 			Purpose:  "cli:" + c.currentActionName(),
 			OnUpload: c.progress.UploadedBytes,
-		}, func(ctx context.Context, dw repo.DirectRepositoryWriter) error { return act(ctx, dw) })
-	}), repositoryAccessMode{})
+		}, act)
+	}))
 }
 
 func (c *App) directRepositoryReadAction(act func(ctx context.Context, rep repo.DirectRepository) error) func(ctx *kingpin.ParseContext) error {
-	return c.repositoryAction(assertDirectRepository(func(ctx context.Context, rep repo.DirectRepository) error {
-		return act(ctx, rep)
-	}), repositoryAccessMode{})
+	return c.repositoryAction(assertDirectRepository(act))
 }
 
 func (c *App) repositoryReaderAction(act func(ctx context.Context, rep repo.Repository) error) func(ctx *kingpin.ParseContext) error {
-	return c.repositoryAction(func(ctx context.Context, rep repo.Repository) error {
-		return act(ctx, rep)
-	}, repositoryAccessMode{})
+	return c.repositoryAction(act)
 }
 
+// repositoryWriterAction runs act in a write session. It does NOT trigger
+// automatic maintenance, so it is appropriate for control-only operations that
+// modify repository configuration (policies, ACLs, users, ...) rather than
+// snapshot data.
 func (c *App) repositoryWriterAction(act func(ctx context.Context, rep repo.RepositoryWriter) error) func(ctx *kingpin.ParseContext) error {
+	return c.repositoryAction(
+		func(ctx context.Context, rep repo.Repository) error {
+			return repo.WriteSession(ctx, rep, repo.WriteSessionOptions{
+				Purpose:  "cli:" + c.currentActionName(),
+				OnUpload: c.progress.UploadedBytes,
+			}, act)
+		},
+	)
+}
+
+// repositoryWriterActionWithMaintenance runs act in a write session and
+// may run opportunistic automatic maintenance on success. It should be used
+// only for operations that modify snapshot data such as snapshot create/delete.
+func (c *App) repositoryWriterActionWithMaintenance(act func(ctx context.Context, rw repo.RepositoryWriter) error) func(ctx *kingpin.ParseContext) error {
 	return c.repositoryAction(func(ctx context.Context, rep repo.Repository) error {
-		return repo.WriteSession(ctx, rep, repo.WriteSessionOptions{
+		o := repo.WriteSessionOptions{
 			Purpose:  "cli:" + c.currentActionName(),
 			OnUpload: c.progress.UploadedBytes,
-		}, func(ctx context.Context, w repo.RepositoryWriter) error {
-			return act(ctx, w)
-		})
-	}, repositoryAccessMode{
-		allowMaintenance: true,
+		}
+
+		if err := repo.WriteSession(ctx, rep, o, act); err != nil {
+			return errors.Wrap(err, "running in write session")
+		}
+
+		if err := c.maybeRunMaintenance(ctx, rep); err != nil {
+			return errors.Wrap(err, "running auto-maintenance")
+		}
+
+		return nil
 	})
 }
 
@@ -512,17 +526,13 @@ func (c *App) runAppWithContext(command *kingpin.CmdClause, cb func(ctx context.
 	return nil
 }
 
-type repositoryAccessMode struct {
-	allowMaintenance bool
-}
-
 func (c *App) baseActionWithContext(act func(ctx context.Context) error) func(ctx *kingpin.ParseContext) error {
 	return func(kpc *kingpin.ParseContext) error {
 		return c.runAppWithContext(kpc.SelectedCommand, act)
 	}
 }
 
-func (c *App) repositoryAction(act func(ctx context.Context, rep repo.Repository) error, mode repositoryAccessMode) func(ctx *kingpin.ParseContext) error {
+func (c *App) repositoryAction(act func(ctx context.Context, rep repo.Repository) error) func(ctx *kingpin.ParseContext) error {
 	return c.baseActionWithContext(func(ctx context.Context) error {
 		const requireConnected = true
 
@@ -535,19 +545,14 @@ func (c *App) repositoryAction(act func(ctx context.Context, rep repo.Repository
 
 		err = act(ctx, rep)
 
-		if rep != nil && err == nil && mode.allowMaintenance {
-			if merr := c.maybeRunMaintenance(ctx, rep); merr != nil {
-				err = errors.Wrap(merr, "running auto-maintenance") // surface auto-maintenance error
-			}
-		}
-
 		if err != nil && c.enableErrorNotifications() && rep != nil {
 			notification.Send(ctx, rep, "generic-error", notifydata.NewErrorInfo(
 				c.currentActionName(),
 				c.currentActionName(),
 				t0,
 				clock.Now(),
-				err), notification.SeverityError,
+				err,
+			), notification.SeverityError,
 				c.notificationTemplateOptions(),
 			)
 		}
@@ -586,6 +591,10 @@ func (c *App) repositoryHintAction(act func(ctx context.Context, rep repo.Reposi
 
 func (c *App) maybeRunMaintenance(ctx context.Context, rep repo.Repository) error {
 	if !c.enableAutomaticMaintenance {
+		return nil
+	}
+
+	if rep == nil {
 		return nil
 	}
 

@@ -58,7 +58,7 @@ func (m *Manager) SetUpgradeLockIntent(ctx context.Context, l UpgradeLockIntent)
 
 		// backup the current repository config from local cache to the
 		// repository when we place the lock for the first time
-		if err := m.j.WriteKopiaRepositoryBlobWithID(ctx, m.blobs, m.blobCfgBlob, BackupBlobID(l)); err != nil {
+		if err := m.j.writeKopiaRepositoryBlobWithID(ctx, m.blobs, m.blobCfgBlob, BackupBlobID(l)); err != nil {
 			return nil, errors.Wrap(err, "failed to backup the repo format blob")
 		}
 
@@ -89,7 +89,8 @@ func WriteLegacyIndexPoisonBlob(ctx context.Context, st blob.Storage) error {
 		ctx,
 		LegacyIndexPoisonBlobID,
 		gather.FromSlice([]byte("The format of this repository has been upgraded and cannot be read by old clients")),
-		blob.PutOptions{})
+		blob.PutOptions{},
+	)
 }
 
 // CommitUpgrade removes the upgrade lock from the from the repository format
@@ -146,6 +147,7 @@ func (m *Manager) RollbackUpgrade(ctx context.Context) error {
 				// delete the current candidate because we have found an even older one
 				delID = oldestBackup.BlobID
 			}
+
 			oldestBackup = &bm
 		} else {
 			delID = bm.BlobID
