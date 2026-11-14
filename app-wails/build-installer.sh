@@ -47,8 +47,13 @@ if [ -z "${VERSION:-}" ]; then
   fi
   VERSION="$DATE.0.0-$COMMIT"
 fi
-# Windows file versions are four numbers of at most 65535 each.
-VIVERSION="${DATE:0:4}.$((10#${DATE:4:4})).0.0"
+# Windows file versions are four numbers of at most 65535 each. Release tags
+# like 0.23.1-wails.2 (upstream base version, fork release) map to 0.23.1.2.
+if [[ "$VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)-wails\.([0-9]+)$ ]]; then
+  VIVERSION="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}.${BASH_REMATCH[4]}"
+else
+  VIVERSION="${DATE:0:4}.$((10#${DATE:4:4})).0.0"
+fi
 
 echo "Building KopiaUI-Wails $VERSION"
 

@@ -1,4 +1,4 @@
-; NSIS installer for the KopiaUI Wails prototype.
+; NSIS installer for KopiaUI-Wails.
 ;
 ; Built by ../build-installer.sh, which passes:
 ;   /DVERSION=<display version>   e.g. 20261113.0.0-232fe245
@@ -18,7 +18,9 @@ RequestExecutionLevel user
 !include "LogicLib.nsh"
 
 !define APPNAME      "KopiaUI Wails"
-!define DISPLAYNAME  "KopiaUI (Wails prototype)"
+!define DISPLAYNAME  "KopiaUI-Wails"
+; Start menu shortcut name used by builds before the rename.
+!define OLDSHORTCUT  "KopiaUI (Wails prototype)"
 !define EXENAME      "KopiaUI-Wails.exe"
 !define COMPANY      "Kopia"
 !define UNINSTKEY    "Software\Microsoft\Windows\CurrentVersion\Uninstall\KopiaUI-Wails"
@@ -99,6 +101,7 @@ Section "Install"
   File "${SRCDIR}\kopia.exe"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
+  Delete "$SMPROGRAMS\${OLDSHORTCUT}.lnk"
   CreateShortCut "$SMPROGRAMS\${DISPLAYNAME}.lnk" "$INSTDIR\${EXENAME}" "" "$INSTDIR\${EXENAME}" 0
 
   WriteRegStr HKCU "${UNINSTKEY}" "DisplayName" "${DISPLAYNAME}"
@@ -123,6 +126,7 @@ Section "Uninstall"
   RMDir "$INSTDIR"
 
   Delete "$SMPROGRAMS\${DISPLAYNAME}.lnk"
+  Delete "$SMPROGRAMS\${OLDSHORTCUT}.lnk"
 
   ; launch-at-startup entry created by the app
   DeleteRegValue HKCU "${RUNKEY}" "${AUTOSTARTVAL}"

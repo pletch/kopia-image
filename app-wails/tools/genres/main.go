@@ -39,7 +39,7 @@ func main() {
 
 	rs.SetManifest(winres.AppManifest{
 		Identity:            winres.AssemblyIdentity{Name: "io.kopia.kopiaui-wails", Version: [4]uint16{0, 1, 0, 0}},
-		Description:         "KopiaUI (Wails prototype)",
+		Description:         "KopiaUI-Wails",
 		Compatibility:       winres.Win10AndAbove,
 		DPIAwareness:        winres.DPIPerMonitorV2,
 		UseCommonControlsV6: true,

@@ -1,4 +1,4 @@
-// Command kopiaui-wails is a prototype KopiaUI shell built with Wails v3.
+// Command kopiaui-wails is a KopiaUI shell built with Wails v3.
 //
 // It replaces the Electron shell in app/ (tray, notifications, server process
 // management and repository windows) while using the system webview (WebView2
@@ -31,7 +31,7 @@ const (
 	// appName is used for toast notifications (shown as their source) and the
 	// launch-at-startup entry. It differs from Electron KopiaUI's on purpose.
 	appName          = "KopiaUI Wails"
-	windowTitle      = "KopiaUI (Wails prototype)"
+	windowTitle      = "KopiaUI-Wails"
 	singleInstanceID = "io.kopia.kopiaui-wails"
 	logFileName      = "kopiaui-wails.log"
 
@@ -122,7 +122,7 @@ func run() error {
 
 	s.app = application.New(application.Options{
 		Name:        appName,
-		Description: "Kopia backup UI (Wails prototype)",
+		Description: "KopiaUI-Wails backup UI",
 		Icon:        appIconICO,
 		Logger:      logger,
 		LogLevel:    slog.LevelInfo,
@@ -168,7 +168,7 @@ func run() error {
 	closeLog := s.openLog(logOut)
 	defer closeLog()
 
-	slog.Info("KopiaUI Wails prototype", "version", buildVersion)
+	slog.Info("KopiaUI-Wails", "version", buildVersion)
 
 	ensureWebViewProfileFree(webviewDir)
 
@@ -247,7 +247,7 @@ func (s *shell) startup() {
 	if !s.configs.portable && electronKopiaUIRunning() {
 		s.app.Dialog.Warning().
 			SetTitle(appName).
-			SetMessage("Electron KopiaUI is running.\n\nQuit it from its tray icon before using this prototype. " +
+			SetMessage("Electron KopiaUI is running.\n\nQuit it from its tray icon before using KopiaUI-Wails. " +
 				"Both would start servers for the same repositories and could run scheduled snapshots twice.").
 			Show()
 		s.app.Quit()
@@ -570,7 +570,7 @@ func (s *shell) setupTray() {
 func (s *shell) rebuildTrayMenu() {
 	menu := s.app.NewMenu()
 
-	menu.Add("KopiaUI Wails prototype " + buildVersion).SetEnabled(false)
+	menu.Add("KopiaUI-Wails " + buildVersion).SetEnabled(false)
 	menu.AddSeparator()
 
 	for _, id := range s.configs.list() {
