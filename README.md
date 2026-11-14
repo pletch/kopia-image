@@ -65,7 +65,7 @@ Installing
 
 Download `KopiaUI-Wails-Setup-<version>.exe` (or the portable zip) from this fork's [Releases](https://github.com/pletch/kopia-wailsUI/releases) page. It installs per-user to `%LOCALAPPDATA%\Programs\KopiaUI-Wails` and bundles a `kopia.exe` built from this fork. Existing repositories configured with upstream KopiaUI are picked up automatically.
 
-The same releases include the `kopia` command-line tool for Linux (`kopia-<version>-linux-x64.tar.gz`, `-linux-arm64` and `-linux-arm`), built from this fork with all of the changes above except the KopiaUI ones. They are static binaries with no dependencies: extract and run `kopia`. There are no macOS builds, Linux KopiaUI builds or packages (deb, rpm, Docker).
+The same releases include the `kopia` command-line tool for Linux (`kopia-<version>-linux-x64.tar.gz` and `kopia-<version>-linux-arm64.tar.gz`), built from this fork with all of the changes above except the KopiaUI ones. They are static binaries with no dependencies: extract and run `kopia`. There are no macOS builds, Linux KopiaUI builds or packages (deb, rpm, Docker).
 
 Building
 ---

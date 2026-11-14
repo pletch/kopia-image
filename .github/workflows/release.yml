@@ -1,7 +1,7 @@
 name: Release
 # Builds this fork's release files:
 #   - Windows: kopia.exe, KopiaUI-Wails.exe, the NSIS installer and a portable zip
-#   - Linux:   the kopia CLI for x64, arm64 and armv7 as .tar.gz
+#   - Linux:   the kopia CLI for x64 and arm64 as .tar.gz
 #
 # - Pushing a tag v* publishes a GitHub release with all files and checksums.txt.
 # - Running the workflow manually builds the same files as workflow artifacts
@@ -115,7 +115,6 @@ jobs:
         }
         build amd64 "" x64
         build arm64 "" arm64
-        build arm 7 arm
         dist/kopia_linux_x64/kopia --version
         ls -la release
     - name: Upload artifact
