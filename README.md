@@ -2,7 +2,7 @@ Kopia (personal fork with a Wails-based KopiaUI)
 ================================================
 
 ![Kopia](icons/kopia.svg)
-[![Windows Release](https://github.com/pletch/kopia-wailsUI/actions/workflows/release-windows.yml/badge.svg)](https://github.com/pletch/kopia-wailsUI/actions/workflows/release-windows.yml)
+[![Release](https://github.com/pletch/kopia-wailsUI/actions/workflows/release.yml/badge.svg)](https://github.com/pletch/kopia-wailsUI/actions/workflows/release.yml)
 
 > [!IMPORTANT]
 > This is a **personal fork** of [kopia/kopia](https://github.com/kopia/kopia). It is not an official Kopia release and is not supported by the Kopia maintainers. Please report problems with stock Kopia upstream, not here, and keep your own backups of anything that matters. Builds are unsigned, so Windows SmartScreen will warn the first time you run the installer.
@@ -63,7 +63,9 @@ This fork carries the following open pull requests from [kopia/kopia](https://gi
 Installing
 ---
 
-Download `KopiaUI-Wails-Setup-<version>.exe` (or the portable zip) from this fork's [Releases](https://github.com/pletch/kopia-wailsUI/releases) page. It installs per-user to `%LOCALAPPDATA%\Programs\KopiaUI-Wails` and bundles a `kopia.exe` built from this fork. Existing repositories configured with upstream KopiaUI are picked up automatically. Only Windows x64 builds are published.
+Download `KopiaUI-Wails-Setup-<version>.exe` (or the portable zip) from this fork's [Releases](https://github.com/pletch/kopia-wailsUI/releases) page. It installs per-user to `%LOCALAPPDATA%\Programs\KopiaUI-Wails` and bundles a `kopia.exe` built from this fork. Existing repositories configured with upstream KopiaUI are picked up automatically.
+
+The same releases include the `kopia` command-line tool for Linux (`kopia-<version>-linux-x64.tar.gz`, `-linux-arm64` and `-linux-arm`), built from this fork with all of the changes above except the KopiaUI ones. They are static binaries with no dependencies: extract and run `kopia`. There are no macOS builds, Linux KopiaUI builds or packages (deb, rpm, Docker).
 
 Building
 ---
@@ -75,7 +77,7 @@ go build -o dist/kopia_windows_amd64/kopia.exe github.com/kopia/kopia
 app-wails/build-installer.sh
 ```
 
-Pushing a `v*` tag runs the [Windows Release](.github/workflows/release-windows.yml) workflow, which builds the installer and portable zip and publishes them as a GitHub release. See [BUILD.md](BUILD.md) for building the rest of Kopia.
+Pushing a `v*` tag runs the [Release](.github/workflows/release.yml) workflow, which builds the Windows installer and portable zip and the Linux CLI archives and publishes them as a GitHub release. See [BUILD.md](BUILD.md) for building the rest of Kopia.
 
 About Kopia
 ---

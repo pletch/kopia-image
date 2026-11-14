@@ -1,0 +1,158 @@
+name: Release
+# Builds this fork's release files:
+#   - Windows: kopia.exe, KopiaUI-Wails.exe, the NSIS installer and a portable zip
+#   - Linux:   the kopia CLI for x64, arm64 and armv7 as .tar.gz
+#
+# - Pushing a tag v* publishes a GitHub release with all files and checksums.txt.
+# - Running the workflow manually builds the same files as workflow artifacts
+#   without publishing a release.
+on:
+  push:
+    tags:
+      - v*
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  version:
+    name: Compute version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+    - name: Check out repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+    - name: Compute version
+      id: version
+      run: |
+        if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          VERSION="${GITHUB_REF_NAME#v}"
+        else
+          VERSION="$(date -u +%Y%m%d).0.0-$(git rev-parse --short=8 HEAD)"
+        fi
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        echo "Version: $VERSION"
+
+  windows:
+    name: Build Windows
+    needs: version
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+    - name: Check out repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+    - name: Set up Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: 'go.mod'
+        cache-dependency-path: |
+          go.sum
+          app-wails/go.sum
+    - name: Install NSIS
+      run: choco install --no-progress -y nsis
+    - name: Build kopia.exe
+      run: |
+        go build -trimpath \
+          -ldflags "-s -w -X github.com/kopia/kopia/repo.BuildVersion=$VERSION -X github.com/kopia/kopia/repo.BuildInfo=$GITHUB_SHA -X github.com/kopia/kopia/repo.BuildGitHubRepo=$GITHUB_REPOSITORY" \
+          -o dist/kopia_windows_amd64/kopia.exe github.com/kopia/kopia
+        dist/kopia_windows_amd64/kopia.exe --version
+    - name: Build KopiaUI-Wails and installer
+      env:
+        MAKENSIS: C:\Program Files (x86)\NSIS\makensis.exe
+      run: app-wails/build-installer.sh
+    - name: Package release files
+      run: |
+        mkdir -p release
+        cp "dist/KopiaUI-Wails-Setup-$VERSION.exe" release/
+        PORTABLE="KopiaUI-Wails-$VERSION-windows-x64"
+        mkdir -p "dist/$PORTABLE"
+        cp dist/kopiaui-wails/KopiaUI-Wails.exe dist/kopiaui-wails/kopia.exe LICENSE README.md "dist/$PORTABLE/"
+        (cd dist && 7z a -tzip "../release/$PORTABLE.zip" "$PORTABLE" > /dev/null)
+        ls -la release
+    - name: Upload artifact
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: release-windows
+        path: release/
+        if-no-files-found: error
+
+  linux:
+    name: Build Linux CLI
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      CGO_ENABLED: "0"
+    steps:
+    - name: Check out repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+    - name: Set up Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: 'go.mod'
+    - name: Build and package
+      run: |
+        mkdir -p release
+        build() { # <goarch> <goarm> <suffix>
+          local out="dist/kopia_linux_$3/kopia"
+          GOOS=linux GOARCH=$1 GOARM=$2 go build -trimpath \
+            -ldflags "-s -w -X github.com/kopia/kopia/repo.BuildVersion=$VERSION -X github.com/kopia/kopia/repo.BuildInfo=$GITHUB_SHA -X github.com/kopia/kopia/repo.BuildGitHubRepo=$GITHUB_REPOSITORY" \
+            -o "$out" github.com/kopia/kopia
+          tools/make-tgz.sh release "kopia-$VERSION-linux-$3" "$out" > /dev/null
+        }
+        build amd64 "" x64
+        build arm64 "" arm64
+        build arm 7 arm
+        dist/kopia_linux_x64/kopia --version
+        ls -la release
+    - name: Upload artifact
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: release-linux
+        path: release/
+        if-no-files-found: error
+
+  release:
+    name: Checksums and release
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - name: Download artifacts
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        path: release
+        pattern: release-*
+        merge-multiple: true
+    - name: Write checksums
+      run: |
+        (cd release && sha256sum * > checksums.txt)
+        cat release/checksums.txt
+    - name: Upload checksums artifact
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: checksums
+        path: release/checksums.txt
+    - name: Publish release
+      if: startsWith(github.ref, 'refs/tags/v')
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh release create "$GITHUB_REF_NAME" release/* \
+          --repo "$GITHUB_REPOSITORY" \
+          --title "$GITHUB_REF_NAME" \
+          --generate-notes
