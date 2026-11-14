@@ -1,7 +1,7 @@
 name: Release
 # Builds this fork's release files:
 #   - Windows: kopia.exe, KopiaUI-Wails.exe, the NSIS installer and a portable zip
-#   - Linux:   the kopia CLI for x64 and arm64 as .tar.gz
+#   - Linux:   the kopia CLI for x64 and arm64 as .tar.gz, plus an amd64 .deb
 #
 # - Pushing a tag v* publishes a GitHub release with all files and checksums.txt.
 # - Running the workflow manually builds the same files as workflow artifacts
@@ -116,6 +116,33 @@ jobs:
         build amd64 "" x64
         build arm64 "" arm64
         dist/kopia_linux_x64/kopia --version
+    - name: Build amd64 .deb
+      run: |
+        # Named kopia-wails so that an upstream kopia apt repository never
+        # silently swaps it back; it provides and replaces the kopia package.
+        PKG=kopia-wails
+        ROOT="dist/deb/${PKG}_${VERSION}_amd64"
+        install -Dm755 dist/kopia_linux_x64/kopia "$ROOT/usr/bin/kopia"
+        install -Dm644 LICENSE "$ROOT/usr/share/doc/$PKG/copyright"
+        mkdir -p "$ROOT/DEBIAN"
+        cat > "$ROOT/DEBIAN/control" <<EOF
+        Package: $PKG
+        Version: $VERSION
+        Architecture: amd64
+        Maintainer: $GITHUB_REPOSITORY_OWNER <$GITHUB_REPOSITORY_OWNER@users.noreply.github.com>
+        Installed-Size: $(du -sk "$ROOT/usr" | cut -f1)
+        Provides: kopia
+        Conflicts: kopia
+        Replaces: kopia
+        Section: utils
+        Priority: optional
+        Homepage: https://github.com/$GITHUB_REPOSITORY
+        Description: Fast and secure open source backup (personal fork)
+         Kopia command-line tool built from $GITHUB_REPOSITORY, a personal fork
+         of kopia/kopia carrying unmerged upstream fixes.
+        EOF
+        dpkg-deb --root-owner-group --build "$ROOT" release/
+        dpkg-deb --info "release/${PKG}_${VERSION}_amd64.deb"
         ls -la release
     - name: Upload artifact
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

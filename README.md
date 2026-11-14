@@ -67,7 +67,11 @@ Releases are numbered `<upstream version>-wails.<n>`: `v0.23.1-wails.1` is the f
 
 Download `KopiaUI-Wails-Setup-<version>.exe` (or the portable zip) from this fork's [Releases](https://github.com/pletch/kopia-wailsUI/releases) page. It installs per-user to `%LOCALAPPDATA%\Programs\KopiaUI-Wails` and bundles a `kopia.exe` built from this fork. Existing repositories configured with upstream KopiaUI are picked up automatically.
 
-The same releases include the `kopia` command-line tool for Linux (`kopia-<version>-linux-x64.tar.gz` and `kopia-<version>-linux-arm64.tar.gz`), built from this fork with all of the changes above except the KopiaUI ones. They are static binaries with no dependencies: extract and run `kopia`. There are no macOS builds, Linux KopiaUI builds or packages (deb, rpm, Docker).
+The same releases include the `kopia` command-line tool for Linux (`kopia-<version>-linux-x64.tar.gz` and `kopia-<version>-linux-arm64.tar.gz`), built from this fork with all of the changes above except the KopiaUI ones. They are static binaries with no dependencies: extract and run `kopia`.
+
+For Debian and Ubuntu on x64 there is also `kopia-wails_<version>_amd64.deb`, installed with `sudo apt install ./kopia-wails_<version>_amd64.deb`. It puts `kopia` in `/usr/bin` and replaces the upstream `kopia` package if that is installed. Because it has a different package name, an upstream Kopia apt repository will not silently switch you back; remove `kopia-wails` and install `kopia` to return to upstream.
+
+There are no macOS builds, Linux KopiaUI builds, rpm packages or Docker images.
 
 Building
 ---
