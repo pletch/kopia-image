@@ -8,6 +8,8 @@
 #   KOPIA_EXE   kopia.exe to bundle (default: ../dist/kopia_windows_amd64/kopia.exe,
 #               built by `make kopia-ui` or `make install` in the repository root)
 #   MAKENSIS    makensis.exe (default: PATH, then electron-builder's NSIS cache)
+#   VERSION     display version (default: <yyyymmdd>.0.0-<commit>); CI sets it
+#               from the release tag
 #
 # Output: ../dist/kopiaui-wails/ and ../dist/KopiaUI-Wails-Setup-<version>.exe
 set -euo pipefail
@@ -38,11 +40,13 @@ fi
 
 # Version scheme matches Kopia's own builds: <yyyymmdd>.0.0-<commit>.
 DATE=$(date +%Y%m%d)
-COMMIT=$(git rev-parse --short=8 HEAD)
-if ! git diff --quiet HEAD -- . 2>/dev/null; then
-  COMMIT="$COMMIT-dirty"
+if [ -z "${VERSION:-}" ]; then
+  COMMIT=$(git rev-parse --short=8 HEAD)
+  if ! git diff --quiet HEAD -- . 2>/dev/null; then
+    COMMIT="$COMMIT-dirty"
+  fi
+  VERSION="$DATE.0.0-$COMMIT"
 fi
-VERSION="$DATE.0.0-$COMMIT"
 # Windows file versions are four numbers of at most 65535 each.
 VIVERSION="${DATE:0:4}.$((10#${DATE:4:4})).0.0"
 

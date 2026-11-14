@@ -1,21 +1,84 @@
-Kopia
-=====
+Kopia (personal fork with a Wails-based KopiaUI)
+================================================
 
 ![Kopia](icons/kopia.svg)
-[![Build Status](https://github.com/kopia/kopia/workflows/Build/badge.svg)](https://github.com/kopia/kopia/actions?query=workflow%3ABuild)
-[![GoDoc](https://godoc.org/github.com/kopia/kopia/repo?status.svg)](https://godoc.org/github.com/kopia/kopia/repo)
-[![Coverage Status](https://codecov.io/gh/kopia/kopia/branch/master/graph/badge.svg?token=CRK4RMRFSH)](https://codecov.io/gh/kopia/kopia)[![Go Report Card](https://goreportcard.com/badge/github.com/kopia/kopia)](https://goreportcard.com/report/github.com/kopia/kopia)
-[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-v2.0%20adopted-ff69b4.svg)](CODE_OF_CONDUCT.md)
-[![Docker Pulls](https://img.shields.io/docker/pulls/kopia/kopia)](https://hub.docker.com/r/kopia/kopia/tags?page=1&ordering=name)
-[![Downloads](https://img.shields.io/github/downloads/kopia/kopia/total.svg)](https://github.com/kopia/kopia/releases)
-[![Gurubase](https://img.shields.io/badge/Gurubase-Ask%20Kopia%20Guru-006BFF)](https://gurubase.io/g/kopia)
+[![Windows Release](https://github.com/pletch/kopia-wailsUI/actions/workflows/release-windows.yml/badge.svg)](https://github.com/pletch/kopia-wailsUI/actions/workflows/release-windows.yml)
 
-> _n._
->
-> 1. _[copy, replica](https://en.wikipedia.org/wiki/Replica) (Polish)_
-> 2. _[lance, spear](https://en.wikipedia.org/wiki/Kopia)_
-> 3. _[fast and secure backup tool](https://kopia.io)_
+> [!IMPORTANT]
+> This is a **personal fork** of [kopia/kopia](https://github.com/kopia/kopia). It is not an official Kopia release and is not supported by the Kopia maintainers. Please report problems with stock Kopia upstream, not here, and keep your own backups of anything that matters. Builds are unsigned, so Windows SmartScreen will warn the first time you run the installer.
 
+What this fork adds
+---
+
+### A lighter KopiaUI built with Wails
+
+The [`app-wails/`](app-wails) directory is a replacement for the Electron-based KopiaUI shell, built with [Wails v3](https://v3.wails.io/) and the WebView2 runtime that ships with Windows. It runs the same `kopia server` and the same web UI, with:
+
+* a tray icon that starts the bundled `kopia.exe` server and opens repository windows
+* native Windows toast notifications, including more detailed notices for failed snapshots
+* remembered window size and position
+* an error page when the server fails to start, instead of a blank window
+* a small per-user NSIS installer (no administrator rights needed) that shares the repository configuration in `%APPDATA%\kopia` with upstream KopiaUI and the CLI
+
+**It uses less memory in most scenarios.** Closing the window shuts WebView2 down completely, whereas Electron keeps its main, GPU and helper processes running. Measured on Windows 11 (private memory, UI shell only; the `kopia.exe` server adds about 140 MB to both):
+
+| | Window open | Window closed (tray only) |
+|---|---|---|
+| Electron KopiaUI (upstream) | 219 MB | 178 MB |
+| Wails KopiaUI (this fork) | 237 MB | **59 MB** |
+
+With a window open the two are about the same, since both render the page with Chromium. Because KopiaUI spends most of its time in the tray, this fork typically saves about 120 MB of RAM, plus about 350 MB of disk.
+
+### Upstream pull requests not yet merged
+
+This fork carries the following open pull requests from [kopia/kopia](https://github.com/kopia/kopia/pulls). Each will be dropped from the fork once it is merged (or superseded) upstream.
+
+| PR | Change |
+|---|---|
+| [#5185](https://github.com/kopia/kopia/pull/5185) | Enhance gRPC session management with keepalive and cancellation support |
+| [#5364](https://github.com/kopia/kopia/pull/5364) | Avoid serializing concurrent session authentications |
+| [#5455](https://github.com/kopia/kopia/pull/5455) | Compute weekly retention bucket in UTC |
+| [#5460](https://github.com/kopia/kopia/pull/5460) | Avoid nil-pointer crash when a cache directory is set but caching is disabled |
+| [#5461](https://github.com/kopia/kopia/pull/5461) | Detect symlink target changes when reusing cached entries |
+| [#5492](https://github.com/kopia/kopia/pull/5492) | Stop cache hits from corrupting LRU size accounting |
+| [#5527](https://github.com/kopia/kopia/pull/5527) | Do not deadlock pack GC when deletes keep failing |
+| [#5544](https://github.com/kopia/kopia/pull/5544) | Retry failed scheduled snapshots |
+| [#5583](https://github.com/kopia/kopia/pull/5583) | Parse time of day using base 10 |
+| [#5611](https://github.com/kopia/kopia/pull/5611) | Don't panic when flushing a delete marker after a transient storage failure |
+| [#5616](https://github.com/kopia/kopia/pull/5616) | Use actual written size when a file changes during upload |
+| [#5639](https://github.com/kopia/kopia/pull/5639) | Avoid holding the server lock during repository refresh I/O |
+| [#5674](https://github.com/kopia/kopia/pull/5674) | KopiaUI: wait for server address before loading the repository window |
+| [#5719](https://github.com/kopia/kopia/pull/5719) | Reject directory entry names that escape the restore target |
+| [#5735](https://github.com/kopia/kopia/pull/5735) | KopiaUI: poll server status only while it can change |
+| [#5746](https://github.com/kopia/kopia/pull/5746) | Overwrite read-only files on Windows when restoring |
+| [#5769](https://github.com/kopia/kopia/pull/5769) | Separate weekly and monthly retention buckets |
+| [#5785](https://github.com/kopia/kopia/pull/5785) | Do not reschedule a snapshot that is waiting for an upload slot |
+| [#5797](https://github.com/kopia/kopia/pull/5797) | Skip unrelated filesystem blob metadata reads |
+
+### Other personal changes
+
+* **Reconnect after sleep:** fixes a gRPC `readLoop` deadlock and reconnects to a repository server cleanly after Windows resumes from sleep.
+* **Better failed-snapshot notifications** in the Electron KopiaUI as well (see [app/NOTIFICATIONS.md](app/NOTIFICATIONS.md)).
+
+Installing
+---
+
+Download `KopiaUI-Wails-Setup-<version>.exe` (or the portable zip) from this fork's [Releases](https://github.com/pletch/kopia-wailsUI/releases) page. It installs per-user to `%LOCALAPPDATA%\Programs\KopiaUI-Wails` and bundles a `kopia.exe` built from this fork. Existing repositories configured with upstream KopiaUI are picked up automatically. Only Windows x64 builds are published.
+
+Building
+---
+
+On Windows with Go and NSIS 3 installed, from Git Bash:
+
+```sh
+go build -o dist/kopia_windows_amd64/kopia.exe github.com/kopia/kopia
+app-wails/build-installer.sh
+```
+
+Pushing a `v*` tag runs the [Windows Release](.github/workflows/release-windows.yml) workflow, which builds the installer and portable zip and publishes them as a GitHub release. See [BUILD.md](BUILD.md) for building the rest of Kopia.
+
+About Kopia
+---
 
 Kopia is a fast and secure open-source backup/restore tool that allows you to create [encrypted](https://kopia.io/docs/features/#user-controlled-end-to-end-encryption) snapshots of your data and save the snapshots to [remote or cloud storage](https://kopia.io/docs/features/#save-snapshots-to-cloud-network-or-local-storage) of your choice, [to network-attached storage or server](https://kopia.io/docs/features/#save-snapshots-to-cloud-network-or-local-storage), or [locally on your machine](https://kopia.io/docs/features/#save-snapshots-to-cloud-network-or-local-storage). Kopia does not 'image' your whole machine. Rather, Kopia allows you to backup/restore any and all files/directories that you deem are important or critical.
 
