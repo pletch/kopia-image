@@ -20,6 +20,7 @@ import (
 	"github.com/coreos/go-systemd/v22/activation"
 	"github.com/pkg/errors"
 
+	"github.com/kopia/kopia/internal/certreload"
 	"github.com/kopia/kopia/internal/insecureserverbind"
 	"github.com/kopia/kopia/internal/tlsutil"
 )
@@ -130,11 +131,23 @@ func (c *commandServerStart) startServerWithOptionalTLSAndListener(ctx context.C
 
 	switch {
 	case c.serverStartTLSCertFile != "" && c.serverStartTLSKeyFile != "":
-		// PEM files provided
+		// PEM files provided, reloaded when they change on disk or on SIGHUP.
+		reloader, err := certreload.New(ctx, c.serverStartTLSCertFile, c.serverStartTLSKeyFile)
+		if err != nil {
+			return errors.Wrap(err, "unable to load TLS certificate")
+		}
+
+		onExternalConfigReloadRequest(reloader.Reload)
+
+		httpServer.TLSConfig = &tls.Config{
+			MinVersion:     tls.VersionTLS12,
+			GetCertificate: reloader.GetCertificate,
+		}
+
 		fmt.Fprintf(c.out.stderr(), "SERVER ADDRESS: %shttps://%v\n", udsPfx, httpServer.Addr) //nolint:errcheck
 		c.showServerUIPrompt(ctx)
 
-		return checkErrServerClosed(ctx, httpServer.ServeTLS(listener, c.serverStartTLSCertFile, c.serverStartTLSKeyFile), "error starting TLS server")
+		return checkErrServerClosed(ctx, httpServer.ServeTLS(listener, "", ""), "error starting TLS server")
 
 	case c.serverStartTLSGenerateCert:
 		// PEM files not provided, generate in-memory TLS cert/key but don't persist.
