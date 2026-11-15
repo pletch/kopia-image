@@ -28,6 +28,8 @@ const (
 	mountScriptQueryParam = "mount"
 	mountScriptWindows    = "windows"
 	mountScriptLinux      = "linux"
+
+	cmdEmptyLine = "echo."
 )
 
 type webdavBrowseEntry struct {
@@ -251,8 +253,8 @@ func netUseUserArg(user string) string {
 	return " /user:" + user
 }
 
-// windowsMountScript maps mountURL to the last free drive letter and opens it in Explorer.
-// 'net use' prompts for the password.
+// windowsMountScript maps mountURL to the last free drive letter, opens it in Explorer and
+// shows how to disconnect it. 'net use' prompts for the password.
 func windowsMountScript(mountURL, user string) string {
 	lines := []string{
 		"@echo off",
@@ -265,10 +267,16 @@ func windowsMountScript(mountURL, user string) string {
 		fmt.Sprintf(`net use %%DRIVE%% "%v"%v /persistent:no`, strings.ReplaceAll(mountURL, "%", "%%"), netUseUserArg(user)),
 		"if errorlevel 1 goto failed",
 		"start \"\" %DRIVE%\\",
+		cmdEmptyLine,
+		"echo The snapshot folder is mapped to %DRIVE% until you sign out.",
+		"echo To disconnect it, right-click the drive in Explorer and choose Disconnect, or run:",
+		"echo     net use %DRIVE% /delete",
+		cmdEmptyLine,
+		"pause",
 		"exit /b 0",
 		"",
 		":failed",
-		"echo.",
+		cmdEmptyLine,
 		"echo Mapping the drive failed. Check that:",
 		"echo  - the WebClient service is running, or start it as administrator: net start WebClient",
 		"echo  - this PC trusts the server's TLS certificate, and the URL uses the host name in it",
@@ -290,6 +298,7 @@ set -e
 url='%v'
 gio mount "$url" || true
 xdg-open "$url"
+echo "To unmount: gio mount -u '$url'"
 `, davURL)
 }
 

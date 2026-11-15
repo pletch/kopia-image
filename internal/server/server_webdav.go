@@ -51,7 +51,7 @@ func handleWebDAVRootOptions(w http.ResponseWriter, _ *http.Request) {
 
 func setWebDAVOptionsHeaders(w http.ResponseWriter) {
 	w.Header().Set("DAV", "1, 2")
-	w.Header().Set("MS-Author-Via", "DAV")
+	w.Header().Set("Ms-Author-Via", "DAV")
 	w.Header().Set("Allow", "OPTIONS, GET, HEAD, PROPFIND, LOCK, UNLOCK")
 }
 

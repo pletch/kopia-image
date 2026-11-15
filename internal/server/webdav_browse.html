@@ -59,14 +59,14 @@ td.time { white-space: nowrap; color: var(--muted); }
       <h3>Windows</h3>
       <a class="btn primary" href="{{.WindowsDownload}}">Download mount script (.cmd)</a>
       <div class="cmd"><code id="netuse">{{.NetUseCommand}}</code><button data-copy="netuse">Copy</button></div>
-      <p class="note">Run the script and enter your Kopia password; the folder opens as a drive letter. Or use Explorer &rarr; This PC &rarr; Map network drive with the URL above. Windows refuses files over 50&nbsp;MB unless the WebClient <code>FileSizeLimitInBytes</code> registry value is raised.</p>
+      <p class="note">Run the script and enter your Kopia password; the folder opens as a drive letter. Or use Explorer &rarr; This PC &rarr; Map network drive with the URL above. To disconnect, right-click the drive in Explorer and choose Disconnect, or run <code>net use Z: /delete</code> with its letter. Windows refuses files over 50&nbsp;MB unless the WebClient <code>FileSizeLimitInBytes</code> registry value is raised.</p>
     </div>
     <div>
       <h3>Linux</h3>
       <a class="btn primary" href="{{.LinuxDownload}}">Download mount script (.sh)</a>
       <div class="cmd"><code id="gio">{{.GioCommand}}</code><button data-copy="gio">Copy</button></div>
       <div class="cmd"><code id="fstab">{{.FstabLine}}</code><button data-copy="fstab">Copy</button></div>
-      <p class="note">Run <code>sh</code> on the script, or paste <code>{{.DavURL}}</code> into your file manager's location bar. The second line is an <code>/etc/fstab</code> entry for davfs2 (credentials go in <code>/etc/davfs2/secrets</code>).</p>
+      <p class="note">Run <code>sh</code> on the script, or paste <code>{{.DavURL}}</code> into your file manager's location bar. To unmount, eject it in the file manager or run <code>gio mount -u {{.DavURL}}</code>. The second line is an <code>/etc/fstab</code> entry for davfs2 (credentials go in <code>/etc/davfs2/secrets</code>).</p>
     </div>
   </div>
 </section>

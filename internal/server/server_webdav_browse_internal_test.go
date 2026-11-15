@@ -49,3 +49,11 @@ func Test_windowsMountScript_escapesPercent(t *testing.T) {
 
 	require.Contains(t, script, `net use %DRIVE% "https://h/webdav/all/a%%20b/" /user:kopia /persistent:no`)
 }
+
+func Test_windowsMountScript_showsDisconnect(t *testing.T) {
+	require.Contains(t, windowsMountScript("https://h/webdav/all/", "kopia"), "echo     net use %DRIVE% /delete")
+}
+
+func Test_linuxMountScript_showsUnmount(t *testing.T) {
+	require.Contains(t, linuxMountScript("davs://h/webdav/all/"), `echo "To unmount: gio mount -u '$url'"`)
+}
