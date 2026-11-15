@@ -19,6 +19,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	htpasswd "github.com/tg123/go-htpasswd"
 
+	"github.com/kopia/kopia/internal/acmecert"
 	"github.com/kopia/kopia/internal/auth"
 	"github.com/kopia/kopia/internal/insecureserverbind"
 	"github.com/kopia/kopia/internal/server"
@@ -64,6 +65,12 @@ type commandServerStart struct {
 	serverStartTLSGenerateCertValidDays int
 	serverStartTLSGenerateCertNames     []string
 	serverStartTLSPrintFullServerCert   bool
+	serverStartTLSACMEDomains           []string
+	serverStartTLSACMEDirectory         string
+	serverStartTLSACMECARoot            string
+	serverStartTLSACMEEmail             string
+	serverStartTLSACMEStorageDir        string
+	serverStartTLSACMEALPNPort          int
 	uiTitlePrefix                       string
 	uiPreferencesFile                   string
 	asyncRepoConnect                    bool
@@ -123,6 +130,13 @@ func (c *commandServerStart) setup(svc advancedAppServices, parent commandParent
 	cmd.Flag("tls-generate-cert-name", "Host names/IP addresses to generate TLS certificate for").Default("127.0.0.1").Hidden().StringsVar(&c.serverStartTLSGenerateCertNames)
 	cmd.Flag("tls-print-server-cert", "Print server certificate").Hidden().BoolVar(&c.serverStartTLSPrintFullServerCert)
 
+	cmd.Flag("tls-acme-domain", "Obtain and renew the TLS certificate for this domain from an ACME CA (repeatable)").StringsVar(&c.serverStartTLSACMEDomains)
+	cmd.Flag("tls-acme-directory", "ACME directory URL of the certificate authority").Default(acmecert.DefaultDirectoryURL).StringVar(&c.serverStartTLSACMEDirectory)
+	cmd.Flag("tls-acme-ca-root", "PEM file with additional root certificates to trust when connecting to the ACME server").StringVar(&c.serverStartTLSACMECARoot)
+	cmd.Flag("tls-acme-email", "Contact email for the ACME account").StringVar(&c.serverStartTLSACMEEmail)
+	cmd.Flag("tls-acme-storage-dir", "Directory for the ACME account, keys and certificates (default: 'acme' next to the config file)").StringVar(&c.serverStartTLSACMEStorageDir)
+	cmd.Flag("tls-acme-alpn-port", "Port to listen on for TLS-ALPN-01 challenges if not 443 (the CA validates on 443, so it must be forwarded)").IntVar(&c.serverStartTLSACMEALPNPort)
+
 	cmd.Flag("async-repo-connect", "Connect to repository asynchronously").Hidden().BoolVar(&c.asyncRepoConnect)
 	cmd.Flag("persistent-logs", "Persist logs in a file").Default(trueStr).BoolVar(&c.persistentLogs)
 	cmd.Flag("ui-title-prefix", "UI title prefix").Hidden().Envar(svc.EnvName("KOPIA_UI_TITLE_PREFIX")).StringVar(&c.uiTitlePrefix)
@@ -144,6 +158,10 @@ func (c *commandServerStart) setup(svc advancedAppServices, parent commandParent
 }
 
 func (c *commandServerStart) serverStartOptions(ctx context.Context) (*server.Options, error) {
+	if err := c.validateTLSFlags(); err != nil {
+		return nil, err
+	}
+
 	authn, err := c.getAuthenticator(ctx)
 	if err != nil {
 		return nil, errors.Wrap(err, "unable to initialize authentication")
@@ -258,15 +276,8 @@ func (c *commandServerStart) run(ctx context.Context) (reterr error) {
 		return nil
 	}
 
-	c.svc.onTerminate(func() {
-		shutdownHTTPServer(ctx, httpServer)
-	})
-
-	c.svc.onRepositoryFatalError(func(_ error) {
-		if serr := httpServer.Shutdown(ctx); serr != nil {
-			log(ctx).Debugf("unable to shut down: %v", serr)
-		}
-	})
+	serveCtx, cancelServe := c.registerShutdownHooks(ctx, httpServer)
+	defer cancelServe()
 
 	m := mux.NewRouter()
 
@@ -303,7 +314,27 @@ func (c *commandServerStart) run(ctx context.Context) (reterr error) {
 			jsonsender.NewJSONSender("NOTIFICATION: ", c.out.stderr(), notification.SeverityVerbose))
 	}
 
-	return c.startServerWithOptionalTLS(ctx, httpServer)
+	return c.startServerWithOptionalTLS(serveCtx, httpServer)
+}
+
+// registerShutdownHooks shuts down httpServer on termination or a fatal repository error.
+// The returned context is canceled on termination so that work done before the
+// HTTP server starts serving, such as obtaining a TLS certificate, can be interrupted.
+func (c *commandServerStart) registerShutdownHooks(ctx context.Context, httpServer *http.Server) (context.Context, context.CancelFunc) {
+	serveCtx, cancelServe := context.WithCancel(ctx)
+
+	c.svc.onTerminate(func() {
+		cancelServe()
+		shutdownHTTPServer(ctx, httpServer)
+	})
+
+	c.svc.onRepositoryFatalError(func(_ error) {
+		if serr := httpServer.Shutdown(ctx); serr != nil {
+			log(ctx).Debugf("unable to shut down: %v", serr)
+		}
+	})
+
+	return serveCtx, cancelServe
 }
 
 func shutdownHTTPServer(ctx context.Context, httpServer *http.Server) {

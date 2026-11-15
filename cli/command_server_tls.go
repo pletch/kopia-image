@@ -14,12 +14,14 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/coreos/go-systemd/v22/activation"
 	"github.com/pkg/errors"
 
+	"github.com/kopia/kopia/internal/acmecert"
 	"github.com/kopia/kopia/internal/certreload"
 	"github.com/kopia/kopia/internal/insecureserverbind"
 	"github.com/kopia/kopia/internal/tlsutil"
@@ -130,6 +132,27 @@ func (c *commandServerStart) startServerWithOptionalTLSAndListener(ctx context.C
 	}
 
 	switch {
+	case len(c.serverStartTLSACMEDomains) > 0:
+		// ctx is canceled on termination, which interrupts waiting for the CA.
+		m, err := acmecert.New(ctx, c.acmeOptions(), log(ctx).Desugar())
+		if err != nil {
+			if ctx.Err() != nil {
+				log(ctx).Info("terminated while waiting for the TLS certificate")
+				return nil
+			}
+
+			return errors.Wrap(err, "unable to set up ACME certificate management")
+		}
+
+		defer m.Close()
+
+		httpServer.TLSConfig = m.TLSConfig()
+
+		fmt.Fprintf(c.out.stderr(), "SERVER ADDRESS: %shttps://%v\n", udsPfx, httpServer.Addr) //nolint:errcheck
+		c.showServerUIPrompt(ctx)
+
+		return checkErrServerClosed(ctx, httpServer.ServeTLS(listener, "", ""), "error starting TLS server")
+
 	case c.serverStartTLSCertFile != "" && c.serverStartTLSKeyFile != "":
 		// PEM files provided, reloaded when they change on disk or on SIGHUP.
 		reloader, err := certreload.New(ctx, c.serverStartTLSCertFile, c.serverStartTLSKeyFile)
@@ -194,6 +217,40 @@ func (c *commandServerStart) startServerWithOptionalTLSAndListener(ctx context.C
 		c.showServerUIPrompt(ctx)
 
 		return checkErrServerClosed(ctx, httpServer.Serve(listener), "error starting server")
+	}
+}
+
+// validateTLSFlags rejects combinations of TLS flags that select more than one certificate source.
+func (c *commandServerStart) validateTLSFlags() error {
+	if len(c.serverStartTLSACMEDomains) == 0 {
+		return nil
+	}
+
+	switch {
+	case c.serverStartTLSCertFile != "" || c.serverStartTLSKeyFile != "":
+		return errors.New("--tls-acme-domain cannot be combined with --tls-cert-file or --tls-key-file")
+	case c.serverStartTLSGenerateCert:
+		return errors.New("--tls-acme-domain cannot be combined with --tls-generate-cert")
+	case c.serverStartInsecure:
+		return errors.New("--tls-acme-domain cannot be combined with --insecure")
+	}
+
+	return errors.Wrap(c.acmeOptions().Validate(), "invalid ACME flags")
+}
+
+func (c *commandServerStart) acmeOptions() acmecert.Options {
+	storageDir := c.serverStartTLSACMEStorageDir
+	if storageDir == "" {
+		storageDir = filepath.Join(filepath.Dir(c.svc.repositoryConfigFileName()), "acme")
+	}
+
+	return acmecert.Options{
+		Domains:        c.serverStartTLSACMEDomains,
+		DirectoryURL:   c.serverStartTLSACMEDirectory,
+		CARootFile:     c.serverStartTLSACMECARoot,
+		Email:          c.serverStartTLSACMEEmail,
+		StorageDir:     storageDir,
+		AltTLSALPNPort: c.serverStartTLSACMEALPNPort,
 	}
 }
 
