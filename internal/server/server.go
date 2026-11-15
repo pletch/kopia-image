@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/pkg/errors"
+	"golang.org/x/net/webdav"
 
 	"github.com/kopia/kopia/internal/auth"
 	"github.com/kopia/kopia/internal/clock"
@@ -104,6 +105,8 @@ type Server struct {
 	// +checklocks:serverMutex
 	mounts map[object.ID]mount.Controller
 
+	webdavLocks webdav.LockSystem
+
 	taskmgr              *uitask.Manager
 	authCookieSigningKey []byte
 
@@ -159,6 +162,10 @@ func (s *Server) SetupHTMLUIAPIHandlers(m *mux.Router) {
 	m.HandleFunc("/api/v1/mounts/{rootObjectID}", s.handleUI(handleMountDelete)).Methods(http.MethodDelete)
 	m.HandleFunc("/api/v1/mounts/{rootObjectID}", s.handleUI(handleMountGet)).Methods(http.MethodGet)
 	m.HandleFunc("/api/v1/mounts", s.handleUI(handleMountList)).Methods(http.MethodGet)
+
+	if s.options.WebDAVMounts {
+		s.setupWebDAVHandlers(m)
+	}
 
 	m.HandleFunc("/api/v1/current-user", s.handleUIPossiblyNotConnected(handleCurrentUser)).Methods(http.MethodGet)
 	m.HandleFunc("/api/v1/ui-preferences", s.handleUIPossiblyNotConnected(handleGetUIPreferences)).Methods(http.MethodGet)
@@ -964,6 +971,10 @@ type Options struct {
 	MinMaintenanceInterval   time.Duration
 	EnableErrorNotifications bool
 	NotifyTemplateOptions    notifytemplate.Options
+
+	// WebDAVMounts serves snapshots as read-only WebDAV under /webdav/ and makes mount requests
+	// return the WebDAV URL instead of mounting the snapshot on the server host.
+	WebDAVMounts bool
 }
 
 // InitRepositoryFunc is a function that attempts to connect to/open repository.
@@ -1242,6 +1253,7 @@ func New(ctx context.Context, options *Options) (*Server, error) {
 		authorizer:           options.Authorizer,
 		taskmgr:              uitask.NewManager(options.PersistentLogs),
 		mounts:               map[object.ID]mount.Controller{},
+		webdavLocks:          webdav.NewMemLS(),
 		authCookieSigningKey: []byte(options.AuthCookieSigningKey),
 		nextRefreshTime:      clock.Now().Add(options.RefreshInterval),
 		schedulerRefresh:     make(chan string, 1),

@@ -19,7 +19,7 @@ func handleMountCreate(ctx context.Context, rc requestContext) (any, *apiError) 
 		return nil, requestError(serverapi.ErrorMalformedRequest, "unable to parse OID")
 	}
 
-	c, err := rc.srv.getMountController(ctx, rc.rep, oid, true)
+	c, err := rc.srv.getMountController(ctx, rc.rep, oid, true, webdavShareURL(rc.req, oid))
 	if err != nil {
 		return nil, internalServerError(err)
 	}
@@ -38,7 +38,7 @@ func handleMountGet(ctx context.Context, rc requestContext) (any, *apiError) {
 		return nil, requestError(serverapi.ErrorMalformedRequest, "invalid root object ID")
 	}
 
-	c, err := rc.srv.getMountController(ctx, rc.rep, oid, false)
+	c, err := rc.srv.getMountController(ctx, rc.rep, oid, false, "")
 	if err != nil {
 		return nil, internalServerError(err)
 	}
@@ -59,7 +59,7 @@ func handleMountDelete(ctx context.Context, rc requestContext) (any, *apiError) 
 		return nil, requestError(serverapi.ErrorMalformedRequest, "invalid root object ID")
 	}
 
-	c, err := rc.srv.getMountController(ctx, rc.rep, oid, false)
+	c, err := rc.srv.getMountController(ctx, rc.rep, oid, false, "")
 	if err != nil {
 		return nil, internalServerError(err)
 	}

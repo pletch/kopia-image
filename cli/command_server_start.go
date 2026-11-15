@@ -87,6 +87,8 @@ type commandServerStart struct {
 
 	disableCSRFTokenChecks bool // disable CSRF token checks - used for development/debugging only
 
+	webdavMounts bool
+
 	sf  serverFlags
 	svc advancedAppServices
 	out textOutput
@@ -144,6 +146,7 @@ func (c *commandServerStart) setup(svc advancedAppServices, parent commandParent
 
 	cmd.Flag("log-server-requests", "Log server requests").Hidden().BoolVar(&c.logServerRequests)
 	cmd.Flag("disable-csrf-token-checks", "Disable CSRF token").Hidden().BoolVar(&c.disableCSRFTokenChecks)
+	cmd.Flag("webdav-mounts", "Serve snapshots as read-only WebDAV under /webdav/ and make UI mounts return the WebDAV URL instead of mounting on the server").BoolVar(&c.webdavMounts)
 
 	cmd.Flag("shutdown-grace-period", "Grace period for shutting down the server").Default("5s").DurationVar(&c.shutdownGracePeriod)
 
@@ -191,6 +194,7 @@ func (c *commandServerStart) serverStartOptions(ctx context.Context) (*server.Op
 		DebugScheduler:         c.debugScheduler,
 		MinMaintenanceInterval: c.minMaintenanceInterval,
 		DisableCSRFTokenChecks: c.disableCSRFTokenChecks,
+		WebDAVMounts:           c.webdavMounts,
 
 		EnableErrorNotifications: c.svc.enableErrorNotifications(),
 		NotifyTemplateOptions:    c.svc.notificationTemplateOptions(),
@@ -281,7 +285,7 @@ func (c *commandServerStart) run(ctx context.Context) (reterr error) {
 
 	m := mux.NewRouter()
 
-	c.setupHandlers(srv, m)
+	c.setupHandlers(ctx, srv, m)
 
 	// init prometheus after adding interceptors that require credentials, so that this
 	// handler can be called without auth
@@ -345,13 +349,17 @@ func shutdownHTTPServer(ctx context.Context, httpServer *http.Server) {
 	}
 }
 
-func (c *commandServerStart) setupHandlers(srv *server.Server, m *mux.Router) {
+func (c *commandServerStart) setupHandlers(ctx context.Context, srv *server.Server, m *mux.Router) {
 	if c.serverStartControlAPI {
 		srv.SetupControlAPIHandlers(m)
 	}
 
 	if c.serverStartUI {
 		srv.SetupHTMLUIAPIHandlers(m)
+
+		if c.webdavMounts {
+			log(ctx).Info("Serving snapshots over WebDAV at /webdav/all/")
+		}
 
 		if c.serverStartHTMLPath != "" {
 			srv.ServeStaticFiles(m, http.Dir(c.serverStartHTMLPath))

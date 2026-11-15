@@ -12,7 +12,10 @@ import (
 	"github.com/kopia/kopia/snapshot/snapshotfs"
 )
 
-func (s *Server) getMountController(ctx context.Context, rep repo.Repository, oid object.ID, createIfNotFound bool) (mount.Controller, error) {
+// getMountController returns the mount controller of the given snapshot directory, optionally creating it.
+// With WebDAV mounts enabled, a new controller is a WebDAV share at webdavURL; otherwise the directory
+// is mounted on the server host.
+func (s *Server) getMountController(ctx context.Context, rep repo.Repository, oid object.ID, createIfNotFound bool, webdavURL string) (mount.Controller, error) {
 	s.serverMutex.Lock()
 	defer s.serverMutex.Unlock()
 
@@ -23,6 +26,13 @@ func (s *Server) getMountController(ctx context.Context, rep repo.Repository, oi
 
 	if !createIfNotFound {
 		return nil, nil
+	}
+
+	if s.options.WebDAVMounts {
+		c = newWebDAVShare(webdavURL)
+		s.mounts[oid] = c
+
+		return c, nil
 	}
 
 	userLog(ctx).Debugf("mount controller for %v not found, starting", oid)
