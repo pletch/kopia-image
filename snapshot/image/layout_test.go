@@ -124,6 +124,16 @@ func TestLayout_Validate_invalid(t *testing.T) {
 	}
 }
 
+func TestLayout_CheckSupported(t *testing.T) {
+	require.NoError(t, testLayout().CheckSupported())
+
+	for _, typ := range []string{"5808c8aa-7e8f-42e0-85d2-e1e90434cfb3", "af9b60a0-1431-4f62-bc68-3311714a69ad", "e75caf8f-f680-4cee-afa3-b001e56efc2d"} {
+		l := testLayout()
+		l.Partitions[2].TypeGUID = typ
+		require.ErrorIs(t, l.CheckSupported(), ErrUnsupportedLayout)
+	}
+}
+
 func TestMetadata_jsonRoundTrip(t *testing.T) {
 	md := testMetadata(t)
 	require.NoError(t, md.Validate(testLayout()))

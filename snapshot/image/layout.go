@@ -73,6 +73,29 @@ func (p Partition) End() int64 {
 	return p.Offset + p.Length
 }
 
+// unsupportedPartitionTypes are GPT partition types of disks that image
+// creation refuses, because their volumes do not map to single partitions.
+var unsupportedPartitionTypes = map[string]string{
+	"5808c8aa-7e8f-42e0-85d2-e1e90434cfb3": "dynamic disk (LDM metadata)",
+	"af9b60a0-1431-4f62-bc68-3311714a69ad": "dynamic disk (LDM data)",
+	"e75caf8f-f680-4cee-afa3-b001e56efc2d": "Storage Spaces",
+}
+
+// ErrUnsupportedLayout is returned for disks that image creation refuses.
+var ErrUnsupportedLayout = errors.New("unsupported disk layout")
+
+// CheckSupported returns an error wrapping ErrUnsupportedLayout if the disk
+// is a dynamic disk or part of a Storage Spaces pool.
+func (l *Layout) CheckSupported() error {
+	for _, p := range l.Partitions {
+		if what, ok := unsupportedPartitionTypes[p.TypeGUID]; ok {
+			return errors.Wrapf(ErrUnsupportedLayout, "partition %v is %v", p.Number, what)
+		}
+	}
+
+	return nil
+}
+
 // Partition returns the partition with the given GPT entry number.
 func (l *Layout) Partition(number int) (Partition, bool) {
 	for _, p := range l.Partitions {
