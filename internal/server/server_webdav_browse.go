@@ -253,15 +253,18 @@ func netUseUserArg(user string) string {
 	return " /user:" + user
 }
 
-// windowsMountScript maps mountURL to the last free drive letter, opens it in Explorer and
-// shows how to disconnect it. 'net use' prompts for the password.
+// windowsMountScript maps mountURL to the last free drive letter, skipping remembered network
+// drives that are disconnected, opens it in Explorer and shows how to disconnect it.
+// 'net use' prompts for the password.
 func windowsMountScript(mountURL, user string) string {
 	lines := []string{
 		"@echo off",
 		"rem Maps a Kopia snapshot folder served over WebDAV to a drive letter.",
 		"setlocal",
 		"set DRIVE=",
-		"for %%L in (Z Y X W V U T S R Q P O N M L K J I H G F E D) do if not defined DRIVE if not exist %%L:\\ set DRIVE=%%L:",
+		// 'if exist' misses remembered network drives that are disconnected, but 'net use X:' finds them.
+		"rem Use the last letter that is neither an available drive nor a remembered network drive.",
+		"for %%L in (Z Y X W V U T S R Q P O N M L K J I H G F E D) do if not defined DRIVE if not exist %%L:\\ (net use %%L: >nul 2>&1 || set DRIVE=%%L:)",
 		"if not defined DRIVE (echo No free drive letter. & pause & exit /b 1)",
 		// '%' is the only character left in a strictly escaped URL that cmd.exe interprets.
 		fmt.Sprintf(`net use %%DRIVE%% "%v"%v /persistent:no`, strings.ReplaceAll(mountURL, "%", "%%"), netUseUserArg(user)),
@@ -280,6 +283,7 @@ func windowsMountScript(mountURL, user string) string {
 		"echo Mapping the drive failed. Check that:",
 		"echo  - the WebClient service is running, or start it as administrator: net start WebClient",
 		"echo  - this PC trusts the server's TLS certificate, and the URL uses the host name in it",
+		"echo  - System error 85 means another device, such as an empty card reader, already uses %DRIVE%",
 		"echo  - the user name and password are your Kopia server login",
 		"echo Windows also refuses files over 50 MB unless the WebClient FileSizeLimitInBytes registry value is raised.",
 		"pause",

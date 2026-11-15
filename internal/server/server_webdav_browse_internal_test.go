@@ -57,3 +57,8 @@ func Test_windowsMountScript_showsDisconnect(t *testing.T) {
 func Test_linuxMountScript_showsUnmount(t *testing.T) {
 	require.Contains(t, linuxMountScript("davs://h/webdav/all/"), `echo "To unmount: gio mount -u '$url'"`)
 }
+
+func Test_windowsMountScript_skipsRememberedNetworkDrives(t *testing.T) {
+	require.Contains(t, windowsMountScript("https://h/webdav/all/", "kopia"),
+		`if not exist %%L:\ (net use %%L: >nul 2>&1 || set DRIVE=%%L:)`)
+}
