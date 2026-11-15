@@ -116,11 +116,13 @@ The same releases include the `kopia` command-line tool for Linux (`kopia-<versi
 
 For Debian and Ubuntu on x64 there is also `kopia-wails_<version>_amd64.deb`, installed with `sudo apt install ./kopia-wails_<version>_amd64.deb`. It puts `kopia` in `/usr/bin` and replaces the upstream `kopia` package if that is installed. Because it has a different package name, an upstream Kopia apt repository will not silently switch you back; remove `kopia-wails` and install `kopia` to return to upstream.
 
-KopiaUI-Wails for Linux is `kopiaui-wails_<version>_amd64.deb`. It needs `kopia-wails` of the same version, so install both together:
+KopiaUI-Wails for Linux is `kopiaui-wails_<version>_amd64.deb`:
 
 ```sh
-sudo apt install ./kopia-wails_<version>_amd64.deb ./kopiaui-wails_<version>_amd64.deb
+sudo apt install ./kopiaui-wails_<version>_amd64.deb
 ```
+
+Like upstream KopiaUI, it includes its own copy of `kopia` (in `/usr/lib/kopiaui-wails/server/`), which it runs as its server, so it does not need `kopia-wails`. Install `kopia-wails` as well if you also want `kopia` in a terminal; the two packages do not conflict.
 
 It is built on Ubuntu 22.04 against GTK 3 and WebKitGTK 4.1, so it runs on Ubuntu 22.04 / Linux Mint 21 and newer and on Debian 12 and newer. Start it from the applications menu as "KopiaUI-Wails". Mounting a snapshot uses FUSE (the `fuse3` package). The tray icon needs a desktop that shows status notifier icons: KDE, Cinnamon and XFCE do, while GNOME needs the AppIndicator extension. Without a tray, starting KopiaUI-Wails again brings its window back.
 

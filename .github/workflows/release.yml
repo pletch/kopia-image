@@ -2,7 +2,7 @@ name: Release
 # Builds this fork's release files:
 #   - Windows: kopia.exe, KopiaUI-Wails.exe, the NSIS installer and a portable zip
 #   - Linux:   the kopia CLI for x64 and arm64 as .tar.gz, plus an amd64 .deb,
-#              and KopiaUI-Wails as an amd64 .deb (kopiaui-wails)
+#              and KopiaUI-Wails, with its own kopia, as an amd64 .deb (kopiaui-wails)
 #
 # - Pushing a tag v* publishes a GitHub release with all files and checksums.txt.
 # - Running the workflow manually builds the same files as workflow artifacts
@@ -169,7 +169,9 @@ jobs:
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: 'go.mod'
-        cache-dependency-path: app-wails/go.sum
+        cache-dependency-path: |
+          go.sum
+          app-wails/go.sum
     - name: Install GTK and WebKitGTK headers
       run: |
         sudo apt-get update

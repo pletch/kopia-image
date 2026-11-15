@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds KopiaUI-Wails for Linux and packages it as a .deb.
+# Builds KopiaUI-Wails for Linux and packages it, with its own kopia, as a .deb.
 #
 # Usage (in app-wails/):
 #   ./build-linux-deb.sh
@@ -9,10 +9,17 @@
 # The binary links against the system GTK, so build on the oldest distribution
 # the package should support; CI builds on Ubuntu 22.04 (Linux Mint 21).
 #
+# Like upstream KopiaUI, the package carries a private kopia that the app runs as
+# its server, so it does not depend on the kopia-wails (CLI) package and does not
+# clash with it:
+#   /usr/lib/kopiaui-wails/kopiaui-wails   the app
+#   /usr/lib/kopiaui-wails/server/kopia    its kopia (found next to the app)
+#   /usr/bin/kopiaui-wails                 symlink to the app
+#
 # Environment:
-#   VERSION  package version (default: <yyyymmdd>.0.0-<commit>); CI sets it from
-#            the release tag. The package depends on kopia-wails of the same
-#            version, which provides /usr/bin/kopia.
+#   VERSION    package version (default: <yyyymmdd>.0.0-<commit>); CI sets it from
+#              the release tag
+#   KOPIA_BIN  kopia binary to bundle (default: built from this repository)
 #
 # Output: ../dist/kopiaui-wails_<version>_<arch>.deb
 set -euo pipefail
@@ -24,10 +31,11 @@ DIST=../dist
 PKG=kopiaui-wails
 APP_ID=io.kopia.KopiaUIWails # must match linuxApplicationID in main.go
 ARCH=$(dpkg --print-architecture)
+LIBDIR=usr/lib/$PKG
 
 if [ -z "${VERSION:-}" ]; then
   COMMIT=$(git rev-parse --short=8 HEAD)
-  if ! git diff --quiet HEAD -- . 2>/dev/null; then
+  if ! git diff --quiet HEAD -- .. 2>/dev/null; then
     COMMIT="$COMMIT-dirty"
   fi
   VERSION="$(date +%Y%m%d).0.0-$COMMIT"
@@ -40,7 +48,21 @@ rm -rf "$ROOT"
 
 CGO_ENABLED=1 go build -tags gtk3 -trimpath \
   -ldflags "-s -w -X main.buildVersion=$VERSION" \
-  -o "$ROOT/usr/bin/kopiaui-wails" .
+  -o "$ROOT/$LIBDIR/kopiaui-wails" .
+
+if [ -n "${KOPIA_BIN:-}" ]; then
+  install -Dm755 "$KOPIA_BIN" "$ROOT/$LIBDIR/server/kopia"
+else
+  # same flags as the kopia CLI built by the release workflow
+  (cd .. && CGO_ENABLED=0 go build -trimpath \
+    -ldflags "-s -w -X github.com/kopia/kopia/repo.BuildVersion=$VERSION -X github.com/kopia/kopia/repo.BuildInfo=${GITHUB_SHA:-$(git rev-parse HEAD)} -X github.com/kopia/kopia/repo.BuildGitHubRepo=${GITHUB_REPOSITORY:-pletch/kopia-wailsUI}" \
+    -o "app-wails/$ROOT/$LIBDIR/server/kopia" github.com/kopia/kopia)
+fi
+
+"$ROOT/$LIBDIR/server/kopia" --version
+
+install -d "$ROOT/usr/bin"
+ln -s "../lib/$PKG/kopiaui-wails" "$ROOT/usr/bin/kopiaui-wails"
 
 install -Dm644 icons/app.png "$ROOT/usr/share/icons/hicolor/256x256/apps/$APP_ID.png"
 install -Dm644 ../LICENSE "$ROOT/usr/share/doc/$PKG/copyright"
@@ -67,15 +89,16 @@ Version: $VERSION
 Architecture: $ARCH
 Maintainer: ${GITHUB_REPOSITORY_OWNER:-kopia-wailsUI} <${GITHUB_REPOSITORY_OWNER:-kopia-wailsUI}@users.noreply.github.com>
 Installed-Size: $(du -sk "$ROOT/usr" | cut -f1)
-Depends: kopia-wails (= $VERSION), libgtk-3-0t64 | libgtk-3-0, libwebkit2gtk-4.1-0
+Depends: libgtk-3-0t64 | libgtk-3-0, libwebkit2gtk-4.1-0
 Recommends: fuse3
 Section: utils
 Priority: optional
 Homepage: https://github.com/${GITHUB_REPOSITORY:-pletch/kopia-wailsUI}
 Description: KopiaUI built with Wails (personal fork)
  Desktop shell for Kopia with a tray icon, notifications and repository
- windows, built from a personal fork of kopia/kopia. It runs the kopia
- server from the kopia-wails package.
+ windows, built from a personal fork of kopia/kopia. It includes its own
+ kopia, which it runs as its server; install kopia-wails as well to use
+ kopia from a terminal.
 EOF
 
 DEB="$DIST/${PKG}_${VERSION}_${ARCH}.deb"
