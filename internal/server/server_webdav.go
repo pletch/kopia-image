@@ -79,7 +79,13 @@ func (s *Server) handleWebDAV(ctx context.Context, rc requestContext) {
 
 	switch share {
 	case "":
+		if wantsWebDAVBrowsePage(rc.req) {
+			serveWebDAVSharesPage(rc.w, rc.req)
+			return
+		}
+
 		http.Error(rc.w, "Specify a share, such as "+webdavPathPrefix+webdavAllSourcesShare+"/\n", http.StatusNotFound)
+
 		return
 
 	case webdavAllSourcesShare:
@@ -95,9 +101,16 @@ func (s *Server) handleWebDAV(ctx context.Context, rc requestContext) {
 		entry = snapshotfs.DirectoryEntry(rc.rep, oid, nil)
 	}
 
+	prefix := webdavPathPrefix + share
+	fsys := webdavmount.WebDAVFS(entry)
+
+	if wantsWebDAVBrowsePage(rc.req) && serveWebDAVBrowsePage(ctx, rc.w, rc.req, prefix, fsys) {
+		return
+	}
+
 	h := &webdav.Handler{
-		Prefix:     webdavPathPrefix + share,
-		FileSystem: webdavmount.WebDAVFS(entry),
+		Prefix:     prefix,
+		FileSystem: fsys,
 		LockSystem: s.webdavLocks,
 	}
 
@@ -107,12 +120,7 @@ func (s *Server) handleWebDAV(ctx context.Context, rc requestContext) {
 // webdavShareURL returns the URL under which the server exposes the given snapshot directory,
 // using the scheme and host the client used to reach the server.
 func webdavShareURL(r *http.Request, oid object.ID) string {
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-
-	return scheme + "://" + r.Host + webdavPathPrefix + oid.String() + "/"
+	return requestScheme(r) + "://" + r.Host + webdavPathPrefix + oid.String() + "/"
 }
 
 // webdavShare is the mount controller of a snapshot that the server exposes over WebDAV.

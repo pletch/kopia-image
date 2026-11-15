@@ -5,6 +5,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -186,4 +187,68 @@ func TestWebDAVMounts_Disabled(t *testing.T) {
 	status, body := uiWebDAVRequest(t, "PROPFIND", srvInfo.BaseURL+"/webdav/"+rootOID.String()+"/", nil)
 	require.NotEqual(t, http.StatusMultiStatus, status)
 	require.NotContains(t, body, "file1", "snapshot contents must not be served")
+}
+
+func TestWebDAVMounts_BrowsePage(t *testing.T) {
+	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
+	_, rootOID := mustCreateWebDAVTestSnapshot(t, ctx, env)
+
+	srvInfo := servertesting.StartServerContextWithOptions(ctx, t, env, servertesting.StartServerOptions{WebDAVMounts: true})
+	shareURL := srvInfo.BaseURL + "/webdav/" + rootOID.String() + "/"
+	acceptHTML := http.Header{"Accept": {"text/html,application/xhtml+xml"}}
+
+	t.Run("FolderListing", func(t *testing.T) {
+		status, body := uiWebDAVRequest(t, http.MethodGet, shareURL, acceptHTML)
+		require.Equal(t, http.StatusOK, status)
+		require.Contains(t, body, "Mount this folder")
+		require.Contains(t, body, `href="dir1/"`)
+		require.Contains(t, body, `href="file1"`)
+		require.Contains(t, body, `net use * &#34;`+shareURL+`&#34; /user:`+servertesting.TestUIUsername)
+	})
+
+	t.Run("FolderWithoutSlashRedirects", func(t *testing.T) {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, strings.TrimSuffix(shareURL, "/"), http.NoBody)
+		require.NoError(t, err)
+
+		req.Header = acceptHTML
+		req.SetBasicAuth(servertesting.TestUIUsername, servertesting.TestUIPassword)
+
+		client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+
+		resp, err := client.Do(req)
+		require.NoError(t, err)
+		resp.Body.Close()
+
+		require.Equal(t, http.StatusMovedPermanently, resp.StatusCode)
+		require.Equal(t, "/webdav/"+rootOID.String()+"/", resp.Header.Get("Location"))
+	})
+
+	t.Run("FileIsServedNotListed", func(t *testing.T) {
+		status, body := uiWebDAVRequest(t, http.MethodGet, shareURL+"file1", acceptHTML)
+		require.Equal(t, http.StatusOK, status)
+		require.Equal(t, string([]byte{1, 2, 3}), body)
+	})
+
+	t.Run("SharesPage", func(t *testing.T) {
+		status, body := uiWebDAVRequest(t, http.MethodGet, srvInfo.BaseURL+"/webdav/", acceptHTML)
+		require.Equal(t, http.StatusOK, status)
+		require.Contains(t, body, `href="all/"`)
+	})
+
+	t.Run("WindowsScript", func(t *testing.T) {
+		status, body := uiWebDAVRequest(t, http.MethodGet, shareURL+"dir1/?mount=windows", nil)
+		require.Equal(t, http.StatusOK, status)
+		require.Contains(t, body, `net use %DRIVE% "`+shareURL+`dir1/" /user:`+servertesting.TestUIUsername+` /persistent:no`)
+	})
+
+	t.Run("LinuxScript", func(t *testing.T) {
+		status, body := uiWebDAVRequest(t, http.MethodGet, shareURL+"dir1/?mount=linux", nil)
+		require.Equal(t, http.StatusOK, status)
+		require.Contains(t, body, "url='dav"+strings.TrimPrefix(shareURL, "http")+"dir1/'")
+	})
+
+	t.Run("UnknownScript", func(t *testing.T) {
+		status, _ := uiWebDAVRequest(t, http.MethodGet, shareURL+"?mount=mac", nil)
+		require.Equal(t, http.StatusBadRequest, status)
+	})
 }

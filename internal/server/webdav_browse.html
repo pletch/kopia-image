@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kopia Snapshot Browser</title>
+<style>
+:root {
+  --bg: #ffffff; --fg: #1f2328; --muted: #656d76; --border: #d0d7de;
+  --panel: #f6f8fa; --accent: #0969da; --code: #eff1f3;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117; --fg: #e6edf3; --muted: #8d96a0; --border: #30363d;
+    --panel: #161b22; --accent: #4493f8; --code: #1f242c;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1000px; margin: 0 auto; padding: 24px 16px 48px; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.crumbs { color: var(--muted); margin-bottom: 20px; overflow-wrap: anywhere; }
+.crumbs a, .crumbs span { margin-right: 4px; }
+.mount { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 24px; }
+.mount h2 { font-size: 15px; margin: 0 0 12px; }
+.os { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.os h3 { font-size: 13px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.cmd { display: flex; gap: 6px; margin-bottom: 8px; }
+.cmd code { flex: 1; min-width: 0; background: var(--code); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-x: auto; white-space: nowrap; }
+button, .btn { font: inherit; font-size: 13px; color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; cursor: pointer; white-space: nowrap; }
+.btn { display: inline-block; margin-bottom: 8px; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn:hover { text-decoration: none; }
+.note { color: var(--muted); font-size: 12px; margin: 4px 0 0; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+th { color: var(--muted); font-weight: 600; font-size: 12px; }
+td.name { overflow-wrap: anywhere; }
+td.size, th.size { text-align: right; white-space: nowrap; }
+td.time { white-space: nowrap; color: var(--muted); }
+.empty { color: var(--muted); padding: 16px 8px; }
+@media (max-width: 600px) { td.time, th.time { display: none; } }
+</style>
+</head>
+<body>
+<main>
+<h1>Kopia Snapshot Browser</h1>
+<div class="crumbs">
+  {{- range $i, $c := .Crumbs}}{{if $i}}<span>/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end -}}
+</div>
+
+<section class="mount">
+  <h2>Mount this folder</h2>
+  <div class="cmd"><code id="url">{{.MountURL}}</code><button data-copy="url">Copy URL</button></div>
+  <div class="os">
+    <div>
+      <h3>Windows</h3>
+      <a class="btn primary" href="{{.WindowsDownload}}">Download mount script (.cmd)</a>
+      <div class="cmd"><code id="netuse">{{.NetUseCommand}}</code><button data-copy="netuse">Copy</button></div>
+      <p class="note">Run the script and enter your Kopia password; the folder opens as a drive letter. Or use Explorer &rarr; This PC &rarr; Map network drive with the URL above. Windows refuses files over 50&nbsp;MB unless the WebClient <code>FileSizeLimitInBytes</code> registry value is raised.</p>
+    </div>
+    <div>
+      <h3>Linux</h3>
+      <a class="btn primary" href="{{.LinuxDownload}}">Download mount script (.sh)</a>
+      <div class="cmd"><code id="gio">{{.GioCommand}}</code><button data-copy="gio">Copy</button></div>
+      <div class="cmd"><code id="fstab">{{.FstabLine}}</code><button data-copy="fstab">Copy</button></div>
+      <p class="note">Run <code>sh</code> on the script, or paste <code>{{.DavURL}}</code> into your file manager's location bar. The second line is an <code>/etc/fstab</code> entry for davfs2 (credentials go in <code>/etc/davfs2/secrets</code>).</p>
+    </div>
+  </div>
+</section>
+
+<table>
+  <thead><tr><th>Name</th><th class="size">Size</th><th class="time">Modified</th></tr></thead>
+  <tbody>
+  {{- if ne .Path "/webdav/"}}
+  <tr><td class="name"><a href="../">../</a></td><td class="size"></td><td class="time"></td></tr>
+  {{- end}}
+  {{- range .Entries}}
+  <tr>
+    <td class="name"><a href="{{.Href}}">{{.Name}}{{if .IsDir}}/{{end}}</a></td>
+    <td class="size">{{if not .IsDir}}<span data-bytes="{{.Size}}">{{.Size}}</span>{{end}}</td>
+    <td class="time">{{if not .ModTime.IsZero}}{{.ModTime.Format "2006-01-02 15:04:05 MST"}}{{end}}</td>
+  </tr>
+  {{- else}}
+  <tr><td class="empty" colspan="3">This folder is empty.</td></tr>
+  {{- end}}
+  </tbody>
+</table>
+</main>
+<script>
+document.querySelectorAll("button[data-copy]").forEach(function (b) {
+  b.addEventListener("click", function () {
+    var text = document.getElementById(b.dataset.copy).textContent;
+    var label = b.textContent;
+    navigator.clipboard.writeText(text).then(function () {
+      b.textContent = "Copied";
+      setTimeout(function () { b.textContent = label; }, 1500);
+    });
+  });
+});
+document.querySelectorAll("[data-bytes]").forEach(function (e) {
+  var n = Number(e.dataset.bytes), units = ["B", "KB", "MB", "GB", "TB"], i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  e.textContent = (i ? n.toFixed(1) : n) + " " + units[i];
+});
+</script>
+</body>
+</html>
