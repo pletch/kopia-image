@@ -12,13 +12,13 @@ What this fork adds
 
 ### A lighter KopiaUI built with Wails
 
-The [`app-wails/`](app-wails) directory is a replacement for the Electron-based KopiaUI shell, built with [Wails v3](https://v3.wails.io/) and the WebView2 runtime that ships with Windows. It runs the same `kopia server` and the same web UI, with:
+The [`app-wails/`](app-wails) directory is a replacement for the Electron-based KopiaUI shell, built with [Wails v3](https://v3.wails.io/). It uses the WebView2 runtime that ships with Windows, or WebKitGTK on Linux, and runs the same `kopia server` and the same web UI, with:
 
-* a tray icon that starts the bundled `kopia.exe` server and opens repository windows
-* native Windows toast notifications, including more detailed notices for failed snapshots
+* a tray icon that starts the `kopia` server and opens repository windows
+* native desktop notifications (Windows toasts, or the freedesktop notification service on Linux), including more detailed notices for failed snapshots
 * remembered window size and position
 * an error page when the server fails to start, instead of a blank window
-* a small per-user NSIS installer (no administrator rights needed) that shares the repository configuration in `%APPDATA%\kopia` with upstream KopiaUI and the CLI
+* a small per-user NSIS installer on Windows (no administrator rights needed), and a `.deb` on Linux; both share the repository configuration (`%APPDATA%\kopia` or `~/.config/kopia`) with upstream KopiaUI and the CLI
 
 **It uses less memory in most scenarios.** Closing the window shuts WebView2 down completely, whereas Electron keeps its main, GPU and helper processes running. Measured on Windows 11 (private memory, UI shell only; the `kopia.exe` server adds about 140 MB to both):
 
@@ -116,7 +116,15 @@ The same releases include the `kopia` command-line tool for Linux (`kopia-<versi
 
 For Debian and Ubuntu on x64 there is also `kopia-wails_<version>_amd64.deb`, installed with `sudo apt install ./kopia-wails_<version>_amd64.deb`. It puts `kopia` in `/usr/bin` and replaces the upstream `kopia` package if that is installed. Because it has a different package name, an upstream Kopia apt repository will not silently switch you back; remove `kopia-wails` and install `kopia` to return to upstream.
 
-There are no macOS builds, Linux KopiaUI builds, rpm packages or Docker images.
+KopiaUI-Wails for Linux is `kopiaui-wails_<version>_amd64.deb`. It needs `kopia-wails` of the same version, so install both together:
+
+```sh
+sudo apt install ./kopia-wails_<version>_amd64.deb ./kopiaui-wails_<version>_amd64.deb
+```
+
+It is built on Ubuntu 22.04 against GTK 3 and WebKitGTK 4.1, so it runs on Ubuntu 22.04 / Linux Mint 21 and newer and on Debian 12 and newer. Start it from the applications menu as "KopiaUI-Wails". Mounting a snapshot uses FUSE (the `fuse3` package). The tray icon needs a desktop that shows status notifier icons: KDE, Cinnamon and XFCE do, while GNOME needs the AppIndicator extension. Without a tray, starting KopiaUI-Wails again brings its window back.
+
+There are no macOS builds, rpm packages or Docker images.
 
 Building
 ---
@@ -128,7 +136,15 @@ go build -o dist/kopia_windows_amd64/kopia.exe github.com/kopia/kopia
 app-wails/build-installer.sh
 ```
 
-Pushing a `v<upstream version>-wails.<n>` tag runs the [Release](.github/workflows/release.yml) workflow, which builds the Windows installer and portable zip, the Linux CLI archives and the amd64 `.deb`, and publishes them as a GitHub release. See [BUILD.md](BUILD.md) for building the rest of Kopia.
+On Linux with Go, a C compiler and the GTK 3 / WebKitGTK 4.1 headers (`sudo apt install build-essential libgtk-3-dev libwebkit2gtk-4.1-dev`):
+
+```sh
+app-wails/build-linux-deb.sh   # dist/kopiaui-wails_<version>_amd64.deb
+```
+
+To run it from the source tree instead, build with `go build -tags gtk3` in `app-wails/`. Without the tag, Wails builds against GTK 4 and WebKitGTK 6.0.
+
+Pushing a `v<upstream version>-wails.<n>` tag runs the [Release](.github/workflows/release.yml) workflow, which builds the Windows installer and portable zip, the Linux CLI archives, and the `kopia-wails` and `kopiaui-wails` amd64 `.deb` packages, and publishes them as a GitHub release. See [BUILD.md](BUILD.md) for building the rest of Kopia.
 
 About Kopia
 ---

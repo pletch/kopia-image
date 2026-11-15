@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -543,9 +544,10 @@ func (s *repoServer) pollOnce() {
 	}
 }
 
-// defaultKopiaPath finds kopia.exe: next to this executable (installed layout),
-// in a "server" subdirectory (KopiaUI layout), or in the repository's dist
-// directory when running from a source checkout.
+// defaultKopiaPath finds the kopia executable: next to this executable (installed
+// layout, including /usr/bin on Linux), in a "server" subdirectory (KopiaUI layout),
+// in the repository's dist directory when running from a source checkout, and
+// finally on PATH.
 func defaultKopiaPath() string {
 	name := "kopia"
 	if isWindows {
@@ -556,6 +558,9 @@ func defaultKopiaPath() string {
 		return p
 	}
 
+	// the directory the Makefile and release workflow build kopia into, e.g. kopia_linux_amd64
+	distDir := "kopia_" + runtime.GOOS + "_" + runtime.GOARCH
+
 	var candidates []string
 
 	if exe, err := os.Executable(); err == nil {
@@ -563,8 +568,8 @@ func defaultKopiaPath() string {
 		candidates = append(candidates,
 			filepath.Join(dir, name),
 			filepath.Join(dir, "server", name),
-			filepath.Join(dir, "..", "dist", "kopia_windows_amd64", name),
-			filepath.Join(dir, "..", "..", "dist", "kopia_windows_amd64", name),
+			filepath.Join(dir, "..", "dist", distDir, name),
+			filepath.Join(dir, "..", "..", "dist", distDir, name),
 		)
 	}
 

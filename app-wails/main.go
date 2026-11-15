@@ -33,6 +33,11 @@ const (
 	appName          = "KopiaUI Wails"
 	windowTitle      = "KopiaUI-Wails"
 	singleInstanceID = "io.kopia.kopiaui-wails"
+
+	// linuxApplicationID is the GTK application id. It names the .desktop file
+	// installed by the Linux package, which is how desktops find the window's icon.
+	// It must differ from singleInstanceID, which is a D-Bus name of its own.
+	linuxApplicationID = "io.kopia.KopiaUIWails"
 	logFileName      = "kopiaui-wails.log"
 
 	// quitArg asks a running instance to quit; used by the installer.
@@ -60,11 +65,24 @@ var trayIconICO []byte
 //go:embed icons/kopia-tray.png
 var trayIconPNG []byte
 
-// appIconICO is the window icon. Wails looks for an icon resource (ID 3) in the
-// executable first and falls back to Options.Icon when there is none.
+// appIconICO is the window icon on Windows. Wails looks for an icon resource (ID 3)
+// in the executable first and falls back to Options.Icon when there is none.
 //
 //go:embed icons/app.ico
 var appIconICO []byte
+
+// appIconPNG is the window icon elsewhere (the 256x256 image from app.ico).
+//
+//go:embed icons/app.png
+var appIconPNG []byte
+
+func appIcon() []byte {
+	if isWindows {
+		return appIconICO
+	}
+
+	return appIconPNG
+}
 
 // shell holds the application state shared by the tray, windows and servers.
 type shell struct {
@@ -123,7 +141,7 @@ func run() error {
 	s.app = application.New(application.Options{
 		Name:        appName,
 		Description: "KopiaUI-Wails backup UI",
-		Icon:        appIconICO,
+		Icon:        appIcon(),
 		Logger:      logger,
 		LogLevel:    slog.LevelInfo,
 		Services:    []application.Service{application.NewService(s.notifier)},
@@ -136,6 +154,7 @@ func run() error {
 		},
 		Linux: application.LinuxOptions{
 			DisableQuitOnLastWindowClosed: true,
+			ApplicationID:                 linuxApplicationID,
 		},
 		Mac: application.MacOptions{
 			ActivationPolicy: application.ActivationPolicyAccessory,
