@@ -55,10 +55,55 @@ This fork carries the following open pull requests from [kopia/kopia](https://gi
 | [#5785](https://github.com/kopia/kopia/pull/5785) | Do not reschedule a snapshot that is waiting for an upload slot |
 | [#5797](https://github.com/kopia/kopia/pull/5797) | Skip unrelated filesystem blob metadata reads |
 
+### Repository server features
+
+These are for running `kopia server start` as a shared repository server, for example on a home server that other machines back up to.
+
+#### Snapshots served over WebDAV (`--webdav-mounts`)
+
+In upstream Kopia, "Mount as Local Filesystem" in the web UI mounts the snapshot on the server's own machine, which is no use when you browse the UI from another computer. With `--webdav-mounts`, the server instead shares snapshots as read-only WebDAV on its own HTTPS port, protected by the web UI login:
+
+* `https://<server>:51515/webdav/all/` is every snapshot of every source, arranged as `user@host/<path>/<snapshot time>/`. Map it once as a drive, or put it in fstab.
+* `https://<server>:51515/webdav/<snapshot root ID>/` is a single snapshot. The web UI's mount button now shows this URL, ready to copy, and nothing is mounted on the server.
+* Opening any `/webdav/` folder in a browser lists its contents and offers commands and downloadable scripts that mount that folder: a `.cmd` that maps it to a free drive letter on Windows, and a `.sh` that mounts it with GVfs on Linux.
+
+Mounting by hand:
+
+```
+:: Windows (cmd), prompts for the web UI password
+net use Z: "https://kopia.example:51515/webdav/all/" /user:kopia /persistent:no
+
+# Linux with GVfs (GNOME Files, Nemo, Caja, Thunar)
+gio mount davs://kopia.example:51515/webdav/all/
+
+# Linux with davfs2, in /etc/fstab (credentials go in /etc/davfs2/secrets)
+https://kopia.example:51515/webdav/all/ /mnt/kopia davfs ro,user,noauto,_netdev 0 0
+```
+
+Windows only connects over HTTPS to a server whose certificate it trusts, and by default the WebDAV client refuses to open files larger than 50 MB. To raise that limit, set `HKLM\SYSTEM\CurrentControlSet\Services\WebClient\Parameters\FileSizeLimitInBytes` to `0xFFFFFFFF` and restart the WebClient service. Only the web UI user can use the WebDAV shares; repository users (`user@host`) cannot.
+
+#### Built-in ACME certificates (`--tls-acme-domain`)
+
+The server can obtain and renew its own TLS certificate from an ACME certificate authority, either Let's Encrypt (the default) or a private CA such as step-ca. It uses the TLS-ALPN-01 challenge, so the CA must be able to reach the server on port 443. Grant the binary `CAP_NET_BIND_SERVICE`, or forward port 443 and set `--tls-acme-alpn-port`.
+
+```
+kopia server start --address 0.0.0.0:51515 \
+  --tls-acme-domain kopia.example \
+  --tls-acme-directory https://ca.example/acme/acme/directory \
+  --tls-acme-ca-root /usr/local/share/ca-certificates/my-root-ca.crt
+```
+
+`--tls-acme-domain` can be repeated. Accounts, keys and certificates are stored in `acme` next to the config file unless `--tls-acme-storage-dir` is set, and `--tls-acme-email` sets the account contact.
+
+#### Certificate file reload
+
+When the server uses `--tls-cert-file` and `--tls-key-file`, it picks up renewed files within 10 seconds, or straight away on `SIGHUP`, without restarting. An external tool such as certbot or lego can therefore renew the certificate without interrupting backups.
+
 ### Other personal changes
 
 * **Reconnect after sleep:** fixes a gRPC `readLoop` deadlock and reconnects to a repository server cleanly after Windows resumes from sleep.
 * **Better failed-snapshot notifications** in the Electron KopiaUI as well (see [app/NOTIFICATIONS.md](app/NOTIFICATIONS.md)).
+* **Named snapshot drives on Windows:** a snapshot mounted as a drive letter, from KopiaUI or `kopia mount`, appears in Explorer under its source and snapshot time (or "Kopia - All Snapshots") instead of "DavWWWRoot".
 
 Installing
 ---
@@ -83,7 +128,7 @@ go build -o dist/kopia_windows_amd64/kopia.exe github.com/kopia/kopia
 app-wails/build-installer.sh
 ```
 
-Pushing a `v<upstream version>-wails.<n>` tag runs the [Release](.github/workflows/release.yml) workflow, which builds the Windows installer and portable zip and the Linux CLI archives and publishes them as a GitHub release. See [BUILD.md](BUILD.md) for building the rest of Kopia.
+Pushing a `v<upstream version>-wails.<n>` tag runs the [Release](.github/workflows/release.yml) workflow, which builds the Windows installer and portable zip, the Linux CLI archives and the amd64 `.deb`, and publishes them as a GitHub release. See [BUILD.md](BUILD.md) for building the rest of Kopia.
 
 About Kopia
 ---
