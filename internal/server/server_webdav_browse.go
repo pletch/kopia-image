@@ -263,8 +263,19 @@ func windowsMountScript(mountURL, user string) string {
 		"if not defined DRIVE (echo No free drive letter. & pause & exit /b 1)",
 		// '%' is the only character left in a strictly escaped URL that cmd.exe interprets.
 		fmt.Sprintf(`net use %%DRIVE%% "%v"%v /persistent:no`, strings.ReplaceAll(mountURL, "%", "%%"), netUseUserArg(user)),
-		"if errorlevel 1 (pause & exit /b 1)",
+		"if errorlevel 1 goto failed",
 		"start \"\" %DRIVE%\\",
+		"exit /b 0",
+		"",
+		":failed",
+		"echo.",
+		"echo Mapping the drive failed. Check that:",
+		"echo  - the WebClient service is running, or start it as administrator: net start WebClient",
+		"echo  - this PC trusts the server's TLS certificate, and the URL uses the host name in it",
+		"echo  - the user name and password are your Kopia server login",
+		"echo Windows also refuses files over 50 MB unless the WebClient FileSizeLimitInBytes registry value is raised.",
+		"pause",
+		"exit /b 1",
 		"",
 	}
 
