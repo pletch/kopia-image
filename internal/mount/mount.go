@@ -25,4 +25,7 @@ type Options struct {
 	FuseAllowNonEmptyMount bool
 	// Use WebDAV even on platforms that support FUSE.
 	PreferWebDAV bool
+	// DriveLabel is the name Explorer shows for the mapped drive. Supported only on Windows,
+	// where it defaults to "Kopia Snapshot".
+	DriveLabel string
 }

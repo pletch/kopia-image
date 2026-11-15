@@ -14,7 +14,7 @@ import (
 )
 
 // Directory mounts a given directory under a provided drive letter.
-func Directory(ctx context.Context, entry fs.Directory, driveLetter string, _ Options) (Controller, error) {
+func Directory(ctx context.Context, entry fs.Directory, driveLetter string, opts Options) (Controller, error) {
 	if !isValidWindowsDriveOrAsterisk(driveLetter) {
 		return nil, errors.New("must be a valid drive letter or asterisk")
 	}
@@ -24,8 +24,17 @@ func Directory(ctx context.Context, entry fs.Directory, driveLetter string, _ Op
 		return nil, err
 	}
 
+	label := opts.DriveLabel
+	if label == "" {
+		label = defaultDriveLabel
+	}
+
+	labelKey := labelDrive(ctx, c.MountPath(), label)
+
 	actualDriveLetter, err := netUseMount(ctx, driveLetter, c.MountPath())
 	if err != nil {
+		unlabelDrive(ctx, labelKey)
+
 		if uerr := c.Unmount(ctx); uerr != nil {
 			log(ctx).Errorf("unable to unmount webdav server: %v", uerr)
 		}
@@ -33,7 +42,7 @@ func Directory(ctx context.Context, entry fs.Directory, driveLetter string, _ Op
 		return nil, errors.Wrap(err, "unable to mount webdav server as drive letter")
 	}
 
-	return netuseController{c, actualDriveLetter}, nil
+	return netuseController{c, actualDriveLetter, labelKey}, nil
 }
 
 func netUse(ctx context.Context, args ...string) (string, error) {
@@ -99,12 +108,15 @@ func isValidWindowsDriveOrAsterisk(s string) bool {
 type netuseController struct {
 	inner       Controller
 	driveLetter string
+	labelKey    string // MountPoints2 subkey holding the drive label, empty if not labeled
 }
 
 func (c netuseController) Unmount(ctx context.Context) error {
 	if err := netUseUnmount(ctx, c.driveLetter); err != nil {
 		return errors.Wrap(err, "unable to delete drive with 'net use'")
 	}
+
+	unlabelDrive(ctx, c.labelKey)
 
 	//nolint:wrapcheck
 	return c.inner.Unmount(ctx)

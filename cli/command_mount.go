@@ -11,6 +11,7 @@ import (
 	"github.com/kopia/kopia/fs/loggingfs"
 	"github.com/kopia/kopia/internal/mount"
 	"github.com/kopia/kopia/repo"
+	"github.com/kopia/kopia/repo/object"
 	"github.com/kopia/kopia/snapshot/snapshotfs"
 )
 
@@ -55,16 +56,25 @@ func (c *commandMount) newFSCache() cachefs.DirectoryCacher {
 }
 
 func (c *commandMount) run(ctx context.Context, rep repo.Repository) error {
-	var entry fs.Directory
+	var (
+		entry      fs.Directory
+		driveLabel string
+	)
 
 	if c.mountObjectID == "all" {
 		entry = snapshotfs.AllSourcesEntry(rep)
+		driveLabel = "Kopia - All Snapshots"
 	} else {
 		var err error
 
 		entry, err = snapshotfs.FilesystemDirectoryFromIDWithPath(ctx, rep, c.mountObjectID, false)
 		if err != nil {
 			return errors.Wrapf(err, "unable to get directory entry for %v", c.mountObjectID)
+		}
+
+		// a path below the snapshot root does not parse as an object ID and keeps the default label
+		if oid, err := object.ParseID(c.mountObjectID); err == nil {
+			driveLabel = mount.SnapshotDriveLabel(ctx, rep, oid)
 		}
 	}
 
@@ -81,6 +91,7 @@ func (c *commandMount) run(ctx context.Context, rep repo.Repository) error {
 			FuseAllowOther:         c.mountFuseAllowOther,
 			FuseAllowNonEmptyMount: c.mountFuseAllowNonEmptyMount,
 			PreferWebDAV:           c.mountPreferWebDAV,
+			DriveLabel:             driveLabel,
 		})
 	if mountErr != nil {
 		return errors.Wrap(mountErr, "mount error")

@@ -27,7 +27,9 @@ func (s *Server) getMountController(ctx context.Context, rep repo.Repository, oi
 
 	userLog(ctx).Debugf("mount controller for %v not found, starting", oid)
 
-	c, err := mount.Directory(ctx, snapshotfs.DirectoryEntry(rep, oid, nil), "*", mount.Options{})
+	c, err := mount.Directory(ctx, snapshotfs.DirectoryEntry(rep, oid, nil), "*", mount.Options{
+		DriveLabel: mount.SnapshotDriveLabel(ctx, rep, oid),
+	})
 	if err != nil {
 		return nil, errors.Wrap(err, "unable to mount")
 	}
