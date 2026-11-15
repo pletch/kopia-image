@@ -133,6 +133,12 @@ func TestWebDAVMounts(t *testing.T) {
 		require.Equal(t, string([]byte{2, 3}), body)
 	})
 
+	t.Run("UIGetsMountScript", func(t *testing.T) {
+		status, body := uiWebDAVRequest(t, http.MethodGet, srvInfo.BaseURL+"/", nil)
+		require.Equal(t, http.StatusOK, status)
+		require.Contains(t, body, "data-kopia-webdav-open")
+	})
+
 	t.Run("UnmountForgetsShare", func(t *testing.T) {
 		require.NoError(t, cli.Delete(ctx, "mounts/"+rootOID.String(), nil, nil, &serverapi.Empty{}))
 
@@ -187,6 +193,9 @@ func TestWebDAVMounts_Disabled(t *testing.T) {
 	status, body := uiWebDAVRequest(t, "PROPFIND", srvInfo.BaseURL+"/webdav/"+rootOID.String()+"/", nil)
 	require.NotEqual(t, http.StatusMultiStatus, status)
 	require.NotContains(t, body, "file1", "snapshot contents must not be served")
+
+	_, body = uiWebDAVRequest(t, http.MethodGet, srvInfo.BaseURL+"/", nil)
+	require.NotContains(t, body, "data-kopia-webdav-open", "the UI must not get the WebDAV mount script")
 }
 
 func TestWebDAVMounts_BrowsePage(t *testing.T) {

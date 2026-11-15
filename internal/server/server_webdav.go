@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	_ "embed"
 	"net/http"
 	"strings"
 
@@ -13,6 +14,11 @@ import (
 	"github.com/kopia/kopia/repo/object"
 	"github.com/kopia/kopia/snapshot/snapshotfs"
 )
+
+// webdavUIScript is added to the web UI so that mounting a snapshot opens its WebDAV page.
+//
+//go:embed webdav_ui.js
+var webdavUIScript string
 
 const (
 	webdavPathPrefix = "/webdav/"

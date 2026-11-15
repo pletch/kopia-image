@@ -877,6 +877,10 @@ func (s *Server) patchIndexBytes(sessionID string, b []byte) []byte {
 		[]byte(`</head>`),
 		[]byte(`<meta name="kopia-csrf-token" content="`+csrfToken+`" /></head>`))
 
+	if s.options.WebDAVMounts {
+		b = bytes.Replace(b, []byte(`</head>`), []byte(`<script>`+webdavUIScript+`</script></head>`), 1)
+	}
+
 	return b
 }
 
