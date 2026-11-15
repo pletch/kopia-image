@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kopia/kopia/internal/clock"
 	"github.com/kopia/kopia/repo/logging"
 )
 
@@ -15,26 +16,33 @@ var log = logging.Module("wakeevents")
 // it indicates the system likely woke from sleep.
 type windowsManager struct {
 	mu        sync.Mutex
-	listeners []Listener
+	listeners []Listener // +checklocks:mu
 	stopChan  chan struct{}
-	lastCheck time.Time
+	lastCheck time.Time // +checklocks:mu
 
 	// Gap threshold: if elapsed time > checkInterval + gapThreshold, system woke from sleep
 	checkInterval time.Duration
 	gapThreshold  time.Duration
 }
 
+const (
+	defaultCheckInterval = 15 * time.Second
+	defaultGapThreshold  = 5 * time.Second
+)
+
 func newPlatformManager() Manager {
 	return &windowsManager{
-		stopChan:     make(chan struct{}),
-		checkInterval: 15 * time.Second,
-		gapThreshold:  5 * time.Second,
+		stopChan:      make(chan struct{}),
+		checkInterval: defaultCheckInterval,
+		gapThreshold:  defaultGapThreshold,
 	}
 }
 
 // Start begins monitoring for sleep/wake events.
 func (m *windowsManager) Start(ctx context.Context) {
-	m.lastCheck = time.Now()
+	m.mu.Lock()
+	m.lastCheck = clock.Now()
+	m.mu.Unlock()
 
 	go m.watchForWake(ctx)
 }
@@ -43,6 +51,7 @@ func (m *windowsManager) Start(ctx context.Context) {
 func (m *windowsManager) OnWake(callback Listener) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
 	m.listeners = append(m.listeners, callback)
 }
 
@@ -63,8 +72,7 @@ func (m *windowsManager) watchForWake(ctx context.Context) {
 		case <-m.stopChan:
 			return
 		case <-ticker.C:
-			now := time.Now()
-			elapsed := now.Sub(m.lastCheck)
+			elapsed := m.sinceLastCheck()
 
 			// If the gap is larger than expected, the system likely woke from sleep.
 			// Expected gap: checkInterval; threshold allows some clock variance.
@@ -73,10 +81,22 @@ func (m *windowsManager) watchForWake(ctx context.Context) {
 				log(ctx).Infof("System wake detected (time gap: %v > %v), notifying listeners", elapsed, expectedGap)
 				m.notifyListeners(ctx)
 			}
-
-			m.lastCheck = now
 		}
 	}
+}
+
+// sinceLastCheck returns the time since the previous check and records this one.
+func (m *windowsManager) sinceLastCheck() time.Duration {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// clock.Now has no monotonic reading, so the gap is measured on the wall clock,
+	// which keeps running while the system sleeps.
+	now := clock.Now()
+	elapsed := now.Sub(m.lastCheck)
+	m.lastCheck = now
+
+	return elapsed
 }
 
 // notifyListeners invokes all registered callbacks.
@@ -94,6 +114,7 @@ func (m *windowsManager) notifyListeners(ctx context.Context) {
 					log(ctx).Warnf("panic in wake event listener: %v", r)
 				}
 			}()
+
 			l()
 		}(listener)
 	}
