@@ -11,12 +11,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
 
+	kopiafs "github.com/kopia/kopia/fs"
 	"github.com/kopia/kopia/internal/repotesting"
 	"github.com/kopia/kopia/internal/vhdxtest"
 	"github.com/kopia/kopia/repo"
@@ -25,6 +27,7 @@ import (
 	"github.com/kopia/kopia/snapshot/image"
 	"github.com/kopia/kopia/snapshot/image/blockdev"
 	"github.com/kopia/kopia/snapshot/image/disksource"
+	"github.com/kopia/kopia/snapshot/image/ntfsfs"
 )
 
 // populate writes a mix of large, small (MFT-resident), nested, deleted and
@@ -203,6 +206,8 @@ func TestImageAndRestoreVHDX(t *testing.T) {
 	t.Logf("snapshot %v: %+v, uploaded %v", man.ID, md.Volumes[0].Stats, *md.UploadedBytes)
 	require.NotEmpty(t, md.Volumes[0].UnstableExtents, "the diff area file is zeroed")
 
+	verifyBrowsedFiles(ctx, t, env.Repository, &md.Volumes[0], want)
+
 	// restore to a blank disk with the same layout and check the result
 	dst := vhdxtest.New(t)
 
@@ -224,4 +229,42 @@ func TestImageAndRestoreVHDX(t *testing.T) {
 	out, err := exec.CommandContext(t.Context(), "chkdsk", restored, "/scan").CombinedOutput()
 	t.Logf("chkdsk:\n%s", out)
 	require.NoError(t, err, "chkdsk found problems in the restored volume")
+}
+
+// verifyBrowsedFiles reads every expected file, including the alternate data
+// stream, from the stored image through ntfsfs, without restoring it.
+func verifyBrowsedFiles(ctx context.Context, t *testing.T, rep repo.Repository, v *image.Volume, want map[string][]byte) {
+	t.Helper()
+
+	vol, err := ntfsfs.Open(ctx, rep, v.ObjectID, "p2-data", ntfsfs.Options{})
+	require.NoError(t, err)
+
+	defer vol.Close()
+
+	for rel, data := range want {
+		var e kopiafs.Entry = vol.Root()
+
+		for part := range strings.SplitSeq(filepath.ToSlash(rel), "/") {
+			d, ok := e.(kopiafs.Directory)
+			require.True(t, ok, rel)
+
+			e, err = d.Child(ctx, part)
+			require.NoError(t, err, rel)
+		}
+
+		f, ok := e.(kopiafs.File)
+		require.True(t, ok, rel)
+
+		r, err := f.Open(ctx)
+		require.NoError(t, err, rel)
+
+		got, err := io.ReadAll(r)
+		require.NoError(t, err, rel)
+		require.NoError(t, r.Close())
+		require.True(t, bytes.Equal(data, got), "contents of %v differ when browsed", rel)
+	}
+
+	chunks := (v.Size + image.DefaultChunkSize - 1) / image.DefaultChunkSize
+	t.Logf("browsing every file fetched %v of %v image chunks", vol.Fetches(), chunks)
+	require.Less(t, vol.Fetches(), chunks)
 }
