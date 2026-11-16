@@ -19,16 +19,29 @@ func TaskPath(folder, name string) string {
 	return strings.TrimSuffix(folder, `\`) + `\` + name
 }
 
-// DefaultConfigDir returns the folder under ProgramData that holds the
-// scheduled tasks' repository connection and the record of the last
-// recovery media built.
-func DefaultConfigDir() (string, error) {
+// StateDir returns ProgramData\kopia, which every user can read: kopia
+// image keeps there what the web UI shows, such as the last run, the
+// schedule settings and the last recovery media built. Only SYSTEM and
+// Administrators can write it.
+func StateDir() (string, error) {
 	pd, err := ProgramDataDir()
 	if err != nil {
 		return "", err
 	}
 
-	return filepath.Join(pd, "kopia", "image"), nil
+	return filepath.Join(pd, "kopia"), nil
+}
+
+// DefaultConfigDir returns the folder under ProgramData that holds the
+// scheduled tasks' copy of kopia and repository connection, with its
+// password. Only SYSTEM and Administrators can open it.
+func DefaultConfigDir() (string, error) {
+	dir, err := StateDir()
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(dir, "image"), nil
 }
 
 // TaskStatus is the state of a scheduled task as Task Scheduler reports it.

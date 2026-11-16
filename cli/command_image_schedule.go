@@ -15,10 +15,12 @@ import (
 	"github.com/alecthomas/kingpin/v2"
 	"github.com/pkg/errors"
 
+	"github.com/kopia/kopia/internal/clock"
 	"github.com/kopia/kopia/internal/passwordpersist"
 	"github.com/kopia/kopia/internal/units"
 	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/snapshot/image/disksource"
+	"github.com/kopia/kopia/snapshot/image/recoverymedia"
 	"github.com/kopia/kopia/snapshot/image/schedule"
 	"github.com/kopia/kopia/snapshot/image/securedir"
 )
@@ -89,6 +91,64 @@ func (l *imageScheduleLocation) resolve() error {
 	return nil
 }
 
+// stateDir is the folder of the shadow copy state file, ProgramData\kopia by
+// default, which also holds the run status, the schedule settings and the
+// outcome of the last request: every user can read it.
+func (l *imageScheduleLocation) stateDir() string {
+	return filepath.Dir(l.statePath)
+}
+
+// imageScheduleRequest records the outcome of an install or remove that
+// KopiaUI started as administrator without a window, see schedule.Request.
+type imageScheduleRequest struct {
+	id string
+}
+
+func (r *imageScheduleRequest) flag(cmd *kingpin.CmdClause) {
+	cmd.Flag("request-id", "Record the outcome under this ID in the image state folder, for KopiaUI").Hidden().StringVar(&r.id)
+}
+
+// recording returns act, recording its outcome when a request ID is given.
+// act must do all the work that can fail, including opening the repository:
+// a failed action ends the process before returning.
+func (r *imageScheduleRequest) recording(operation string, loc *imageScheduleLocation, act func(ctx context.Context) error) func(ctx context.Context) error {
+	return func(ctx context.Context) error {
+		err := act(ctx)
+
+		if r.id != "" {
+			if werr := r.record(operation, loc, err); werr != nil {
+				log(ctx).Errorf("unable to record the outcome: %v", werr)
+			}
+		}
+
+		return err
+	}
+}
+
+func (r *imageScheduleRequest) record(operation string, loc *imageScheduleLocation, opErr error) error {
+	if loc.statePath == "" {
+		p, err := disksource.DefaultStatePath()
+		if err != nil {
+			return err //nolint:wrapcheck
+		}
+
+		loc.statePath = p
+	}
+
+	if def, err := schedule.StateDir(); err == nil && filepath.Clean(def) == filepath.Clean(loc.stateDir()) {
+		if err := securedir.Secure(def, securedir.UsersRead); err != nil {
+			return errors.Wrap(err, "unable to secure the image state folder")
+		}
+	}
+
+	req := &schedule.Request{ID: r.id, Operation: operation, Time: clock.Now(), Success: opErr == nil}
+	if opErr != nil {
+		req.Error = opErr.Error()
+	}
+
+	return schedule.WriteRequest(schedule.RequestPath(loc.stateDir()), req) //nolint:wrapcheck
+}
+
 func (l *imageScheduleLocation) taskName(name string) string {
 	return schedule.TaskPath(l.taskFolder, name)
 }
@@ -120,6 +180,7 @@ type commandImageScheduleInstall struct {
 	kopiaExe       string
 
 	loc imageScheduleLocation
+	req imageScheduleRequest
 	svc advancedAppServices
 	out textOutput
 }
@@ -141,9 +202,28 @@ func (c *commandImageScheduleInstall) setup(svc advancedAppServices, parent comm
 	cmd.Flag("check-ntfs", "Make the weekly check also check the NTFS file systems in the images (image check --ntfs)").BoolVar(&c.checkNTFS)
 	cmd.Flag("kopia-exe", "kopia executable copied for the tasks to run (default: this one)").Hidden().StringVar(&c.kopiaExe)
 	c.loc.flags(cmd)
-	cmd.Action(svc.repositoryReaderAction(c.run))
+	c.req.flag(cmd)
+	cmd.Action(svc.noRepositoryAction(c.req.recording("install", &c.loc, c.runWithRepository)))
 	c.svc = svc
 	c.out.setup(svc)
+}
+
+// runWithRepository opens the repository itself, rather than through a
+// repository action, so that a request records a repository that does not
+// open.
+func (c *commandImageScheduleInstall) runWithRepository(ctx context.Context) (err error) {
+	rep, err := c.svc.openRepository(ctx, true)
+	if err != nil {
+		return errors.Wrap(err, "open repository")
+	}
+
+	defer func() {
+		if cerr := rep.Close(ctx); cerr != nil {
+			err = stderrors.Join(err, errors.Wrap(cerr, "unable to close repository"))
+		}
+	}()
+
+	return c.run(ctx, rep)
 }
 
 func (c *commandImageScheduleInstall) run(ctx context.Context, rep repo.Repository) error {
@@ -187,11 +267,64 @@ func (c *commandImageScheduleInstall) run(ctx context.Context, rep repo.Reposito
 		}
 	}
 
+	if err := c.writeSettings(rep); err != nil {
+		return err
+	}
+
 	c.out.printStdout("The tasks run as SYSTEM, using the copy of kopia and the repository connection in %v.\n", c.loc.configDir)
 	c.out.printStdout("Run 'kopia image schedule install' again after upgrading kopia, so the tasks use the new version.\n")
 	c.out.printStdout("Create the first image now with 'kopia image schedule run', or interactively with 'kopia image create %v'.\n", strings.Join(c.volumes, " "))
 
 	return nil
+}
+
+// writeSettings records the settings the tasks were scheduled with where the
+// web UI can read them.
+func (c *commandImageScheduleInstall) writeSettings(rep repo.Repository) error {
+	days, err := parseWeekdays(c.days)
+	if err != nil {
+		return err
+	}
+
+	s := &schedule.Settings{
+		Volumes:        c.volumes,
+		At:             c.at,
+		TimeLimit:      c.timeLimit.String(),
+		Retries:        c.retries,
+		RetryInterval:  c.retryInterval.String(),
+		Wake:           c.wake,
+		AllowOnBattery: c.allowOnBattery,
+		CheckDay:       "none",
+		CheckAt:        c.checkAt,
+		CheckSample:    c.checkSample,
+		CheckNTFS:      c.checkNTFS,
+		KopiaVersion:   repo.BuildVersion,
+		InstalledAt:    clock.Now(),
+	}
+
+	for _, d := range days {
+		s.Days = append(s.Days, d.String())
+	}
+
+	if !strings.EqualFold(c.checkDay, "none") && c.checkDay != "" {
+		checkDays, err := parseWeekdays(c.checkDay)
+		if err != nil {
+			return err
+		}
+
+		s.CheckDay = checkDays[0].String()
+	}
+
+	if lc, err := repo.LoadConfigFromFile(c.svc.repositoryConfigFileName()); err == nil {
+		s.Repository = lc.Description
+		s.ConnectionDigest = recoverymedia.ConnectionDigest(lc)
+	}
+
+	if s.Repository == "" {
+		s.Repository = rep.ClientOptions().Description
+	}
+
+	return schedule.WriteSettings(schedule.SettingsPath(c.loc.stateDir()), s) //nolint:wrapcheck
 }
 
 // tasks builds the image and weekly check task definitions.
@@ -530,6 +663,7 @@ type commandImageScheduleRemove struct {
 	keepConfig bool
 
 	loc imageScheduleLocation
+	req imageScheduleRequest
 	out textOutput
 }
 
@@ -537,7 +671,8 @@ func (c *commandImageScheduleRemove) setup(svc appServices, parent commandParent
 	cmd := parent.Command("remove", "Remove the scheduled image tasks and their repository connection.")
 	cmd.Flag("keep-config", "Keep the tasks' repository connection, password and cache").BoolVar(&c.keepConfig)
 	c.loc.flags(cmd)
-	cmd.Action(svc.noRepositoryAction(c.run))
+	c.req.flag(cmd)
+	cmd.Action(svc.noRepositoryAction(c.req.recording("remove", &c.loc, c.run)))
 	c.out.setup(svc)
 }
 
@@ -556,6 +691,10 @@ func (c *commandImageScheduleRemove) run(ctx context.Context) error {
 		default:
 			c.out.printStdout("Removed %q.\n", c.loc.taskName(name))
 		}
+	}
+
+	if err := os.Remove(schedule.SettingsPath(c.loc.stateDir())); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return errors.Wrap(err, "unable to remove the image schedule settings")
 	}
 
 	if c.keepConfig {

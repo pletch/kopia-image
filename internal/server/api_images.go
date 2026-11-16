@@ -11,6 +11,7 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/kopia/kopia/internal/serverapi"
+	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/snapshot"
 	"github.com/kopia/kopia/snapshot/image"
 	"github.com/kopia/kopia/snapshot/image/disksource"
@@ -32,12 +33,13 @@ type ImageHost interface {
 	// RunTask starts a scheduled task now.
 	RunTask(ctx context.Context, name string) error
 
-	// RunStatusPath is the file where the last image run records its outcome.
-	RunStatusPath() (string, error)
+	// StateDir is the folder, readable by every user, where image runs,
+	// schedule installs and recovery media builds record what they did.
+	StateDir() (string, error)
 
-	// RecoveryMediaRecordPath is the file that describes the last recovery
-	// media built.
-	RecoveryMediaRecordPath() (string, error)
+	// Disks lists the disks that hold a volume with a drive letter, which
+	// are the disks the schedule can image.
+	Disks() ([]disksource.LocalDisk, error)
 }
 
 // windowsImageHost is the ImageHost of Windows Task Scheduler and the image
@@ -58,22 +60,12 @@ func (windowsImageHost) RunTask(ctx context.Context, name string) error {
 	return schedule.Run(ctx, name) //nolint:wrapcheck
 }
 
-func (windowsImageHost) RunStatusPath() (string, error) {
-	p, err := disksource.DefaultStatePath()
-	if err != nil {
-		return "", err //nolint:wrapcheck
-	}
-
-	return disksource.StatusPath(p), nil
+func (windowsImageHost) StateDir() (string, error) {
+	return schedule.StateDir() //nolint:wrapcheck
 }
 
-func (windowsImageHost) RecoveryMediaRecordPath() (string, error) {
-	dir, err := schedule.DefaultConfigDir()
-	if err != nil {
-		return "", err //nolint:wrapcheck
-	}
-
-	return filepath.Join(dir, recoverymedia.RecordFileName), nil
+func (windowsImageHost) Disks() ([]disksource.LocalDisk, error) {
+	return disksource.LocalDisks() //nolint:wrapcheck
 }
 
 func imageHostOf(rc requestContext) ImageHost {
@@ -192,10 +184,41 @@ func handleImagesStatus(ctx context.Context, rc requestContext) (any, *apiError)
 		resp.Tasks = append(resp.Tasks, t)
 	}
 
-	resp.LastRun, resp.LastRunError = readImageStatusFile(host.RunStatusPath, disksource.ReadRunStatus)
-	resp.RecoveryMedia, resp.RecoveryMediaError = readImageStatusFile(host.RecoveryMediaRecordPath, readRecoveryMedia)
+	resp.KopiaVersion = repo.BuildVersion
+
+	stateDir, err := host.StateDir()
+	if err != nil {
+		resp.LastRunError = err.Error()
+		return resp, nil
+	}
+
+	resp.LastRun, resp.LastRunError = readImageStatusFile(disksource.StatusPathIn(stateDir), disksource.ReadRunStatus)
+	resp.RecoveryMedia, resp.RecoveryMediaError = readImageStatusFile(filepath.Join(stateDir, recoverymedia.RecordFileName), readRecoveryMedia)
+	resp.Schedule, resp.ScheduleError = readImageStatusFile(schedule.SettingsPath(stateDir), schedule.ReadSettings)
+
+	if resp.Schedule != nil && resp.Schedule.ConnectionDigest != "" {
+		if lc, err := repo.LoadConfigFromFile(rc.srv.getOptions().ConfigFile); err == nil {
+			same := recoverymedia.ConnectionDigest(lc) == resp.Schedule.ConnectionDigest
+			resp.ScheduleForThisRepository = &same
+		}
+	}
 
 	return resp, nil
+}
+
+// handleImagesDisks lists the disks of the server's computer that the image
+// schedule can image.
+func handleImagesDisks(_ context.Context, rc requestContext) (any, *apiError) {
+	disks, err := imageHostOf(rc).Disks()
+
+	switch {
+	case errors.Is(err, disksource.ErrNotSupported):
+		return &serverapi.ImageDisksResponse{Disks: []disksource.LocalDisk{}}, nil
+	case err != nil:
+		return nil, internalServerError(err)
+	}
+
+	return &serverapi.ImageDisksResponse{Supported: true, Disks: disks}, nil
 }
 
 func readRecoveryMedia(path string) (*serverapi.ImageRecoveryMedia, error) {
@@ -212,14 +235,11 @@ func readRecoveryMedia(path string) (*serverapi.ImageRecoveryMedia, error) {
 	}, nil
 }
 
-// readImageStatusFile reads a file that an image run or a recovery media
-// build writes. A file that does not exist yet is not an error.
-func readImageStatusFile[T any](path func() (string, error), read func(string) (*T, error)) (v *T, errorMessage string) {
-	p, err := path()
-	if err == nil {
-		v, err = read(p)
-	}
-
+// readImageStatusFile reads a file that an image run, a schedule install or
+// a recovery media build writes. A file that does not exist yet is not an
+// error.
+func readImageStatusFile[T any](path string, read func(string) (*T, error)) (v *T, errorMessage string) {
+	v, err := read(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err.Error()
 	}

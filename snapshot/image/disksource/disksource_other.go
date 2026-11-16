@@ -38,3 +38,8 @@ func OpenSession(context.Context, *Plan, *ShadowState, func(string, ...any)) (*S
 func VolumesOnDisk(uint32) ([]VolumeInfo, error) {
 	return nil, ErrNotSupported
 }
+
+// LocalDisks is not supported on this platform.
+func LocalDisks() ([]LocalDisk, error) {
+	return nil, ErrNotSupported
+}

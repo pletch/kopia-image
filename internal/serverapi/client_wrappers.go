@@ -279,3 +279,14 @@ func RunImageTask(ctx context.Context, c *apiclient.KopiaAPIClient) (*RunImageTa
 
 	return resp, nil
 }
+
+// ImageDisks lists the disks of the server's computer that the image
+// schedule can image.
+func ImageDisks(ctx context.Context, c *apiclient.KopiaAPIClient) (*ImageDisksResponse, error) {
+	resp := &ImageDisksResponse{}
+	if err := c.Get(ctx, "images/disks", nil, resp); err != nil {
+		return nil, errors.Wrap(err, "ImageDisks")
+	}
+
+	return resp, nil
+}

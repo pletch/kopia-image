@@ -41,7 +41,12 @@ type RunImage struct {
 // StatusPath returns the status file path for a shadow state file path; the
 // two live in the same folder.
 func StatusPath(statePath string) string {
-	return filepath.Join(filepath.Dir(statePath), statusFileName)
+	return StatusPathIn(filepath.Dir(statePath))
+}
+
+// StatusPathIn returns the status file path in a state folder.
+func StatusPathIn(stateDir string) string {
+	return filepath.Join(stateDir, statusFileName)
 }
 
 // WriteRunStatus replaces the status file atomically.

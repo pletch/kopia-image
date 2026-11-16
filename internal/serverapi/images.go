@@ -73,6 +73,28 @@ type ImageStatusResponse struct {
 	// RecoveryMedia is nil when no recovery media was built.
 	RecoveryMedia      *ImageRecoveryMedia `json:"recoveryMedia,omitempty"`
 	RecoveryMediaError string              `json:"recoveryMediaError,omitempty"`
+
+	// Schedule holds the settings the image tasks were installed with; nil
+	// when they are not installed, or were installed by a kopia that did not
+	// record them.
+	Schedule      *schedule.Settings `json:"schedule,omitempty"`
+	ScheduleError string             `json:"scheduleError,omitempty"`
+
+	// ScheduleForThisRepository tells whether the tasks write to the
+	// server's repository; nil when that is not known.
+	ScheduleForThisRepository *bool `json:"scheduleForThisRepository,omitempty"`
+
+	// KopiaVersion is the server's version; when the tasks run an older copy
+	// of kopia, Schedule.KopiaVersion differs.
+	KopiaVersion string `json:"kopiaVersion"`
+}
+
+// ImageDisksResponse lists the disks of the server's computer that the image
+// schedule can image.
+type ImageDisksResponse struct {
+	// Supported is false on computers other than Windows; Disks is then empty.
+	Supported bool                   `json:"supported"`
+	Disks     []disksource.LocalDisk `json:"disks"`
 }
 
 // ImageTask is a scheduled image task.

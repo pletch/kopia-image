@@ -20,6 +20,7 @@ import (
 	"github.com/kopia/kopia/internal/serverapi"
 	"github.com/kopia/kopia/internal/servertesting"
 	"github.com/kopia/kopia/internal/testutil"
+	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/snapshot"
 	"github.com/kopia/kopia/snapshot/image"
 	"github.com/kopia/kopia/snapshot/image/disksource"
@@ -38,6 +39,9 @@ type fakeImageHost struct {
 
 	queryErr error
 	runErr   error
+
+	// disks is nil where the host cannot list disks.
+	disks []disksource.LocalDisk
 }
 
 func (h *fakeImageHost) QueryTask(_ context.Context, name string) (schedule.TaskStatus, error) {
@@ -97,12 +101,16 @@ func (h *fakeImageHost) ranTasks() []string {
 	return slices.Clone(h.runs)
 }
 
-func (h *fakeImageHost) RunStatusPath() (string, error) {
-	return filepath.Join(h.dir, "image-last-run.json"), nil
+func (h *fakeImageHost) StateDir() (string, error) {
+	return h.dir, nil
 }
 
-func (h *fakeImageHost) RecoveryMediaRecordPath() (string, error) {
-	return filepath.Join(h.dir, recoverymedia.RecordFileName), nil
+func (h *fakeImageHost) Disks() ([]disksource.LocalDisk, error) {
+	if h.disks == nil {
+		return nil, disksource.ErrNotSupported
+	}
+
+	return h.disks, nil
 }
 
 func startImageServer(t *testing.T, env *repotesting.Environment, host *fakeImageHost) *apiclient.KopiaAPIClient {
@@ -343,4 +351,69 @@ func TestImagesPageIsServed(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.Contains(t, resp.Header.Get("Content-Type"), "text/html")
+}
+
+// TestImagesStatus_schedule checks that the status reports the schedule
+// settings and whether they are for the server's repository.
+func TestImagesStatus_schedule(t *testing.T) {
+	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
+
+	host := &fakeImageHost{dir: testutil.TempDirectory(t), tasks: map[string]schedule.TaskStatus{}}
+	cli := startImageServer(t, env, host)
+
+	lc, err := repo.LoadConfigFromFile(env.ConfigFile())
+	require.NoError(t, err)
+
+	settings := &schedule.Settings{
+		Volumes:          []string{"C:"},
+		At:               "02:00",
+		Days:             []string{"Monday", "Thursday"},
+		CheckDay:         "Sunday",
+		CheckAt:          "12:00",
+		KopiaVersion:     "v0.1",
+		ConnectionDigest: recoverymedia.ConnectionDigest(lc),
+	}
+	require.NoError(t, schedule.WriteSettings(schedule.SettingsPath(host.dir), settings))
+
+	st, err := serverapi.ImageStatus(ctx, cli)
+	require.NoError(t, err)
+	require.Empty(t, st.ScheduleError)
+	require.Equal(t, settings, st.Schedule)
+	require.Equal(t, repo.BuildVersion, st.KopiaVersion)
+	require.NotNil(t, st.ScheduleForThisRepository)
+	require.True(t, *st.ScheduleForThisRepository)
+
+	// tasks that write to another repository
+	settings.ConnectionDigest = "another"
+	require.NoError(t, schedule.WriteSettings(schedule.SettingsPath(host.dir), settings))
+
+	st, err = serverapi.ImageStatus(ctx, cli)
+	require.NoError(t, err)
+	require.NotNil(t, st.ScheduleForThisRepository)
+	require.False(t, *st.ScheduleForThisRepository)
+}
+
+func TestImagesDisks(t *testing.T) {
+	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
+
+	disks := []disksource.LocalDisk{{
+		Number: 3, Model: "NVMe", Bus: "NVMe", System: true,
+		Volumes: []disksource.LocalVolume{{Letter: "C:", Label: "Windows", FileSystem: "NTFS", Size: 1 << 40}},
+	}}
+
+	host := &fakeImageHost{dir: testutil.TempDirectory(t), disks: disks}
+	cli := startImageServer(t, env, host)
+
+	resp, err := serverapi.ImageDisks(ctx, cli)
+	require.NoError(t, err)
+	require.True(t, resp.Supported)
+	require.Equal(t, disks, resp.Disks)
+
+	// a host that cannot list disks
+	other := startImageServer(t, env, &fakeImageHost{dir: testutil.TempDirectory(t)})
+
+	resp, err = serverapi.ImageDisks(ctx, other)
+	require.NoError(t, err)
+	require.False(t, resp.Supported)
+	require.Empty(t, resp.Disks)
 }

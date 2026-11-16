@@ -20,6 +20,7 @@ import (
 
 	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/snapshot/image"
+	"github.com/kopia/kopia/snapshot/image/schedule"
 )
 
 const (
@@ -56,6 +57,66 @@ type Record struct {
 	Disks map[string]string `json:"disks"`
 
 	PasswordEmbedded bool `json:"passwordEmbedded,omitempty"`
+}
+
+// DefaultRecordPath returns where "kopia image recovery-media create"
+// records the media: in ProgramData\kopia, which every user can read, so
+// that the web UI, whose server runs as the signed-in user, can show it.
+func DefaultRecordPath() (string, error) {
+	dir, err := schedule.StateDir()
+	if err != nil {
+		return "", err //nolint:wrapcheck
+	}
+
+	return filepath.Join(dir, RecordFileName), nil
+}
+
+// legacyRecordPath is where kopia recorded media before: in
+// ProgramData\kopia\image, which only administrators can open.
+func legacyRecordPath() (string, error) {
+	dir, err := schedule.DefaultConfigDir()
+	if err != nil {
+		return "", err //nolint:wrapcheck
+	}
+
+	return filepath.Join(dir, RecordFileName), nil
+}
+
+// ReadDefaultRecord reads the record at DefaultRecordPath, or, when there is
+// none, the one an earlier kopia left in ProgramData\kopia\image. It returns
+// an error wrapping os.ErrNotExist when no media was built.
+func ReadDefaultRecord() (*Record, error) {
+	p, err := DefaultRecordPath()
+	if err != nil {
+		return nil, err
+	}
+
+	r, err := ReadRecord(p)
+	if !errors.Is(err, os.ErrNotExist) {
+		return r, err
+	}
+
+	legacy, lerr := legacyRecordPath()
+	if lerr != nil {
+		return nil, err
+	}
+
+	return ReadRecord(legacy)
+}
+
+// RemoveLegacyRecord removes the record an earlier kopia left in
+// ProgramData\kopia\image, once a new one is written at DefaultRecordPath.
+func RemoveLegacyRecord() error {
+	legacy, err := legacyRecordPath()
+	if err != nil {
+		return err
+	}
+
+	if err := os.Remove(legacy); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return errors.Wrap(err, "unable to remove the previous recovery media record")
+	}
+
+	return nil
 }
 
 // ReadRecord reads the record of the last media built. It returns an error

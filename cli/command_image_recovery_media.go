@@ -69,6 +69,10 @@ type commandImageRecoveryMediaCreate struct {
 	workDir       string
 	recordFile    string
 
+	// replacesLegacyRecord is set when the record goes to its default place,
+	// so that the one an earlier kopia kept elsewhere is removed.
+	replacesLegacyRecord bool
+
 	svc advancedAppServices
 	out textOutput
 }
@@ -89,7 +93,7 @@ func (c *commandImageRecoveryMediaCreate) setup(svc advancedAppServices, parent 
 	cmd.Flag("confirm-disk", "Confirm erasing the --usb disk with its number instead of typing it").Hidden().StringVar(&c.confirmDisk)
 	cmd.Flag("answers", "Answers file that makes the recovery unattended, for tests").Hidden().StringVar(&c.answersFile)
 	cmd.Flag("work-dir", "Folder to build in (default: ProgramData\\kopia\\image\\media-build)").Hidden().StringVar(&c.workDir)
-	cmd.Flag("record-file", "File recording the media built (default: ProgramData\\kopia\\image\\recovery-media.json)").Hidden().StringVar(&c.recordFile)
+	cmd.Flag("record-file", "File recording the media built (default: ProgramData\\kopia\\recovery-media.json)").Hidden().StringVar(&c.recordFile)
 	cmd.Action(svc.repositoryReaderAction(c.run))
 
 	c.svc = svc
@@ -157,6 +161,12 @@ func (c *commandImageRecoveryMediaCreate) run(ctx context.Context, rep repo.Repo
 		return err //nolint:wrapcheck
 	}
 
+	if c.replacesLegacyRecord {
+		if err := recoverymedia.RemoveLegacyRecord(); err != nil {
+			log(ctx).Warnf("%v", err)
+		}
+	}
+
 	c.printSummary(built, target, clock.Now().Sub(start))
 
 	return nil
@@ -187,7 +197,13 @@ func (c *commandImageRecoveryMediaCreate) prepareStateDir() error {
 	}
 
 	if c.recordFile == "" {
-		c.recordFile = filepath.Join(stateDir, recoverymedia.RecordFileName)
+		p, err := recoverymedia.DefaultRecordPath()
+		if err != nil {
+			return err //nolint:wrapcheck
+		}
+
+		c.recordFile = p
+		c.replacesLegacyRecord = true
 	}
 
 	return nil
@@ -647,12 +663,7 @@ func (c *commandImageRecoveryMediaStatus) run(ctx context.Context, rep repo.Repo
 		return recoverymedia.ErrNotSupported
 	}
 
-	stateDir, err := schedule.DefaultConfigDir()
-	if err != nil {
-		return err //nolint:wrapcheck
-	}
-
-	r, err := recoverymedia.ReadRecord(filepath.Join(stateDir, recoverymedia.RecordFileName))
+	r, err := recoverymedia.ReadDefaultRecord()
 	if errors.Is(err, os.ErrNotExist) {
 		c.out.printStdout("No recovery media was built on this computer. Build it with 'kopia image recovery-media create'.\n")
 		return nil

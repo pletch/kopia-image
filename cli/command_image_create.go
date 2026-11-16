@@ -4,7 +4,6 @@ import (
 	"context"
 	stderrors "errors"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -20,7 +19,6 @@ import (
 	"github.com/kopia/kopia/snapshot/image/blockdev"
 	"github.com/kopia/kopia/snapshot/image/disksource"
 	"github.com/kopia/kopia/snapshot/image/recoverymedia"
-	"github.com/kopia/kopia/snapshot/image/schedule"
 	"github.com/kopia/kopia/snapshot/policy"
 )
 
@@ -169,12 +167,7 @@ func (c *commandImageCreate) imageDisks(ctx context.Context, rep repo.Repository
 // checkRecoveryMedia reports why the recovery media last built on this
 // computer no longer matches it, if any was built.
 func (c *commandImageCreate) checkRecoveryMedia(ctx context.Context, rep repo.Repository, plans []*disksource.Plan) []string {
-	stateDir, err := schedule.DefaultConfigDir()
-	if err != nil {
-		return nil
-	}
-
-	r, err := recoverymedia.ReadRecord(filepath.Join(stateDir, recoverymedia.RecordFileName))
+	r, err := recoverymedia.ReadDefaultRecord()
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			log(ctx).Warnf("%v", err)

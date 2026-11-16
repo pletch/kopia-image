@@ -51,8 +51,24 @@ func TestImageScheduleRunsAsSystem(t *testing.T) {
 		}
 	})
 
-	out := env.RunAndExpectSuccess(t, append([]string{"image", "schedule", "install", mnt, "--at", "03:17", "--check-day", "sat", "--kopia-exe", exe}, loc...)...)
+	out := env.RunAndExpectSuccess(t, append([]string{"image", "schedule", "install", mnt, "--at", "03:17", "--days", "mon,thu", "--check-day", "sat", "--kopia-exe", exe, "--request-id", "install-1"}, loc...)...)
 	t.Logf("install:\n%s", strings.Join(out, "\n"))
+
+	// the settings and the outcome are recorded where the web UI can read them
+	stateDir := filepath.Dir(statePath)
+
+	settings, err := schedule.ReadSettings(schedule.SettingsPath(stateDir))
+	require.NoError(t, err)
+	require.Equal(t, []string{mnt}, settings.Volumes)
+	require.Equal(t, "03:17", settings.At)
+	require.Equal(t, []string{"Monday", "Thursday"}, settings.Days)
+	require.Equal(t, "Saturday", settings.CheckDay)
+	require.NotEmpty(t, settings.ConnectionDigest)
+
+	req, err := schedule.ReadRequest(schedule.RequestPath(stateDir))
+	require.NoError(t, err)
+	require.Equal(t, "install-1", req.ID)
+	require.True(t, req.Success, req.Error)
 
 	// the copied connection and password are readable only by SYSTEM and Administrators
 	require.FileExists(t, filepath.Join(configDir, "repository.config"))
@@ -108,8 +124,14 @@ func TestImageScheduleRunsAsSystem(t *testing.T) {
 	t.Logf("show:\n%s", strings.Join(out, "\n"))
 	require.Contains(t, strings.Join(out, "\n"), "succeeded")
 
-	env.RunAndExpectSuccess(t, append([]string{"image", "schedule", "remove"}, loc...)...)
+	env.RunAndExpectSuccess(t, append([]string{"image", "schedule", "remove", "--request-id", "remove-1"}, loc...)...)
 	require.NoDirExists(t, configDir)
+	require.NoFileExists(t, schedule.SettingsPath(stateDir))
+
+	req, err = schedule.ReadRequest(schedule.RequestPath(stateDir))
+	require.NoError(t, err)
+	require.Equal(t, "remove-1", req.ID)
+	require.True(t, req.Success, req.Error)
 
 	_, err = schedule.Query(t.Context(), testTaskFolder+`\Image create`)
 	require.ErrorIs(t, err, schedule.ErrTaskNotFound)
