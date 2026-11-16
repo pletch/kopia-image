@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	stderrors "errors"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"github.com/kopia/kopia/snapshot/image"
 	"github.com/kopia/kopia/snapshot/image/blockdev"
 	"github.com/kopia/kopia/snapshot/image/disksource"
+	"github.com/kopia/kopia/snapshot/image/recoverymedia"
 	"github.com/kopia/kopia/snapshot/policy"
 )
 
@@ -53,6 +56,7 @@ type commandImageCreate struct {
 	description   string
 	statePath     string
 
+	svc appServices
 	out textOutput
 }
 
@@ -65,6 +69,7 @@ func (c *commandImageCreate) setup(svc appServices, parent commandParent) {
 	cmd.Flag("description", "Free-form snapshot description").StringVar(&c.description)
 	cmd.Flag("state-file", "Override the file that records shadow copies to remove after a crash").Hidden().StringVar(&c.statePath)
 	cmd.Action(svc.repositoryWriterAction(c.run))
+	c.svc = svc
 	c.out.setup(svc)
 }
 
@@ -153,7 +158,49 @@ func (c *commandImageCreate) imageDisks(ctx context.Context, rep repo.Repository
 		}
 	}
 
+	if !c.dryRun {
+		status.RecoveryMedia = c.checkRecoveryMedia(ctx, rep, plans)
+	}
+
 	return nil
+}
+
+// checkRecoveryMedia reports why the recovery media last built on this
+// computer no longer matches it, if any was built.
+func (c *commandImageCreate) checkRecoveryMedia(ctx context.Context, rep repo.Repository, plans []*disksource.Plan) []string {
+	stateDir, err := imageStateDir()
+	if err != nil {
+		return nil
+	}
+
+	r, err := recoverymedia.ReadRecord(filepath.Join(stateDir, recoverymedia.RecordFileName))
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			log(ctx).Warnf("%v", err)
+		}
+
+		return nil
+	}
+
+	layouts := map[string]*image.Layout{}
+
+	for _, p := range plans {
+		path, err := image.DiskSourcePath(p.Layout.DiskGUID)
+		if err != nil {
+			continue
+		}
+
+		src := snapshot.SourceInfo{Host: rep.ClientOptions().Hostname, UserName: rep.ClientOptions().Username, Path: path}
+		layouts[src.String()] = p.Layout
+	}
+
+	findings := recoveryMediaFindings(ctx, rep, r, c.svc.repositoryConfigFileName(), layouts)
+
+	for _, f := range findings {
+		log(ctx).Warnf("Recovery media: %v. Build new media with 'kopia image recovery-media create'.", f)
+	}
+
+	return findings
 }
 
 func runImage(man *snapshot.Manifest, md *image.Metadata) disksource.RunImage {

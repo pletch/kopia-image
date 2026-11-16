@@ -490,6 +490,14 @@ func (c *commandImageScheduleShow) run(ctx context.Context) error {
 		c.out.printStdout("  %v %v: read %v, uploaded %v\n", img.Source, img.SnapshotID, units.BytesString(img.BytesRead), uploaded)
 	}
 
+	if len(st.RecoveryMedia) > 0 {
+		c.out.printStdout("Build new recovery media with 'kopia image recovery-media create':\n")
+
+		for _, f := range st.RecoveryMedia {
+			c.out.printStdout("  - %v\n", f)
+		}
+	}
+
 	return nil
 }
 

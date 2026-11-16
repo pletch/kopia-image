@@ -156,3 +156,23 @@ func TestImageRecoverNotConnected(t *testing.T) {
 	_, stderr := env.RunAndExpectFailure(t, "image", "recover", "--target", filepath.Join(t.TempDir(), "x.img"))
 	require.Contains(t, strings.Join(stderr, "\n"), "connect with 'kopia repository connect' first")
 }
+
+func TestImageRecoveryMediaKit(t *testing.T) {
+	env := testenv.NewCLITest(t, testenv.RepoFormatNotImportant, testenv.NewInProcRunner(t))
+	env.RunAndExpectSuccess(t, "repo", "create", "filesystem", "--path", env.RepoDir, "--override-hostname", "desktop", "--override-username", "tim")
+	createRecoverTestImage(t, env, "desktop")
+	createRecoverTestImage(t, env, "other-pc")
+
+	out := strings.Join(env.RunAndExpectSuccess(t, "image", "recovery-media", "kit"), "\n")
+	require.Contains(t, out, "Images belong to tim@desktop.")
+	require.Contains(t, out, "tim@desktop:image:disk:"+recoverTestDiskGUID)
+	require.NotContains(t, out, "other-pc", "only this computer's disks")
+	require.Contains(t, out, "kopia repository connect filesystem --path")
+
+	kit := filepath.Join(t.TempDir(), "kit.txt")
+	env.RunAndExpectSuccess(t, "image", "recovery-media", "kit", "--output", kit)
+
+	b, err := os.ReadFile(kit)
+	require.NoError(t, err)
+	require.Contains(t, string(b), "RESTORE WITH THE RECOVERY MEDIA\r\n")
+}

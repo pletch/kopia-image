@@ -57,7 +57,9 @@ func TestDescribeRepository(t *testing.T) {
 	require.Empty(t, LocalRepositoryPath(storageConfigOf("s3", map[string]any{"bucket": "b"})))
 }
 
-func TestParseCertificates(t *testing.T) {
+func selfSignedDER(t *testing.T) []byte {
+	t.Helper()
+
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 
@@ -71,6 +73,12 @@ func TestParseCertificates(t *testing.T) {
 
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	require.NoError(t, err)
+
+	return der
+}
+
+func TestParseCertificates(t *testing.T) {
+	der := selfSignedDER(t)
 
 	p := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 

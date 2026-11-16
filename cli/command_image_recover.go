@@ -31,6 +31,8 @@ const (
 	recoverMaxClockSkew       = 5 * time.Minute
 	recoverImagesShown        = 15
 
+	recoverResultFileName = "kopia-result.txt"
+
 	recoverAfterExit     = "exit"
 	recoverAfterReboot   = "reboot"
 	recoverAfterShutdown = "shutdown"
@@ -74,6 +76,9 @@ type commandImageRecover struct {
 	info    *recoverymedia.Info
 	in      *bufio.Reader
 
+	// media is the root of the recovery media in the recovery environment.
+	media string
+
 	svc advancedAppServices
 	out textOutput
 }
@@ -92,10 +97,38 @@ func (c *commandImageRecover) setup(svc advancedAppServices, parent commandParen
 }
 
 func (c *commandImageRecover) run(ctx context.Context) error {
-	if err := c.loadInputs(); err != nil {
+	err := c.loadInputs()
+	if err == nil {
+		err = c.recover(ctx)
+	}
+
+	c.writeResult(err)
+
+	if err != nil {
 		return err
 	}
 
+	return c.finish(ctx)
+}
+
+// writeResult records the outcome on the recovery media, where an
+// unattended test reads it after the recovery system shuts down.
+func (c *commandImageRecover) writeResult(err error) {
+	if c.media == "" {
+		return
+	}
+
+	result := "succeeded " + clock.Now().UTC().Format(time.RFC3339) + "\r\n"
+	if err != nil {
+		result = "failed " + clock.Now().UTC().Format(time.RFC3339) + ": " + err.Error() + "\r\n"
+	}
+
+	if werr := os.WriteFile(filepath.Join(c.media, recoverResultFileName), []byte(result), 0o600); werr != nil { //nolint:mnd
+		c.out.printStderr("Unable to write the result to the recovery media: %v\n", werr)
+	}
+}
+
+func (c *commandImageRecover) recover(ctx context.Context) error {
 	cfgPath := c.svc.repositoryConfigFileName()
 
 	lc, err := repo.LoadConfigFromFile(cfgPath)
@@ -111,6 +144,11 @@ func (c *commandImageRecover) run(ctx context.Context) error {
 
 	if err := c.relocateLocalRepository(cfgPath, lc); err != nil {
 		return err
+	}
+
+	// reread: relocating changes the repository folder, which must not be restored over
+	if lc, err = repo.LoadConfigFromFile(cfgPath); err != nil {
+		return errors.Wrap(err, "unable to read the repository connection")
 	}
 
 	c.checkNetworkAndClock(ctx, lc)
@@ -139,11 +177,7 @@ func (c *commandImageRecover) run(ctx context.Context) error {
 		return err
 	}
 
-	if err := c.restore(ctx, rep, s, target); err != nil {
-		return err
-	}
-
-	return c.finish(ctx)
+	return c.restore(ctx, rep, s, target)
 }
 
 func (c *commandImageRecover) loadInputs() error {
@@ -158,6 +192,23 @@ func (c *commandImageRecover) loadInputs() error {
 
 		c.info = info
 		c.out.printStdout("Kopia recovery media built on %v for %v.\n", formatTimestamp(info.BuiltAt), info.Computer)
+	}
+
+	if imagerestore.InRecoveryEnvironment() {
+		media, err := recoverymedia.FindMedia()
+		if err != nil {
+			c.out.printStderr("Unable to find the recovery media: %v\n", err)
+		}
+
+		c.media = media
+
+		// only "recovery-media create --answers", meant for tests, puts answers on the media
+		if p := filepath.Join(media, recoverymedia.AnswersFileName); media != "" && c.answersFile == "" {
+			if _, err := os.Stat(p); err == nil {
+				c.out.printStdout("Answering from %v.\n", p)
+				c.answersFile = p
+			}
+		}
 	}
 
 	if c.answersFile == "" {

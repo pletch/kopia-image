@@ -32,6 +32,9 @@ type DiskInfo struct {
 	Size       int64
 	SectorSize int64
 
+	// DiskGUID is the GPT disk GUID, or "" for other disks.
+	DiskGUID string
+
 	Volumes []DiskVolume
 }
 

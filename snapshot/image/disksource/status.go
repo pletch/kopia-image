@@ -22,6 +22,10 @@ type RunStatus struct {
 
 	// Images are the image snapshots the run saved, also when it failed later.
 	Images []RunImage `json:"images,omitempty"`
+
+	// RecoveryMedia lists why the recovery media last built no longer
+	// matches the computer, after a successful run.
+	RecoveryMedia []string `json:"recoveryMedia,omitempty"`
 }
 
 // RunImage is an image snapshot saved by a run.

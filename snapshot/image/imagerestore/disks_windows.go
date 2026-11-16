@@ -37,6 +37,10 @@ func ListDisks() ([]DiskInfo, error) {
 			continue
 		}
 
+		if l, err := blockdev.ReadLayout(n); err == nil {
+			d.DiskGUID = l.DiskGUID
+		}
+
 		if desc, err := blockdev.DescribeDisk(n); err == nil {
 			d.Model, d.Bus, d.Removable = desc.Model, desc.Bus, desc.Removable
 		}

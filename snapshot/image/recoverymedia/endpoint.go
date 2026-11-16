@@ -52,7 +52,7 @@ func RepositoryEndpoint(lc *repo.LocalConfig) (*Endpoint, error) {
 	}
 
 	switch lc.Storage.Type {
-	case "s3":
+	case storageS3:
 		host := str("endpoint")
 		if host == "" {
 			host = "s3.amazonaws.com"
@@ -64,18 +64,18 @@ func RepositoryEndpoint(lc *repo.LocalConfig) (*Endpoint, error) {
 		}
 
 		return &Endpoint{URL: scheme + "://" + host, HasOwnCA: str("rootCA") != ""}, nil
-	case "gcs":
+	case storageGCS:
 		return &Endpoint{URL: "https://storage.googleapis.com"}, nil
-	case "b2":
+	case storageB2:
 		return &Endpoint{URL: "https://api.backblazeb2.com"}, nil
-	case "azureBlob":
+	case storageAzure:
 		domain := str("storageDomain")
 		if domain == "" {
 			domain = "blob.core.windows.net"
 		}
 
 		return &Endpoint{URL: "https://" + str("storageAccount") + "." + domain}, nil
-	case "webdav":
+	case storageWebDAV:
 		return &Endpoint{URL: str("url"), Pinned: str("trustedServerCertificateFingerprint") != ""}, nil
 	default:
 		return nil, nil
@@ -101,7 +101,7 @@ func storageConfig(lc *repo.LocalConfig) (map[string]any, error) {
 // LocalRepositoryPath returns the folder of a repository on a local or
 // attached disk, or "" for other storage.
 func LocalRepositoryPath(lc *repo.LocalConfig) string {
-	if lc.Storage == nil || lc.Storage.Type != "filesystem" {
+	if lc.Storage == nil || lc.Storage.Type != storageFilesystem {
 		return ""
 	}
 
@@ -135,12 +135,14 @@ func DescribeRepository(lc *repo.LocalConfig) string {
 		return s
 	}
 
-	join := func(parts ...string) string {
-		var out []string
+	// describe joins a lead with labeled values, leaving out empty values
+	// together with their labels
+	describe := func(lead string, labelValues ...string) string {
+		out := []string{lead}
 
-		for _, p := range parts {
-			if p != "" {
-				out = append(out, p)
+		for i := 0; i+1 < len(labelValues); i += 2 {
+			if v := labelValues[i+1]; v != "" {
+				out = append(out, labelValues[i], v)
 			}
 		}
 
@@ -148,18 +150,18 @@ func DescribeRepository(lc *repo.LocalConfig) string {
 	}
 
 	switch lc.Storage.Type {
-	case "filesystem":
+	case storageFilesystem:
 		return "folder " + str("path")
-	case "s3":
-		return join("S3 bucket", str("bucket"), "prefix", str("prefix"), "at", str("endpoint"))
-	case "gcs", "b2":
-		return join(strings.ToUpper(lc.Storage.Type), "bucket", str("bucket"), "prefix", str("prefix"))
-	case "azureBlob":
-		return join("Azure container", str("container"), "in account", str("storageAccount"))
-	case "webdav":
+	case storageS3:
+		return describe("S3 bucket "+str("bucket"), "prefix", str("prefix"), "at", str("endpoint"))
+	case storageGCS, storageB2:
+		return describe(strings.ToUpper(lc.Storage.Type)+" bucket "+str("bucket"), "prefix", str("prefix"))
+	case storageAzure:
+		return describe("Azure container "+str("container"), "prefix", str("prefix"), "in account", str("storageAccount"))
+	case storageWebDAV:
 		return "WebDAV server " + str("url")
-	case "sftp":
-		return join("SFTP", str("username")+"@"+str("host"), str("path"))
+	case storageSFTP:
+		return describe("SFTP "+str("username")+"@"+str("host"), "folder", str("path"))
 	default:
 		return lc.Storage.Type + " repository"
 	}
@@ -243,3 +245,14 @@ func ParseCertificates(pemData string) ([]*x509.Certificate, error) {
 
 	return out, nil
 }
+
+// Storage types, as repository connections name them.
+const (
+	storageFilesystem = "filesystem"
+	storageS3         = "s3"
+	storageB2         = "b2"
+	storageGCS        = "gcs"
+	storageAzure      = "azureBlob"
+	storageWebDAV     = "webdav"
+	storageSFTP       = "sftp"
+)

@@ -53,6 +53,10 @@ func ListDisks() ([]DiskInfo, error) {
 			SectorSize: sectorSize,
 		}
 
+		if guid, ok := readDiskGUID(d.Path); ok {
+			d.DiskGUID = guid
+		}
+
 		for dev, mountPoints := range mounts {
 			if dev == d.Path || strings.HasPrefix(dev, d.Path) {
 				d.Volumes = append(d.Volumes, DiskVolume{FileSystem: dev, MountPoints: mountPoints})
