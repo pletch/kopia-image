@@ -22,6 +22,14 @@ import (
 func createNTFSTestImage(ctx context.Context, t *testing.T, env *repotesting.Environment) string {
 	t.Helper()
 
+	return createNTFSTestImageWith(ctx, t, env, nil)
+}
+
+// createNTFSTestImageWith creates an image of go-ntfs's test NTFS volume,
+// first applying mutate to the volume's bytes when it is set.
+func createNTFSTestImageWith(ctx context.Context, t *testing.T, env *repotesting.Environment, mutate func([]byte)) string {
+	t.Helper()
+
 	out, err := exec.CommandContext(ctx, "go", "list", "-m", "-f", "{{.Dir}}", "www.velocidex.com/golang/go-ntfs").Output()
 	if err != nil {
 		t.Skipf("go-ntfs module not found: %v", err)
@@ -29,6 +37,10 @@ func createNTFSTestImage(ctx context.Context, t *testing.T, env *repotesting.Env
 
 	ntfsData, err := os.ReadFile(filepath.Join(strings.TrimSpace(string(out)), "parser", "test_data", "test.ntfs.dd"))
 	require.NoError(t, err)
+
+	if mutate != nil {
+		mutate(ntfsData)
+	}
 
 	espData := bytes.Repeat([]byte{1}, 1<<20)
 

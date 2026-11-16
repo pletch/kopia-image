@@ -103,6 +103,7 @@ type commandImageScheduleInstall struct {
 	checkDay       string
 	checkAt        string
 	checkSample    float64
+	checkNTFS      bool
 	kopiaExe       string
 
 	loc imageScheduleLocation
@@ -124,6 +125,7 @@ func (c *commandImageScheduleInstall) setup(svc advancedAppServices, parent comm
 	cmd.Flag("check-day", "Day of the weekly image check, or none").Default("Sunday").StringVar(&c.checkDay)
 	cmd.Flag("check-at", "Time of day of the weekly image check (HH:MM)").Default("12:00").StringVar(&c.checkAt)
 	cmd.Flag("check-sample", "Percentage of chunks the weekly check fetches").Default("1").Float64Var(&c.checkSample)
+	cmd.Flag("check-ntfs", "Make the weekly check also check the NTFS file systems in the images (image check --ntfs)").BoolVar(&c.checkNTFS)
 	cmd.Flag("kopia-exe", "kopia executable the tasks run (default: this one)").Hidden().StringVar(&c.kopiaExe)
 	c.loc.flags(cmd)
 	cmd.Action(svc.repositoryReaderAction(c.run))
@@ -237,6 +239,9 @@ func (c *commandImageScheduleInstall) tasks() (createTask, checkTask *schedule.T
 	}
 
 	checkArgs := append(append([]string(nil), common...), "image", "check", "--sample", strconv.FormatFloat(c.checkSample, 'f', -1, 64))
+	if c.checkNTFS {
+		checkArgs = append(checkArgs, "--ntfs")
+	}
 
 	checkTask = &schedule.Task{
 		Name:             c.loc.taskName(imageCheckTaskName),

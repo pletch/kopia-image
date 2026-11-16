@@ -40,7 +40,8 @@ func TestImageCreateAndList(t *testing.T) {
 
 	out = env.RunAndExpectSuccess(t, "image", "check")
 	require.Contains(t, strings.Join(out, "\n"), "All 1 image snapshots passed.")
-	env.RunAndExpectSuccess(t, "image", "check", source, "--full")
+	out = env.RunAndExpectSuccess(t, "image", "check", source, "--full", "--ntfs")
+	require.Contains(t, strings.Join(out, "\n"), "p2-data.img file system: OK")
 
 	// image sources work with the standard snapshot and policy commands
 	require.Len(t, env.RunAndExpectSuccess(t, "snapshot", "list", source), 2)

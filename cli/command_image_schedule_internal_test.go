@@ -68,7 +68,15 @@ func TestImageScheduleInstall_tasks(t *testing.T) {
 	require.Equal(t, `\Kopia\Image check`, check.Name)
 	require.Equal(t, []time.Weekday{time.Sunday}, check.Days)
 	require.Equal(t, []string{"image", "check", "--sample", "2.5"}, check.Arguments[len(check.Arguments)-4:])
+
 	require.False(t, check.WakeToRun)
+
+	c.checkNTFS = true
+	_, check, err = c.tasks()
+	require.NoError(t, err)
+	require.Equal(t, []string{"image", "check", "--sample", "2.5", "--ntfs"}, check.Arguments[len(check.Arguments)-5:])
+
+	c.checkNTFS = false
 
 	c.checkDay = "none"
 	_, check, err = c.tasks()

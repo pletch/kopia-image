@@ -52,3 +52,33 @@ func TestImageCheckCommand(t *testing.T) {
 	c = &commandImageCheck{samplePct: 150}
 	require.ErrorContains(t, c.run(ctx, env.Repository), "between 0 and 100")
 }
+
+func TestImageCheckNTFS(t *testing.T) {
+	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
+
+	good := createNTFSTestImage(ctx, t, env)
+	bad := createNTFSTestImageWith(ctx, t, env, func(b []byte) {
+		b[len(b)-512+0x50]++ // the backup boot sector
+	})
+
+	check := func(id string, ntfs bool) (string, error) {
+		return captureStdout(t, func(out textOutput) error {
+			return (&commandImageCheck{snapshots: []string{id}, full: true, parallel: 4, ntfs: ntfs, out: out}).run(ctx, env.Repository)
+		})
+	}
+
+	out, err := check(good, true)
+	require.NoError(t, err)
+	require.Contains(t, out, "p2-C.img file system: OK, 11 files, 9 directories")
+	require.NotContains(t, out, "p1-esp.img file system", "raw volumes have no file system check")
+
+	// the damage is only found by the file system check
+	out, err = check(bad, false)
+	require.NoError(t, err)
+	require.NotContains(t, out, "file system")
+
+	out, err = check(bad, true)
+	require.ErrorContains(t, err, "1 of 1 image snapshots failed the check")
+	require.Contains(t, out, "p2-C.img file system: FAILED")
+	require.Contains(t, out, "the backup boot sector at the end of the volume does not match the boot sector")
+}

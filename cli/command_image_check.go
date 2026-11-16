@@ -14,6 +14,7 @@ import (
 	"github.com/kopia/kopia/snapshot"
 	"github.com/kopia/kopia/snapshot/image"
 	"github.com/kopia/kopia/snapshot/image/imagerestore"
+	"github.com/kopia/kopia/snapshot/image/ntfsfs"
 )
 
 type commandImageCheck struct {
@@ -24,6 +25,7 @@ type commandImageCheck struct {
 	allHosts   bool
 	parallel   int
 	sampleSeed uint64
+	ntfs       bool
 
 	out textOutput
 }
@@ -35,6 +37,7 @@ func (c *commandImageCheck) setup(svc appServices, parent commandParent) {
 	cmd.Flag("full", "Fetch every chunk").BoolVar(&c.full)
 	cmd.Flag("all", "Check every image of the sources, not only the latest").BoolVar(&c.all)
 	cmd.Flag("all-hosts", "With no snapshot arguments, check the images of every host").BoolVar(&c.allHosts)
+	cmd.Flag("ntfs", "Also check the NTFS file system in each NTFS volume image: boot sectors, MFT records, cluster allocation and the directory tree").BoolVar(&c.ntfs)
 	cmd.Flag("parallel", "Number of chunks fetched in parallel").Default("16").IntVar(&c.parallel)
 	cmd.Flag("seed", "Seed for the chunk sample, to repeat a check").Hidden().Uint64Var(&c.sampleSeed)
 	cmd.Action(svc.repositoryReaderAction(c.run))
@@ -121,18 +124,62 @@ func (c *commandImageCheck) checkOne(ctx context.Context, rep repo.Repository, m
 		c.out.printStdout("  %v: %v, %v chunks (%v distinct), %v, fetched %v chunks (%v)\n",
 			r.Volume.EntryName, status, r.Chunks, r.DistinctChunks, packs, r.FetchedChunks, units.BytesString(r.FetchedBytes))
 
-		for _, p := range r.Problems {
-			c.out.printStdout("    %v\n", p)
-		}
+		c.printProblems(r.Problems, r.ProblemCount)
 
-		if more := r.ProblemCount - len(r.Problems); more > 0 {
-			c.out.printStdout("    ... and %v more problems\n", more)
+		if c.ntfs && r.OK() && r.Volume.Kind == image.VolumeKindNTFS {
+			ntfsOK, err := c.checkNTFS(ctx, rep, &r.Volume)
+			if err != nil {
+				return false, err
+			}
+
+			ok = ok && ntfsOK
 		}
 	}
 
 	log(ctx).Debugf("checked %v in %v", man.ID, clock.Now().Sub(start).Truncate(time.Millisecond))
 
 	return ok, nil
+}
+
+func (c *commandImageCheck) printProblems(problems []string, count int) {
+	for _, p := range problems {
+		c.out.printStdout("    %v\n", p)
+	}
+
+	if more := count - len(problems); more > 0 {
+		c.out.printStdout("    ... and %v more problems\n", more)
+	}
+}
+
+// checkNTFS checks the NTFS file system in a volume image, reading only the
+// chunks holding its metadata.
+func (c *commandImageCheck) checkNTFS(ctx context.Context, rep repo.Repository, v *image.Volume) (bool, error) {
+	// the check reads the $MFT once, in order, so a small cache will do
+	const checkCacheChunks = 8
+
+	vol, err := ntfsfs.Open(ctx, rep, v.ObjectID, v.EntryName, ntfsfs.Options{CacheChunks: checkCacheChunks})
+	if err != nil {
+		c.out.printStdout("  %v file system: FAILED: %v\n", v.EntryName, err)
+		return false, nil
+	}
+	defer vol.Close()
+
+	r, err := vol.Check(ctx, ntfsfs.CheckOptions{})
+	if err != nil {
+		return false, errors.Wrapf(err, "unable to check the file system of %v", v.EntryName)
+	}
+
+	status := "OK"
+	if !r.OK() {
+		status = "FAILED"
+	}
+
+	c.out.printStdout("  %v file system: %v, %v files, %v directories, %v in use, read %v chunks\n",
+		v.EntryName, status, r.Files, r.Directories, units.BytesString(r.ReferencedClusters*r.ClusterSize), vol.Fetches())
+
+	c.printProblems(r.Problems, r.ProblemCount)
+
+	return r.OK(), nil
 }
 
 // snapshotsToCheck resolves the arguments, or with none, the image sources
