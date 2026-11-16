@@ -36,6 +36,7 @@ import (
 	"github.com/kopia/kopia/repo/maintenance"
 	"github.com/kopia/kopia/repo/object"
 	"github.com/kopia/kopia/snapshot"
+	"github.com/kopia/kopia/snapshot/image"
 	"github.com/kopia/kopia/snapshot/policy"
 	"github.com/kopia/kopia/snapshot/snapshotmaintenance"
 )
@@ -807,7 +808,7 @@ func (s *Server) updateSourceManagersLocked(sources map[snapshot.SourceInfo]bool
 
 		sm := newSourceManager(src, s, s.rep)
 		s.sourceManagers[src] = sm
-		changes.added[sm] = s.isLocal(src)
+		changes.added[sm] = s.canSnapshot(src)
 	}
 
 	for src, sm := range s.sourceManagers {
@@ -1131,6 +1132,15 @@ func (s *Server) isLocal(src snapshot.SourceInfo) bool {
 	return s.rep.ClientOptions().Hostname == src.Host && !s.rep.ClientOptions().ReadOnly
 }
 
+// canSnapshot reports whether the server takes scheduled and manual snapshots
+// of a source. Image sources are local but are not directories; only
+// "kopia image create" snapshots them.
+//
+// +checklocksread:s.serverMutex
+func (s *Server) canSnapshot(src snapshot.SourceInfo) bool {
+	return s.isLocal(src) && !image.IsSourcePath(src.Path)
+}
+
 func (s *Server) getOrCreateSourceManager(ctx context.Context, src snapshot.SourceInfo) *sourceManager {
 	s.serverMutex.Lock()
 
@@ -1142,12 +1152,12 @@ func (s *Server) getOrCreateSourceManager(ctx context.Context, src snapshot.Sour
 	userLog(ctx).Debugf("creating source manager for %v", src)
 	sm := newSourceManager(src, s, s.rep)
 	s.sourceManagers[src] = sm
-	isLocal := s.isLocal(src)
+	canSnapshot := s.canSnapshot(src)
 
 	s.serverMutex.Unlock()
 
 	// start without holding serverMutex, because it reads from the repository.
-	sm.start(ctx, isLocal)
+	sm.start(ctx, canSnapshot)
 
 	return sm
 }
@@ -1204,9 +1214,9 @@ func (s *Server) getSchedulerItems(ctx context.Context, now time.Time) []schedul
 		}
 	}
 
-	// add next snapshot time for all local sources
+	// add next snapshot time for all local sources the server can snapshot
 	for _, sm := range s.sourceManagers {
-		if !s.isLocal(sm.src) {
+		if !s.canSnapshot(sm.src) {
 			continue
 		}
 

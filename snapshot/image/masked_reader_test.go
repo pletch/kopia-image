@@ -17,7 +17,8 @@ type recordingReaderAt struct {
 	data      []byte
 	forbidden []Extent
 
-	mu    sync.Mutex
+	mu sync.Mutex
+	// +checklocks:mu
 	reads []Extent
 }
 

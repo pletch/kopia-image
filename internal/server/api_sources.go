@@ -12,6 +12,7 @@ import (
 	"github.com/kopia/kopia/internal/serverapi"
 	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/snapshot"
+	"github.com/kopia/kopia/snapshot/image"
 	"github.com/kopia/kopia/snapshot/policy"
 )
 
@@ -51,6 +52,10 @@ func handleSourcesCreate(ctx context.Context, rc requestContext) (any, *apiError
 
 	if req.Policy == nil {
 		return nil, requestError(serverapi.ErrorMalformedRequest, "missing policy")
+	}
+
+	if image.IsSourcePath(req.Path) {
+		return nil, requestError(serverapi.ErrorMalformedRequest, "image sources are created with 'kopia image create'")
 	}
 
 	req.Path = ospath.ResolveUserFriendlyPath(req.Path, true)

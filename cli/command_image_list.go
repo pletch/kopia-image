@@ -88,13 +88,18 @@ func formatImageListLine(m *snapshot.Manifest, md *image.Metadata) string {
 		zero += md.Volumes[i].Stats.ZeroChunks
 	}
 
+	var size int64
+	if m.RootEntry != nil && m.RootEntry.DirSummary != nil {
+		size = m.RootEntry.DirSummary.TotalFileSize
+	}
+
 	uploaded := "?"
 	if md.UploadedBytes != nil {
 		uploaded = units.BytesString(*md.UploadedBytes)
 	}
 
 	return formatTimestamp(m.StartTime.ToTime()) + " " + string(m.ID) +
-		"  size " + units.BytesString(m.Stats.TotalFileSize) +
+		"  size " + units.BytesString(size) +
 		"  read " + units.BytesString(read) +
 		"  uploaded " + uploaded +
 		"  zero chunks " + units.Count(zero) + "/" + units.Count(chunks) +

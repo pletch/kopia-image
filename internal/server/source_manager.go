@@ -16,6 +16,7 @@ import (
 	"github.com/kopia/kopia/notification/notifydata"
 	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/snapshot"
+	"github.com/kopia/kopia/snapshot/image"
 	"github.com/kopia/kopia/snapshot/policy"
 	"github.com/kopia/kopia/snapshot/upload"
 )
@@ -243,7 +244,13 @@ func (s *sourceManager) runReadOnly() {
 	s.sourceMutex.Lock()
 	s.isReadOnly = true
 	s.sourceMutex.Unlock()
-	s.setStatus("REMOTE")
+
+	// image sources are snapshotted only by "kopia image create"
+	if image.IsSourcePath(s.src.Path) {
+		s.setStatus("IMAGE")
+	} else {
+		s.setStatus("REMOTE")
+	}
 
 	// wait until closed
 	<-s.closed
@@ -493,7 +500,8 @@ func (s *sourceManager) refreshStatus(ctx context.Context) {
 		s.lastSnapshot = nil
 	}
 
-	if s.paused {
+	// an image source inherits scheduling policies but is never snapshotted by the server
+	if s.paused || image.IsSourcePath(s.src.Path) {
 		s.nextSnapshotTime = nil
 	} else {
 		s.nextSnapshotTime = s.findClosestNextSnapshotTimeReadLocked()

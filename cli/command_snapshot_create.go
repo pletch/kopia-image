@@ -17,6 +17,7 @@ import (
 	"github.com/kopia/kopia/notification/notifydata"
 	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/snapshot"
+	"github.com/kopia/kopia/snapshot/image"
 	"github.com/kopia/kopia/snapshot/policy"
 	"github.com/kopia/kopia/snapshot/upload"
 )
@@ -141,6 +142,10 @@ func (c *commandSnapshotCreate) run(ctx context.Context, rep repo.RepositoryWrit
 	var st notifydata.MultiSnapshotStatus
 
 	for _, snapshotDir := range sources {
+		if image.IsSourcePath(snapshotDir) {
+			return errors.Errorf("%v is a disk image source; use 'kopia image create'", snapshotDir)
+		}
+
 		if u.IsCanceled() {
 			log(ctx).Info("Upload canceled")
 			break
@@ -457,8 +462,10 @@ func shouldSnapshotSource(ctx context.Context, src snapshot.SourceInfo, rep repo
 		return false, errors.Wrapf(err, "unable to get policy tree for source %v", src)
 	}
 
+	// image sources are not directories; "kopia image create" snapshots them
 	return src.Host == rep.ClientOptions().Hostname &&
 		src.UserName == rep.ClientOptions().Username &&
+		!image.IsSourcePath(src.Path) &&
 		!policy.IsManualSnapshot(policyTree), nil
 }
 
