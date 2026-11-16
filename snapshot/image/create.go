@@ -223,6 +223,14 @@ func (opt *CreateOptions) writeVolumes(ctx context.Context, rep repo.RepositoryW
 			return nil, errors.Wrapf(err, "partition %v", v.PartitionNumber)
 		}
 
+		// a repository server makes the contents sent to it visible only once
+		// flushed; a direct connection sees its own pending contents
+		if _, direct := rep.(repo.DirectRepositoryWriter); !direct {
+			if err := rep.Flush(ctx); err != nil {
+				return nil, errors.Wrapf(err, "unable to flush the image of partition %v", v.PartitionNumber)
+			}
+		}
+
 		if _, err := rep.VerifyObject(ctx, oid); err != nil {
 			return nil, errors.Wrapf(err, "image of partition %v is incomplete", v.PartitionNumber)
 		}
