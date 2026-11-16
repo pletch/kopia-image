@@ -160,3 +160,14 @@ func runElevatedHidden(exe string, args []string, timeout time.Duration) (uint32
 
 	return code, nil
 }
+
+// kopiaStateDir returns ProgramData\kopia, where kopia image records what
+// it did, readable by every user.
+func kopiaStateDir() (string, error) {
+	pd, err := windows.KnownFolderPath(windows.FOLDERID_ProgramData, 0)
+	if err != nil {
+		return "", fmt.Errorf("unable to find ProgramData: %w", err)
+	}
+
+	return filepath.Join(pd, "kopia"), nil
+}

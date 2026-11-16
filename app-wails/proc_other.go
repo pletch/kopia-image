@@ -21,3 +21,8 @@ func runElevatedConsole(string, []string) error {
 func runElevatedHidden(string, []string, time.Duration) (uint32, error) {
 	return 0, errors.New("administrator rights can be requested only on Windows")
 }
+
+// kopiaStateDir is used only on Windows.
+func kopiaStateDir() (string, error) {
+	return "", errors.New("disk images are scheduled only on Windows")
+}

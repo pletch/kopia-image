@@ -109,6 +109,9 @@ type shell struct {
 
 	// runElevated is nil except in tests: runElevatedHidden is used.
 	runElevated elevatedRunner
+
+	// imageStateDir is "" except in tests: ProgramDatakopia is used.
+	imageStateDir string
 }
 
 func main() {

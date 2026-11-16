@@ -275,20 +275,21 @@ func decodeJSONRequest(w http.ResponseWriter, r *http.Request, v any) bool {
 
 const maxShimRequestSize = 64 * 1024
 
-// serveRunImageTask starts the scheduled image task as an administrator. It
-// answers {"status":"started"} or {"status":"canceled"} when the person
-// declines the prompt, and an error otherwise.
-func (h *proxyHandler) serveRunImageTask(w http.ResponseWriter, r *http.Request) {
-	// an empty JSON object: the JSON content type keeps other sites out
-	var req struct{}
+// serveElevated runs an action that asks for administrator rights, after
+// decoding the request body into req. The JSON content type that decoding
+// insists on keeps other sites out, so actions without settings take an
+// empty object. It answers {"status": done}, {"status":"canceled"} when the
+// person declines the prompt, and an error otherwise.
+func serveElevated[T any](w http.ResponseWriter, r *http.Request, done string, act func(req *T) error) {
+	var req T
 
 	if !decodeJSONRequest(w, r, &req) {
 		return
 	}
 
-	status := "started"
+	status := done
 
-	err := h.host.runImageTaskElevated()
+	err := act(&req)
 
 	switch {
 	case errors.Is(err, errElevationCanceled):
@@ -296,8 +297,11 @@ func (h *proxyHandler) serveRunImageTask(w http.ResponseWriter, r *http.Request)
 	case errors.Is(err, errElevationBusy):
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
+	case errors.Is(err, errInvalidSchedule):
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	case err != nil:
-		slog.Warn("unable to start the image task as administrator", "err", err)
+		slog.Warn("action as administrator failed", "path", r.URL.Path, "err", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 
 		return
@@ -379,7 +383,13 @@ func (h *proxyHandler) serveShim(w http.ResponseWriter, r *http.Request, repoID 
 		w.WriteHeader(http.StatusNoContent)
 
 	case "run-image-task":
-		h.serveRunImageTask(w, r)
+		serveElevated(w, r, "started", func(*struct{}) error { return h.host.runImageTaskElevated() })
+
+	case "install-image-schedule":
+		serveElevated(w, r, "done", func(s *imageScheduleSettings) error { return h.host.installImageSchedule(repoID, s) })
+
+	case "remove-image-schedule":
+		serveElevated(w, r, "done", func(*struct{}) error { return h.host.removeImageSchedule() })
 
 	default:
 		http.NotFound(w, r)

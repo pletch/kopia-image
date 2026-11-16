@@ -43,19 +43,37 @@
     // to "started" or "canceled" (the prompt was declined); rejects with an
     // Error carrying KopiaUI's message.
     runImageTaskElevated: function () {
-      return post("run-image-task", {}).then(function (r) {
-        if (!r.ok) {
-          return r.text().then(function (t) {
-            throw new Error(t.trim() || "HTTP " + r.status);
-          });
-        }
-
-        return r.json().then(function (v) {
-          return v.status;
-        });
-      });
+      return postElevated("run-image-task", {});
+    },
+    // Schedules images of this computer with this window's repository, as
+    // an administrator after the UAC prompt: settings are volumes (drive
+    // letters, one per disk), at (HH:MM), days (weekday names, none for
+    // every day), checkDay (a weekday or "none"), checkAt, wake and
+    // allowOnBattery. Resolves to "done" or "canceled"; rejects with an Error
+    // carrying why it failed.
+    installImageSchedule: function (settings) {
+      return postElevated("install-image-schedule", settings);
+    },
+    // Removes the scheduled image tasks, as an administrator after the UAC
+    // prompt. Resolves to "done" or "canceled".
+    removeImageSchedule: function () {
+      return postElevated("remove-image-schedule", {});
     },
   };
+
+  function postElevated(action, body) {
+    return post(action, body).then(function (r) {
+      if (!r.ok) {
+        return r.text().then(function (t) {
+          throw new Error(t.trim() || "HTTP " + r.status);
+        });
+      }
+
+      return r.json().then(function (v) {
+        return v.status;
+      });
+    });
+  }
 
   // Returns the absolute URL if it is an http(s) page of another site.
   function externalURL(href) {
