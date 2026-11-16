@@ -57,14 +57,8 @@ type imageScheduleSettings struct {
 // installArgs checks the settings and returns the arguments of
 // "kopia image schedule install" for the repository connection configFile.
 func (s *imageScheduleSettings) installArgs(configFile, requestID string) ([]string, error) {
-	if len(s.Volumes) == 0 || len(s.Volumes) > 26 {
-		return nil, fmt.Errorf("%w: choose at least one disk", errInvalidSchedule)
-	}
-
-	for i, v := range s.Volumes {
-		if !driveLetterRE.MatchString(v) || slices.Contains(s.Volumes[:i], v) {
-			return nil, fmt.Errorf("%w: %q is not a drive letter", errInvalidSchedule, v)
-		}
+	if err := validateVolumes(s.Volumes); err != nil {
+		return nil, err
 	}
 
 	for _, t := range []string{s.At, s.CheckAt} {
@@ -94,6 +88,22 @@ func (s *imageScheduleSettings) installArgs(configFile, requestID string) ([]str
 	args = append(args, boolFlag("wake", s.Wake), boolFlag("allow-on-battery", s.AllowOnBattery), "--request-id", requestID)
 
 	return args, nil
+}
+
+// validateVolumes accepts one to 26 distinct drive letters, e.g. "C:": they
+// go on a command line run as administrator.
+func validateVolumes(volumes []string) error {
+	if len(volumes) == 0 || len(volumes) > 26 {
+		return fmt.Errorf("%w: choose at least one disk", errInvalidSchedule)
+	}
+
+	for i, v := range volumes {
+		if !driveLetterRE.MatchString(v) || slices.Contains(volumes[:i], v) {
+			return fmt.Errorf("%w: %q is not a drive letter", errInvalidSchedule, v)
+		}
+	}
+
+	return nil
 }
 
 func boolFlag(name string, v bool) string {

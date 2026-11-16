@@ -105,6 +105,11 @@ type ImageTask struct {
 	// Scheduled is false when the task is not installed.
 	Scheduled bool `json:"scheduled"`
 
+	// StatusHidden is set when the task is installed but Task Scheduler does
+	// not show it to the server's account, which happens to the tasks of
+	// SYSTEM; the status fields are then empty.
+	StatusHidden bool `json:"statusHidden,omitempty"`
+
 	schedule.TaskStatus
 
 	// Error says why the task's status could not be read.

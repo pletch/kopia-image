@@ -241,3 +241,62 @@ func TestServeShim_imageSchedule(t *testing.T) {
 		t.Fatalf("ran %v times, want 2", len(ran))
 	}
 }
+
+func TestServeShim_createImageAndRecoveryMedia(t *testing.T) {
+	sh := scheduleShell(t)
+
+	var consoles [][]string
+
+	sh.runConsole = func(exe string, args []string) error {
+		consoles = append(consoles, append([]string{exe}, args...))
+		return nil
+	}
+
+	post := func(action, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, shimPrefix+action, strings.NewReader(body))
+		r.Header.Set(windowNameHeader, windowName(defaultRepoID))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Sec-Fetch-Site", "same-origin")
+
+		rec := httptest.NewRecorder()
+		(&proxyHandler{host: sh}).ServeHTTP(rec, r)
+
+		return rec
+	}
+
+	if rec := post("create-image", `{"volumes":["C:","D:"]}`); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"started"`) {
+		t.Fatalf("create-image: got %v: %s", rec.Code, rec.Body)
+	}
+
+	cfg := sh.configs.configFile(defaultRepoID)
+
+	if want := []string{sh.kopiaPath, "--config-file", cfg, "image", "create", "C:", "D:"}; !slices.Equal(consoles[0], want) {
+		t.Fatalf("ran %q, want %q", consoles[0], want)
+	}
+
+	if rec := post("create-recovery-media", `{}`); rec.Code != http.StatusOK {
+		t.Fatalf("create-recovery-media: got %v: %s", rec.Code, rec.Body)
+	}
+
+	if want := []string{sh.kopiaPath, "--config-file", cfg, "image", "recovery-media", "create"}; !slices.Equal(consoles[1], want) {
+		t.Fatalf("ran %q, want %q", consoles[1], want)
+	}
+
+	// what reaches the administrator command line is checked
+	for _, body := range []string{`{"volumes":[]}`, `{"volumes":["C:\Windows"]}`, `{"volumes":["--config-file=x"]}`} {
+		if rec := post("create-image", body); rec.Code != http.StatusBadRequest {
+			t.Fatalf("%v: got %v", body, rec.Code)
+		}
+	}
+
+	// a declined prompt
+	sh.runConsole = func(string, []string) error { return errElevationCanceled }
+
+	if rec := post("create-image", `{"volumes":["C:"]}`); !strings.Contains(rec.Body.String(), `"canceled"`) {
+		t.Fatalf("declined: got %v: %s", rec.Code, rec.Body)
+	}
+
+	if len(consoles) != 2 {
+		t.Fatalf("ran %v consoles, want 2", len(consoles))
+	}
+}

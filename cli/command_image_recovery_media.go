@@ -770,7 +770,7 @@ func (c *commandImageRecoveryMediaKit) run(ctx context.Context, rep repo.Reposit
 }
 
 // pickUSB asks which USB disk to make recovery media when no target is
-// given, as when the media is created from the KopiaUI tray menu.
+// given, as when the media is created from the Images page of KopiaUI.
 func (c *commandImageRecoveryMediaCreate) pickUSB() (string, error) {
 	disks, err := imagerestore.ListDisks()
 	if err != nil {

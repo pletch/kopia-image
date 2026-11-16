@@ -162,7 +162,14 @@ func imageCreateTaskPath() string {
 // that the rest still shows.
 func handleImagesStatus(ctx context.Context, rc requestContext) (any, *apiError) {
 	host := imageHostOf(rc)
-	resp := &serverapi.ImageStatusResponse{Supported: true, Tasks: []*serverapi.ImageTask{}}
+	resp := &serverapi.ImageStatusResponse{Supported: true, Tasks: []*serverapi.ImageTask{}, KopiaVersion: repo.BuildVersion}
+
+	stateDir, stateErr := host.StateDir()
+	if stateErr == nil {
+		resp.LastRun, resp.LastRunError = readImageStatusFile(disksource.StatusPathIn(stateDir), disksource.ReadRunStatus)
+		resp.RecoveryMedia, resp.RecoveryMediaError = readImageStatusFile(filepath.Join(stateDir, recoverymedia.RecordFileName), readRecoveryMedia)
+		resp.Schedule, resp.ScheduleError = readImageStatusFile(schedule.SettingsPath(stateDir), schedule.ReadSettings)
+	}
 
 	for _, name := range []string{schedule.CreateTaskName, schedule.CheckTaskName} {
 		t := &serverapi.ImageTask{Name: schedule.TaskPath(schedule.DefaultTaskFolder, name)}
@@ -174,6 +181,10 @@ func handleImagesStatus(ctx context.Context, rc requestContext) (any, *apiError)
 		case errors.Is(err, schedule.ErrNotSupported):
 			return &serverapi.ImageStatusResponse{Tasks: []*serverapi.ImageTask{}}, nil
 		case errors.Is(err, schedule.ErrTaskNotFound):
+			// Task Scheduler hides the tasks of SYSTEM from other accounts as
+			// if they did not exist; the settings tell that they do
+			t.Scheduled = scheduleHasTask(resp.Schedule, name)
+			t.StatusHidden = t.Scheduled
 		case err != nil:
 			t.Error = err.Error()
 		default:
@@ -184,17 +195,10 @@ func handleImagesStatus(ctx context.Context, rc requestContext) (any, *apiError)
 		resp.Tasks = append(resp.Tasks, t)
 	}
 
-	resp.KopiaVersion = repo.BuildVersion
-
-	stateDir, err := host.StateDir()
-	if err != nil {
-		resp.LastRunError = err.Error()
+	if stateErr != nil {
+		resp.LastRunError = stateErr.Error()
 		return resp, nil
 	}
-
-	resp.LastRun, resp.LastRunError = readImageStatusFile(disksource.StatusPathIn(stateDir), disksource.ReadRunStatus)
-	resp.RecoveryMedia, resp.RecoveryMediaError = readImageStatusFile(filepath.Join(stateDir, recoverymedia.RecordFileName), readRecoveryMedia)
-	resp.Schedule, resp.ScheduleError = readImageStatusFile(schedule.SettingsPath(stateDir), schedule.ReadSettings)
 
 	if resp.Schedule != nil && resp.Schedule.ConnectionDigest != "" {
 		if lc, err := repo.LoadConfigFromFile(rc.srv.getOptions().ConfigFile); err == nil {
@@ -204,6 +208,29 @@ func handleImagesStatus(ctx context.Context, rc requestContext) (any, *apiError)
 	}
 
 	return resp, nil
+}
+
+// scheduleHasTask reports whether the schedule settings include a task:
+// the image task always, the weekly check unless it was turned off.
+func scheduleHasTask(s *schedule.Settings, name string) bool {
+	if s == nil {
+		return false
+	}
+
+	return name != schedule.CheckTaskName || (s.CheckDay != "" && s.CheckDay != "none")
+}
+
+// scheduleInstalled reports whether "kopia image schedule install" recorded
+// settings, which "remove" deletes.
+func scheduleInstalled(host ImageHost) bool {
+	dir, err := host.StateDir()
+	if err != nil {
+		return false
+	}
+
+	_, err = os.Stat(schedule.SettingsPath(dir)) //nolint:gosec // dir is the image state folder, not request input
+
+	return err == nil
 }
 
 // handleImagesDisks lists the disks of the server's computer that the image
@@ -259,6 +286,11 @@ func handleImagesScheduleRun(ctx context.Context, rc requestContext) (any, *apiE
 	_, err := host.QueryTask(ctx, name)
 	if err == nil {
 		err = host.RunTask(ctx, name)
+	}
+
+	// a task hidden from the server's account can be started as administrator
+	if errors.Is(err, schedule.ErrTaskNotFound) && !errors.Is(err, schedule.ErrNotSupported) && scheduleInstalled(host) {
+		err = schedule.ErrAccessDenied
 	}
 
 	switch {

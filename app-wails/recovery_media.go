@@ -2,73 +2,55 @@ package main
 
 import (
 	"errors"
-	"log/slog"
-
-	"github.com/wailsapp/wails/v3/pkg/application"
+	"fmt"
 )
 
 // errElevationCanceled is returned when the person declines the
 // administrator prompt.
 var errElevationCanceled = errors.New("the administrator prompt was declined")
 
-// createRecoveryMedia opens an administrator console that runs
-// "kopia image recovery-media create" for a repository. The command lists
-// the USB disks, asks which one to erase and shows its progress; building
-// the media needs an administrator, which KopiaUI does not run as.
-func (s *shell) createRecoveryMedia(repoID string) {
-	args := []string{
-		"--config-file", s.configs.configFile(repoID),
-		"image", "recovery-media", "create",
+// consoleRunner opens a console window that runs a program as an
+// administrator, after the UAC prompt; tests replace it.
+type consoleRunner func(exe string, args []string) error
+
+func (s *shell) elevatedConsole() consoleRunner {
+	if s.runConsole != nil {
+		return s.runConsole
 	}
 
-	err := runElevatedConsole(s.kopiaPath, args)
-	if err == nil || errors.Is(err, errElevationCanceled) {
-		return
-	}
-
-	slog.Warn("unable to start recovery media creation", "repo", repoID, "err", err)
-
-	s.app.Dialog.Error().
-		SetTitle(appName).
-		SetMessage("Unable to start creating recovery media:\n\n" + err.Error()).
-		Show()
+	return runElevatedConsole
 }
 
-const recoveryMediaLabel = "Create Recovery Media..."
-
-// addRecoveryMediaMenu adds the item that creates recovery media, on Windows
-// and once a repository is configured: one item for one repository, a
-// submenu naming each repository otherwise.
-func (s *shell) addRecoveryMediaMenu(menu *application.Menu) {
-	ids := s.configs.list()
-	if !isWindows || len(ids) == 0 {
-		return
+// startRecoveryMedia opens an administrator console that runs
+// "kopia image recovery-media create" for a repository. The command lists
+// the USB disks, asks which one to erase and shows its progress; building
+// the media needs an administrator, which KopiaUI does not run as. It
+// returns errElevationCanceled when the person declines the prompt.
+func (s *shell) startRecoveryMedia(repoID string) error {
+	if s.server(repoID) == nil {
+		return fmt.Errorf("unknown repository %q", repoID)
 	}
 
-	const tooltip = "Make a USB stick that restores this computer's disk images; asks for administrator rights"
+	return s.elevatedConsole()(s.kopiaPath, []string{
+		"--config-file", s.configs.configFile(repoID),
+		"image", "recovery-media", "create",
+	})
+}
 
-	if len(ids) == 1 {
-		id := ids[0]
-
-		menu.Add(recoveryMediaLabel).
-			SetTooltip(tooltip).
-			OnClick(func(*application.Context) { s.createRecoveryMedia(id) })
-
-		return
+// startImage opens an administrator console that runs "kopia image create"
+// for a repository, imaging the disks that hold the given volumes, so that
+// images can be created without a schedule. The console shows its progress;
+// closing it cancels the run.
+func (s *shell) startImage(repoID string, volumes []string) error {
+	if s.server(repoID) == nil {
+		return fmt.Errorf("unknown repository %q", repoID)
 	}
 
-	sub := menu.AddSubmenu(recoveryMediaLabel)
-
-	for _, id := range ids {
-		repoID := id
-		label := repoID
-
-		if srv := s.server(repoID); srv != nil {
-			label = srv.describe()
-		}
-
-		sub.Add(label).
-			SetTooltip(tooltip).
-			OnClick(func(*application.Context) { s.createRecoveryMedia(repoID) })
+	if err := validateVolumes(volumes); err != nil {
+		return err
 	}
+
+	args := []string{"--config-file", s.configs.configFile(repoID), "image", "create"}
+
+	return s.elevatedConsole()(s.kopiaPath, append(args, volumes...))
 }

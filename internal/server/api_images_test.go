@@ -417,3 +417,47 @@ func TestImagesDisks(t *testing.T) {
 	require.False(t, resp.Supported)
 	require.Empty(t, resp.Disks)
 }
+
+// TestImagesStatus_hiddenTasks checks that tasks Task Scheduler hides from
+// the server's account, as it hides the tasks of SYSTEM, count as installed
+// when the schedule settings say so, and that starting one asks KopiaUI for
+// administrator rights instead of saying it is not scheduled.
+func TestImagesStatus_hiddenTasks(t *testing.T) {
+	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
+
+	// no task is visible
+	host := &fakeImageHost{dir: testutil.TempDirectory(t), tasks: map[string]schedule.TaskStatus{}}
+	cli := startImageServer(t, env, host)
+
+	require.NoError(t, schedule.WriteSettings(schedule.SettingsPath(host.dir), &schedule.Settings{
+		Volumes: []string{"C:"}, At: "02:00", CheckDay: "none", CheckAt: "12:00",
+	}))
+
+	st, err := serverapi.ImageStatus(ctx, cli)
+	require.NoError(t, err)
+	require.True(t, st.Tasks[0].Scheduled)
+	require.True(t, st.Tasks[0].StatusHidden)
+	require.Empty(t, st.Tasks[0].Error)
+
+	// the weekly check is off
+	require.False(t, st.Tasks[1].Scheduled)
+	require.False(t, st.Tasks[1].StatusHidden)
+
+	_, err = serverapi.RunImageTask(ctx, cli)
+
+	var statusErr apiclient.HTTPStatusError
+
+	require.ErrorAs(t, err, &statusErr)
+	require.Equal(t, http.StatusForbidden, statusErr.HTTPStatusCode)
+
+	// without settings, nothing is scheduled
+	require.NoError(t, os.Remove(schedule.SettingsPath(host.dir)))
+
+	st, err = serverapi.ImageStatus(ctx, cli)
+	require.NoError(t, err)
+	require.False(t, st.Tasks[0].Scheduled)
+
+	_, err = serverapi.RunImageTask(ctx, cli)
+	require.ErrorAs(t, err, &statusErr)
+	require.Equal(t, http.StatusNotFound, statusErr.HTTPStatusCode)
+}
