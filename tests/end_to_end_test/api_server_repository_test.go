@@ -251,6 +251,17 @@ func testAPIServerRepository(t *testing.T, allowRepositoryUsers bool) {
 	snapshots = clitestutil.ListSnapshotsAndExpectSuccess(t, e2)
 	require.Len(t, snapshots, 3)
 
+	// a snapshot through the server records the new data it sent
+	uploadDir := testutil.TempDirectory(t)
+	writeUniqueRandomFile(t, filepath.Join(uploadDir, "f"), 1<<20)
+
+	var uploadMan snapshot.Manifest
+
+	testutil.MustParseJSONLines(t, e2.RunAndExpectSuccess(t, "snapshot", "create", uploadDir, "--json"), &uploadMan)
+	require.NotNil(t, uploadMan.UploadedBytes)
+	require.GreaterOrEqual(t, *uploadMan.UploadedBytes, int64(1<<20))
+	require.Less(t, *uploadMan.UploadedBytes, int64(1<<20+256<<10))
+
 	// shutdown the server
 	require.NoError(t, serverapi.Shutdown(ctx, controlClient))
 

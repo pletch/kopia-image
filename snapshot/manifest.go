@@ -37,6 +37,13 @@ type Manifest struct {
 
 	// list of manually-defined pins which prevent the snapshot from being deleted.
 	Pins []string `json:"pins,omitempty"`
+
+	// UploadedBytes is how much new data the snapshot stored: its new file
+	// contents and directory listings after deduplication, compression and
+	// encryption, or, through a repository server, the contents it sent to
+	// the server. Pack headers, indexes and the snapshot manifest itself are
+	// left out. Nil for snapshots taken before kopia recorded it.
+	UploadedBytes *int64 `json:"uploadedBytes,omitempty"`
 }
 
 // UpdatePins updates pins in the provided manifest.
@@ -178,6 +185,11 @@ func (m *Manifest) Clone() *Manifest {
 
 	if m2.RootEntry != nil {
 		m2.RootEntry = m2.RootEntry.Clone()
+	}
+
+	if m2.UploadedBytes != nil {
+		n := *m2.UploadedBytes
+		m2.UploadedBytes = &n
 	}
 
 	return &m2

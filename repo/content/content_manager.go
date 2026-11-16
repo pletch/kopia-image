@@ -73,6 +73,10 @@ type WriteManager struct {
 	revision            atomic.Int64 // changes on each local write
 	disableIndexRefresh atomic.Bool
 
+	// packedBytes counts the new contents this write manager added to packs,
+	// compressed and encrypted, see PackedBytes.
+	packedBytes atomic.Int64
+
 	mu sync.RWMutex
 	// +checklocks:mu
 	cond *sync.Cond
@@ -112,6 +116,13 @@ type pendingPackInfo struct {
 	currentPackItems map[ID]Info         // contents that are in the pack content currently being built (all inline)
 	currentPackData  *gather.WriteBuffer // total length of all items in the current pack content
 	finalized        bool                // indicates whether currentPackData has local index appended to it
+}
+
+// PackedBytes returns the bytes of new contents this write manager has added
+// to packs so far, compressed and encrypted, whether or not the packs were
+// uploaded yet. Contents that already existed are not counted.
+func (bm *WriteManager) PackedBytes() int64 {
+	return bm.packedBytes.Load()
 }
 
 // Revision returns data revision number that changes on each write or refresh.
@@ -334,6 +345,10 @@ func (bm *WriteManager) addToPackUnlocked(ctx context.Context, contentID ID, dat
 
 	info.CompressionHeaderID = actualComp
 	info.PackedLength = uint32(pp.currentPackData.Length()) - info.PackOffset //nolint:gosec
+
+	if !isDeleted {
+		bm.packedBytes.Add(int64(info.PackedLength))
+	}
 
 	pp.currentPackItems[contentID] = info
 

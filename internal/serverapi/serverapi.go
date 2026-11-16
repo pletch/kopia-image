@@ -175,6 +175,10 @@ type Snapshot struct {
 	RootEntry        string               `json:"rootID"`
 	RetentionReasons []string             `json:"retention"`
 	Pins             []string             `json:"pins"`
+
+	// UploadedBytes is how much the snapshot sent to the repository; nil for
+	// snapshots taken before kopia recorded it.
+	UploadedBytes *int64 `json:"uploadedBytes,omitempty"`
 }
 
 // SnapshotsResponse contains a list of snapshots.

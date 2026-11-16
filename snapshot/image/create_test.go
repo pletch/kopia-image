@@ -107,6 +107,8 @@ func TestCreate(t *testing.T) {
 	require.Equal(t, "test", man.Tags["tag:host-kind"])
 	require.NotNil(t, md.UploadedBytes)
 	require.Positive(t, *md.UploadedBytes)
+	require.NotNil(t, man.UploadedBytes)
+	require.Equal(t, *md.UploadedBytes, *man.UploadedBytes)
 
 	require.Len(t, md.Volumes, 2)
 	require.Equal(t, "p1-esp.img", md.Volumes[0].EntryName)

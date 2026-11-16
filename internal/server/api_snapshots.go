@@ -260,6 +260,11 @@ func convertSnapshotManifest(m *snapshot.Manifest) *serverapi.Snapshot {
 		Pins:             append([]string{}, m.Pins...),
 	}
 
+	if m.UploadedBytes != nil {
+		n := *m.UploadedBytes
+		e.UploadedBytes = &n
+	}
+
 	if re := m.RootEntry; re != nil {
 		e.Summary = re.DirSummary
 	}

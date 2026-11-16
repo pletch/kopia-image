@@ -421,6 +421,11 @@ func (opt *CreateOptions) saveManifest(ctx context.Context, rep repo.RepositoryW
 		Tags: tags,
 	}
 
+	if md.UploadedBytes != nil {
+		n := *md.UploadedBytes
+		man.UploadedBytes = &n
+	}
+
 	if _, err := snapshot.SaveSnapshot(ctx, rep, man); err != nil {
 		return nil, errors.Wrap(err, "unable to save image snapshot")
 	}

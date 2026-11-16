@@ -360,6 +360,10 @@ func (s *sourceManager) snapshotInternal(ctx context.Context, ctrl uitask.Contro
 
 	onUpload := func(int64) {}
 
+	// bytes this snapshot's write session sent; used through a repository
+	// server, see upload.NewDataCounter
+	var uploaded atomic.Int64
+
 	s.sourceMutex.Lock()
 	manifestsSinceLastCompleteSnapshot := append([]*snapshot.Manifest(nil), s.manifestsSinceLastCompleteSnapshot...)
 	s.lastAttemptedSnapshotTime = fs.UTCTimestampFromTime(clock.Now())
@@ -378,6 +382,8 @@ func (s *sourceManager) snapshotInternal(ctx context.Context, ctrl uitask.Contro
 	return repo.WriteSession(uploadCtx, s.rep, repo.WriteSessionOptions{
 		Purpose: "Source Manager Uploader",
 		OnUpload: func(numBytes int64) {
+			uploaded.Add(numBytes)
+
 			// extra indirection to allow changing onUpload function later
 			// once we have the uploader
 			onUpload(numBytes)
@@ -407,6 +413,9 @@ func (s *sourceManager) snapshotInternal(ctx context.Context, ctrl uitask.Contro
 		userLog(ctx).Debugf("starting upload of %v", s.src)
 		s.setUploader(u)
 
+		newData := upload.NewDataCounter(w, uploaded.Load)
+		newDataBefore := newData()
+
 		manifest, err := u.Upload(ctx, localEntry, policyTree, s.src, manifestsSinceLastCompleteSnapshot...)
 
 		prog.report(true)
@@ -425,6 +434,10 @@ func (s *sourceManager) snapshotInternal(ctx context.Context, ctrl uitask.Contro
 				return nil
 			}
 		}
+
+		n := newData() - newDataBefore
+		manifest.UploadedBytes = &n
+		result.Manifest.UploadedBytes = &n
 
 		snapshotID, err := snapshot.SaveSnapshot(ctx, w, manifest)
 		if err != nil {

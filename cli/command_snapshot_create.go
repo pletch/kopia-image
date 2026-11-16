@@ -333,12 +333,18 @@ func (c *commandSnapshotCreate) snapshotSingleSource(
 		return errors.Wrap(finalErr, "unable to get policy tree")
 	}
 
+	newData := upload.NewDataCounter(rep, c.svc.totalUploadedBytes)
+	newDataBefore := newData()
+
 	manifest, finalErr := u.Upload(ctx, fsEntry, policyTree, sourceInfo, previous...)
 	if finalErr != nil {
 		// fail-fast uploads will fail here without recording a manifest, other uploads will
 		// possibly fail later.
 		return errors.Wrap(finalErr, "upload error")
 	}
+
+	uploaded := newData() - newDataBefore
+	manifest.UploadedBytes = &uploaded
 
 	manifest.Description = c.snapshotCreateDescription
 	manifest.Tags = tags

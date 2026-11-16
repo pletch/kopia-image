@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/alecthomas/kingpin/v2"
@@ -96,6 +97,7 @@ type appServices interface {
 	dangerousCommand()
 	repositoryConfigFileName() string
 	getProgress() *cliProgress
+	totalUploadedBytes() int64
 	getRestoreProgress() RestoreProgress
 	notificationTemplateOptions() notifytemplate.Options
 
@@ -127,6 +129,10 @@ type advancedAppServices interface {
 
 // App contains per-invocation flags and state of Kopia CLI.
 type App struct {
+	// uploadedBytes counts what the command's write sessions uploaded. The
+	// progress counters cannot be used: each snapshot upload resets them.
+	uploadedBytes atomic.Int64
+
 	// global flags
 	enableAutomaticMaintenance    bool
 	progress                      *cliProgress
@@ -197,6 +203,19 @@ func (c *App) enableTestOnlyFlags() bool {
 
 func (c *App) getProgress() *cliProgress {
 	return c.progress
+}
+
+// onUpload records bytes uploaded by a write session and reports them as
+// progress.
+func (c *App) onUpload(numBytes int64) {
+	c.uploadedBytes.Add(numBytes)
+	c.progress.UploadedBytes(numBytes)
+}
+
+// totalUploadedBytes returns the bytes the command's write sessions uploaded
+// so far.
+func (c *App) totalUploadedBytes() int64 {
+	return c.uploadedBytes.Load()
 }
 
 // SetRestoreProgress is used to set custom restore progress, purposed to be used in tests.
@@ -441,7 +460,7 @@ func (c *App) directRepositoryWriteAction(act func(ctx context.Context, rep repo
 
 		return repo.DirectWriteSession(ctx, rep, repo.WriteSessionOptions{
 			Purpose:  "cli:" + c.currentActionName(),
-			OnUpload: c.progress.UploadedBytes,
+			OnUpload: c.onUpload,
 		}, act)
 	}))
 }
@@ -463,7 +482,7 @@ func (c *App) repositoryWriterAction(act func(ctx context.Context, rep repo.Repo
 		func(ctx context.Context, rep repo.Repository) error {
 			return repo.WriteSession(ctx, rep, repo.WriteSessionOptions{
 				Purpose:  "cli:" + c.currentActionName(),
-				OnUpload: c.progress.UploadedBytes,
+				OnUpload: c.onUpload,
 			}, act)
 		},
 	)
@@ -476,7 +495,7 @@ func (c *App) repositoryWriterActionWithMaintenance(act func(ctx context.Context
 	return c.repositoryAction(func(ctx context.Context, rep repo.Repository) error {
 		o := repo.WriteSessionOptions{
 			Purpose:  "cli:" + c.currentActionName(),
-			OnUpload: c.progress.UploadedBytes,
+			OnUpload: c.onUpload,
 		}
 
 		if err := repo.WriteSession(ctx, rep, o, act); err != nil {
@@ -611,7 +630,7 @@ func (c *App) maybeRunMaintenance(ctx context.Context, rep repo.Repository) erro
 
 	err := repo.DirectWriteSession(ctx, dr, repo.WriteSessionOptions{
 		Purpose:  "maybeRunMaintenance",
-		OnUpload: c.progress.UploadedBytes,
+		OnUpload: c.onUpload,
 	}, func(ctx context.Context, w repo.DirectRepositoryWriter) error {
 		return snapshotmaintenance.Run(ctx, w, maintenance.ModeAuto, false, maintenance.SafetyFull)
 	})
