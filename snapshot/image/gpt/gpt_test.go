@@ -138,3 +138,21 @@ func TestRead_invalid(t *testing.T) {
 	_, err = Read(disk, 512)
 	require.ErrorContains(t, err, "header checksum")
 }
+
+func TestClear(t *testing.T) {
+	for _, sectorSize := range []int64{512, 4096} {
+		disk := make(memDisk, 64<<20)
+		require.NoError(t, Write(disk, testLayout(sectorSize), int64(len(disk))))
+
+		// data inside a partition is kept
+		disk[1<<20] = 0x42
+
+		require.NoError(t, Clear(disk, sectorSize, int64(len(disk))))
+
+		_, err := Read(disk, sectorSize)
+		require.ErrorIs(t, err, ErrNoGPT)
+		require.Equal(t, make([]byte, 512), []byte(disk[:512]), "protective MBR")
+		require.Equal(t, make([]byte, sectorSize), []byte(disk[len(disk)-int(sectorSize):]), "backup header")
+		require.Equal(t, byte(0x42), disk[1<<20])
+	}
+}

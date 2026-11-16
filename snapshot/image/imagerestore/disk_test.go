@@ -228,3 +228,41 @@ func TestSelectVolumes(t *testing.T) {
 	_, err = s.SelectVolumes([]string{"p2-msr"})
 	require.ErrorContains(t, err, "no volume")
 }
+
+// failingTarget fails writes past a limit, like a disk that disconnects.
+type failingTarget struct {
+	Target
+
+	limit int64
+}
+
+func (f *failingTarget) WriteAt(p []byte, off int64) (int, error) {
+	if off+int64(len(p)) > f.limit {
+		return 0, io.ErrShortWrite
+	}
+
+	return f.Target.WriteAt(p, off) //nolint:wrapcheck
+}
+
+func TestRestoreDisk_interruptedLeavesNoPartitionTable(t *testing.T) {
+	ctx, env, s, _ := createImageSnapshot(t)
+
+	// a disk that had the image's partition table
+	path := filepath.Join(t.TempDir(), "disk.img")
+
+	target, err := OpenTarget(path, s.Layout.DiskSize, 512)
+	require.NoError(t, err)
+
+	_, err = RestoreDisk(ctx, env.Repository, s, target, DiskOptions{Volumes: s.Metadata.Volumes})
+	require.NoError(t, err)
+
+	// a second restore fails partway through the NTFS volume
+	p3, _ := s.Layout.Partition(3)
+
+	_, err = RestoreDisk(ctx, env.Repository, s, &failingTarget{Target: target, limit: p3.Offset + 8<<20}, DiskOptions{Volumes: s.Metadata.Volumes})
+	require.ErrorIs(t, err, io.ErrShortWrite)
+
+	_, err = gpt.Read(target, 512)
+	require.ErrorIs(t, err, gpt.ErrNoGPT, "an interrupted restore must not leave a partition table")
+	require.NoError(t, target.Close())
+}

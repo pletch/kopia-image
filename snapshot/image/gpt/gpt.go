@@ -301,3 +301,23 @@ func Read(r io.ReaderAt, sectorSize int64) (*Table, error) {
 
 	return t, nil
 }
+
+// Clear zeroes the protective MBR and the primary and backup GPT of a disk of
+// diskSize bytes, so that it has no partition table.
+func Clear(w io.WriterAt, sectorSize, diskSize int64) error {
+	g, err := newGeometry(sectorSize, diskSize)
+	if err != nil {
+		return err
+	}
+
+	for _, area := range []struct{ firstLBA, sectors int64 }{
+		{0, g.firstUsable},
+		{g.lastUsable + 1, g.lastLBA - g.lastUsable},
+	} {
+		if _, err := w.WriteAt(make([]byte, area.sectors*g.sectorSize), area.firstLBA*g.sectorSize); err != nil {
+			return errors.Wrapf(err, "unable to clear the partition table at LBA %v", area.firstLBA)
+		}
+	}
+
+	return nil
+}

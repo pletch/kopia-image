@@ -167,27 +167,44 @@ type VolumeResult struct {
 	Stats  Stats
 }
 
-// RestoreDisk restores an image to a target: it writes the partition table
-// with the original GUIDs, writes every selected volume with parallel chunk
-// fetches, zeroes partitions that have no image (such as the Microsoft
-// reserved partition), syncs, makes the operating system reread the
-// partitions and verifies the partition table.
+// RestoreDisk restores an image to a target: it clears any partition table,
+// writes every selected volume with parallel chunk fetches, zeroes partitions
+// that have no image (such as the Microsoft reserved partition), and only then
+// writes the partition table with the original GUIDs, syncs, verifies it and
+// makes the operating system reread the partitions.
+//
+// Writing the partition table last keeps the operating system from finding
+// and mounting partitions while their data is being written, and leaves a
+// disk without a partition table if the restore is interrupted.
 func RestoreDisk(ctx context.Context, rep repo.Repository, s *Snapshot, t Target, opt DiskOptions) ([]VolumeResult, error) {
 	fullRestore := len(opt.Volumes) == len(s.Metadata.Volumes)
 
 	if fullRestore {
-		if err := gpt.Write(t, s.Layout, t.Size()); err != nil {
-			return nil, errors.Wrap(err, "unable to write the partition table")
+		if err := gpt.Clear(t, t.SectorSize(), t.Size()); err != nil {
+			return nil, errors.Wrap(err, "unable to clear the partition table")
 		}
 	} else if err := s.checkExistingTable(t, opt.Volumes); err != nil {
 		return nil, err
 	}
 
+	results, err := restoreVolumes(ctx, rep, t, s.Layout, opt)
+	if err != nil {
+		return results, err
+	}
+
+	if fullRestore {
+		return results, s.finishFullRestore(t, opt.Volumes)
+	}
+
+	return results, errors.Wrap(t.Sync(), "unable to sync")
+}
+
+func restoreVolumes(ctx context.Context, rep repo.Repository, t Target, layout *image.Layout, opt DiskOptions) ([]VolumeResult, error) {
 	var results []VolumeResult
 
 	for i := range opt.Volumes {
 		v := opt.Volumes[i]
-		p, _ := s.Layout.Partition(v.PartitionNumber)
+		p, _ := layout.Partition(v.PartitionNumber)
 
 		stats, err := WriteObject(ctx, rep, v.ObjectID, t, p.Offset, Options{
 			Parallel:       opt.Parallel,
@@ -211,27 +228,32 @@ func RestoreDisk(ctx context.Context, rep repo.Repository, s *Snapshot, t Target
 		results = append(results, VolumeResult{Volume: v, Stats: stats})
 	}
 
-	if fullRestore && !t.IsZeroed() {
+	return results, nil
+}
+
+// finishFullRestore zeroes the partitions without an image, then writes,
+// syncs and verifies the partition table and makes the operating system
+// reread it.
+func (s *Snapshot) finishFullRestore(t Target, volumes []image.Volume) error {
+	if !t.IsZeroed() {
 		if err := s.zeroPartitionsWithoutImage(t); err != nil {
-			return results, err
+			return err
 		}
+	}
+
+	if err := gpt.Write(t, s.Layout, t.Size()); err != nil {
+		return errors.Wrap(err, "unable to write the partition table")
 	}
 
 	if err := t.Sync(); err != nil {
-		return results, err //nolint:wrapcheck
+		return errors.Wrap(err, "unable to sync")
 	}
 
-	if fullRestore {
-		if err := s.checkExistingTable(t, opt.Volumes); err != nil {
-			return results, errors.Wrap(err, "partition table verification failed")
-		}
-
-		if err := t.RereadPartitions(); err != nil {
-			return results, err //nolint:wrapcheck
-		}
+	if err := s.checkExistingTable(t, volumes); err != nil {
+		return errors.Wrap(err, "partition table verification failed")
 	}
 
-	return results, nil
+	return errors.Wrap(t.RereadPartitions(), "unable to reread the partitions")
 }
 
 // checkExistingTable checks that the target's partition table matches the
