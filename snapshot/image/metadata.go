@@ -55,6 +55,11 @@ type Metadata struct {
 
 	// Volumes holds one entry per imaged partition, ordered by partition number.
 	Volumes []Volume `json:"volumes"`
+
+	// UploadedBytes is the size of the pack blobs (compressed and encrypted)
+	// written while imaging the volumes. It is nil when the repository does
+	// not report it, as for clients of a repository server.
+	UploadedBytes *int64 `json:"uploadedBytes,omitempty"`
 }
 
 // Volume describes the image of one partition.
@@ -93,14 +98,10 @@ type VolumeStats struct {
 	// BytesRead is the number of bytes read from the source device.
 	BytesRead int64 `json:"bytesRead"`
 
-	// ChunksTotal is the number of chunks in the image, ChunksNew those not
-	// already in the repository, and ZeroChunks those consisting of zeros.
+	// ChunksTotal is the number of chunks in the image and ZeroChunks those
+	// consisting only of zeros.
 	ChunksTotal int64 `json:"chunksTotal"`
-	ChunksNew   int64 `json:"chunksNew"`
 	ZeroChunks  int64 `json:"zeroChunks"`
-
-	// BytesUploaded is the uncompressed size of the new chunks.
-	BytesUploaded int64 `json:"bytesUploaded"`
 }
 
 // Validate checks the metadata for internal consistency and against the layout

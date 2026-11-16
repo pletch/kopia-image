@@ -18,7 +18,8 @@ func DiskPath(diskNumber uint32) string {
 }
 
 // VolumeDevicePath returns the device path of a volume given as a drive letter
-// ("C:", "C:\") or a volume GUID path (`\\?\Volume{...}\`).
+// ("C:", "C:\"), a volume GUID path (`\\?\Volume{...}\`) or the folder a
+// volume is mounted at.
 func VolumeDevicePath(volume string) (string, error) {
 	v := strings.TrimSuffix(volume, `\`)
 
@@ -27,9 +28,20 @@ func VolumeDevicePath(volume string) (string, error) {
 		return `\\.\` + strings.ToUpper(v), nil
 	case strings.HasPrefix(v, `\\?\Volume{`) && strings.HasSuffix(v, "}"):
 		return v, nil
-	default:
-		return "", errors.Errorf("%q is not a drive letter or volume GUID path", volume)
 	}
+
+	p, err := windows.UTF16PtrFromString(v + `\`)
+	if err != nil {
+		return "", errors.Wrapf(err, "invalid volume %q", volume)
+	}
+
+	buf := make([]uint16, windows.MAX_PATH)
+
+	if err := windows.GetVolumeNameForVolumeMountPoint(p, &buf[0], uint32(len(buf))); err != nil { //nolint:gosec
+		return "", errors.Wrapf(err, "%q is not a drive letter, volume GUID path or volume mount point", volume)
+	}
+
+	return strings.TrimSuffix(windows.UTF16ToString(buf), `\`), nil
 }
 
 func isASCIILetter(c byte) bool {

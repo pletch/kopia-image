@@ -18,7 +18,6 @@ const (
 	ioctlDiskGetLengthInfo            = 0x0007405c
 	ioctlVolumeGetVolumeDiskExtents   = 0x00560000
 	fsctlAllowExtendedDasdIO          = 0x00090083
-	unbufferedAlignment               = 4096
 	bounceBufferSize                  = 4 << 20
 	initialDriveLayoutPartitionsCount = 128
 )
@@ -247,13 +246,4 @@ func (d *Device) getBounceBuffer() *alignedBuffer {
 	}
 
 	return &alignedBuffer{b: AlignedBuffer(bounceBufferSize)}
-}
-
-// AlignedBuffer returns a buffer of n bytes whose address is aligned for
-// unbuffered device reads.
-func AlignedBuffer(n int) []byte {
-	raw := make([]byte, n+unbufferedAlignment)
-	shift := (unbufferedAlignment - int(uintptr(unsafe.Pointer(&raw[0]))%unbufferedAlignment)) % unbufferedAlignment //nolint:gosec
-
-	return raw[shift : shift+n : shift+n]
 }

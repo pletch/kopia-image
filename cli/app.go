@@ -168,6 +168,7 @@ type App struct {
 	restore      commandRestore
 	show         commandShow
 	snapshot     commandSnapshot
+	image        commandImage
 	manifest     commandManifest
 	mount        commandMount
 	maintenance  commandMaintenance
@@ -317,6 +318,7 @@ func (c *App) setup(app *kingpin.Application) {
 	c.restore.setup(c, app)
 	c.show.setup(c, app)
 	c.snapshot.setup(c, app)
+	c.image.setup(c, app)
 	c.manifest.setup(c, app)
 	c.policy.setup(c, app)
 	c.mount.setup(c, app)

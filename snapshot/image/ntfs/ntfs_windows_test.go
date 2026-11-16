@@ -2,98 +2,21 @@ package ntfs_test
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
-	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
 	"github.com/mxk/go-vss"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/sys/windows"
 
+	"github.com/kopia/kopia/internal/vhdxtest"
 	"github.com/kopia/kopia/snapshot/image"
 	"github.com/kopia/kopia/snapshot/image/blockdev"
 	"github.com/kopia/kopia/snapshot/image/ntfs"
 )
-
-// vhdxTestEnv enables tests that attach a VHDX and create shadow copies.
-// They need administrator rights.
-const vhdxTestEnv = "KOPIA_IMAGE_VHDX_TEST"
-
-// diskpart runs a diskpart script. Paths in scripts are quoted with
-// diskpartQuote; Go's %q would double their backslashes.
-func diskpart(ctx context.Context, dir, script string) ([]byte, error) {
-	f, err := os.CreateTemp(dir, "diskpart-*.txt")
-	if err != nil {
-		return nil, err
-	}
-
-	_, writeErr := f.WriteString(script)
-	if err := errors.Join(writeErr, f.Close()); err != nil {
-		return nil, err
-	}
-
-	return exec.CommandContext(ctx, "diskpart", "/s", f.Name()).CombinedOutput()
-}
-
-func diskpartQuote(path string) string {
-	return `"` + path + `"`
-}
-
-func runDiskpart(t *testing.T, dir, script string) {
-	t.Helper()
-
-	out, err := diskpart(t.Context(), dir, script)
-	require.NoError(t, err, "diskpart failed:\n%s", out)
-}
-
-// attachTestVolume creates, attaches and mounts a 1 GiB GPT disk with one
-// NTFS volume and returns the mount directory.
-func attachTestVolume(t *testing.T) string {
-	t.Helper()
-
-	if os.Getenv(vhdxTestEnv) == "" {
-		t.Skipf("set %v=1 to run tests that attach a VHDX (requires administrator)", vhdxTestEnv)
-	}
-
-	dir := t.TempDir()
-	vhdx := filepath.Join(dir, "test.vhdx")
-	mnt := filepath.Join(dir, "mnt")
-	require.NoError(t, os.Mkdir(mnt, 0o700))
-
-	runDiskpart(t, dir, "create vdisk file="+diskpartQuote(vhdx)+" maximum=1024 type=expandable\n")
-
-	t.Cleanup(func() {
-		// t.Context() is already canceled when cleanups run
-		out, err := diskpart(context.Background(), dir, "select vdisk file="+diskpartQuote(vhdx)+"\ndetach vdisk\n")
-		if err != nil {
-			t.Logf("unable to detach %v: %v\n%s", vhdx, err, out)
-		}
-	})
-
-	runDiskpart(t, dir, "select vdisk file="+diskpartQuote(vhdx)+`
-attach vdisk
-convert gpt
-create partition primary
-format fs=ntfs quick label=kopiaimg
-assign mount=`+diskpartQuote(mnt)+"\n")
-
-	return mnt
-}
-
-func volumeGUIDPath(t *testing.T, mnt string) string {
-	t.Helper()
-
-	buf := make([]uint16, windows.MAX_PATH)
-	require.NoError(t, windows.GetVolumeNameForVolumeMountPoint(windows.StringToUTF16Ptr(mnt+`\`), &buf[0], uint32(len(buf))))
-
-	return windows.UTF16ToString(buf)
-}
 
 func readExtents(t *testing.T, r io.ReaderAt, extents []image.Extent, n int) []byte {
 	t.Helper()
@@ -118,7 +41,7 @@ func isAllocated(bitmap []byte, cluster int64) bool {
 }
 
 func TestProbeShadowCopyOfVHDX(t *testing.T) {
-	mnt := attachTestVolume(t)
+	mnt := vhdxtest.New(t).FormatAndMount()
 
 	// a fragmented free-space pattern and a file whose clusters we can check
 	for i := range 20 {
@@ -134,7 +57,7 @@ func TestProbeShadowCopyOfVHDX(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(mnt, "big.bin"), content, 0o600))
 
-	volume := volumeGUIDPath(t, mnt)
+	volume := vhdxtest.VolumeGUIDPath(t, mnt)
 
 	extents, err := blockdev.VolumeDiskExtents(volume)
 	require.NoError(t, err)
