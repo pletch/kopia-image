@@ -27,9 +27,10 @@ const DataPartition = 2
 
 // Disk is an attached 1 GiB GPT VHDX with one unformatted data partition.
 type Disk struct {
-	t    *testing.T
-	dir  string
-	File string
+	t        *testing.T
+	dir      string
+	detached bool
+	File     string
 }
 
 // New creates and attaches a disk, detaching it when the test ends. It skips
@@ -47,8 +48,8 @@ func New(t *testing.T) *Disk {
 	d.diskpart(t.Context(), "create vdisk file="+quote(d.File)+" maximum=1024 type=expandable\n")
 
 	t.Cleanup(func() {
-		// t.Context() is already canceled when cleanups run
-		if out, err := run(context.Background(), d.dir, "select vdisk file="+quote(d.File)+"\ndetach vdisk\n"); err != nil {
+		// t.Context() is already canceled when cleanups run; detaching a detached disk fails harmlessly
+		if out, err := run(context.Background(), d.dir, "select vdisk file="+quote(d.File)+"\ndetach vdisk\n"); err != nil && !d.detached {
 			t.Logf("unable to detach %v: %v\n%s", d.File, err, out)
 		}
 	})
@@ -56,6 +57,23 @@ func New(t *testing.T) *Disk {
 	d.Run("attach vdisk\nconvert gpt\ncreate partition primary\n")
 
 	return d
+}
+
+// NewBlank creates and attaches a disk without a partition table.
+func NewBlank(t *testing.T) *Disk {
+	t.Helper()
+
+	d := New(t)
+	d.Run("clean\n")
+
+	return d
+}
+
+// Detach detaches the disk before the test ends.
+func (d *Disk) Detach() {
+	d.t.Helper()
+	d.Run("detach vdisk\n")
+	d.detached = true
 }
 
 // Run runs diskpart commands with the disk selected and returns the output.

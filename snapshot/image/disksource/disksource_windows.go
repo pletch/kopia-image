@@ -137,7 +137,7 @@ func PrepareDisk(diskNumber uint32) (*Plan, error) {
 		return nil, errors.Wrap(err, "unable to read the partition table")
 	}
 
-	volumes, err := volumesOnDisk(diskNumber)
+	volumes, err := VolumesOnDisk(diskNumber)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +145,8 @@ func PrepareDisk(diskNumber uint32) (*Plan, error) {
 	return BuildPlan(diskNumber, layout, volumes)
 }
 
-func volumesOnDisk(diskNumber uint32) ([]VolumeInfo, error) {
+// VolumesOnDisk returns the volumes that lie entirely on a physical disk.
+func VolumesOnDisk(diskNumber uint32) ([]VolumeInfo, error) {
 	buf := make([]uint16, volumeNameBufLen)
 
 	h, err := windows.FindFirstVolume(&buf[0], volumeNameBufLen)

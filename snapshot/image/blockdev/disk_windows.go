@@ -137,3 +137,17 @@ func openForQuery(path string) (windows.Handle, error) {
 
 	return h, nil
 }
+
+// SectorSize returns the logical sector size of a disk device.
+func SectorSize(d *Device) (int64, error) {
+	var geom [diskGeometryExMinSize + 64]byte
+
+	n, err := d.IoControl(ioctlDiskGetDriveGeometryEx, nil, geom[:])
+	if err != nil {
+		return 0, errors.Wrapf(err, "unable to get the geometry of %q", d.Path())
+	}
+
+	sectorSize, _, err := decodeGeometry(geom[:n])
+
+	return sectorSize, err
+}

@@ -28,3 +28,8 @@ func PrepareDisk(uint32) (*Plan, error) {
 func OpenSession(context.Context, *Plan, *ShadowState, func(string, ...any)) (*Session, error) {
 	return nil, ErrNotSupported
 }
+
+// VolumesOnDisk is not supported on this platform.
+func VolumesOnDisk(uint32) ([]VolumeInfo, error) {
+	return nil, ErrNotSupported
+}
