@@ -127,6 +127,24 @@ kopia server start --address 0.0.0.0:51515 \
 
 `--tls-acme-domain` can be repeated. Accounts, keys and certificates are stored in `acme` next to the config file unless `--tls-acme-storage-dir` is set, and `--tls-acme-email` sets the account contact.
 
+##### DNS-01 challenge with Cloudflare (`--tls-acme-dns-provider`)
+
+With `--tls-acme-dns-provider cloudflare` the CA validates the domains through temporary DNS records instead of connecting to the server, the same way Caddy's Cloudflare DNS module does. The server then needs no inbound port 443, can be reachable only on a private network, and can use wildcard domains such as `*.kopia.example`.
+
+```
+kopia server start --address 0.0.0.0:51515 \
+  --tls-acme-domain kopia.example \
+  --tls-acme-dns-provider cloudflare \
+  --tls-acme-cloudflare-api-token-file /etc/kopia/cloudflare-token
+```
+
+Create a scoped API token in the Cloudflare dashboard (never the global API key) with the `Zone / Zone / Read` and `Zone / DNS / Edit` permissions, limited to the zone of the certificate's domains. Anyone holding it can change that zone's DNS records, so it is deliberately not accepted as a command-line argument, which other users could read from the process list. Supply it in one of two ways:
+
+- `--tls-acme-cloudflare-api-token-file`: a file that contains only the token and is readable only by the account running kopia (`chmod 600`). This is the preferred way and works with systemd credentials (`LoadCredential=cloudflare-token:/etc/kopia/cloudflare-token`, then `--tls-acme-cloudflare-api-token-file=%d/cloudflare-token`) and with Docker or Kubernetes secrets. The file is read again at every renewal, so a rotated token is picked up without a restart.
+- the `KOPIA_ACME_CLOUDFLARE_API_TOKEN` environment variable. The server removes it from its own environment at startup so that snapshot actions do not inherit it, but it remains visible to whatever started the server and, on Linux, in `/proc/<pid>/environ` to the same user and root.
+
+The token is never written to the log or to the ACME storage directory. If the system resolver serves a private view of the zone (split-horizon DNS), add `--tls-acme-dns-resolver 1.1.1.1` so that the server checks the public DNS for the challenge record.
+
 #### Certificate file reload
 
 When the server uses `--tls-cert-file` and `--tls-key-file`, it picks up renewed files within 10 seconds, or straight away on `SIGHUP`, without restarting. An external tool such as certbot or lego can therefore renew the certificate without interrupting backups.

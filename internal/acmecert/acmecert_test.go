@@ -107,6 +107,39 @@ func TestNew_ObtainsCertificateAndReusesStoredOne(t *testing.T) {
 	require.Equal(t, leaf.Raw, servedLeaf(t, m2.TLSConfig(), acmetest.Domain, roots).Raw)
 }
 
+func TestNew_ObtainsCertificateWithDNSChallenge(t *testing.T) {
+	dnsServer := acmetest.StartDNS(t)
+	// nothing answers TLS-ALPN-01 challenges, so issuance can only succeed through DNS-01.
+	testCA := acmetest.StartWithResolver(t, dnsServer.Addr)
+
+	const (
+		host     = "kopia.example.test"
+		wildcard = "*.example.test"
+	)
+
+	m := newTestManager(t, Options{
+		Domains:      []string{host, wildcard},
+		DirectoryURL: testCA.DirectoryURL,
+		CARootFile:   testCA.RootFile,
+		StorageDir:   t.TempDir(),
+		DNSProvider:  dnsServer,
+		DNSResolvers: []string{dnsServer.Addr},
+	})
+
+	roots := testCA.RootPool(t)
+
+	leaf := servedLeaf(t, m.TLSConfig(), host, roots)
+	require.Equal(t, []string{host}, leaf.DNSNames)
+
+	require.Equal(t, []string{wildcard}, servedLeaf(t, m.TLSConfig(), "other.example.test", roots).DNSNames)
+
+	// clients without SNI get the certificate of the first domain.
+	require.Equal(t, leaf.Raw, servedLeaf(t, m.TLSConfig(), "", nil).Raw)
+
+	require.Equal(t, 2, dnsServer.Appended())
+	require.Zero(t, dnsServer.Published(), "challenge records must be removed after validation")
+}
+
 func TestManager_RenewsInBackground(t *testing.T) {
 	testCA := acmetest.Start(t)
 
@@ -160,12 +193,24 @@ func TestNew_FailsOnInvalidCARootFile(t *testing.T) {
 }
 
 func TestOptionsValidate_Errors(t *testing.T) {
+	provider := NewCloudflareDNSProvider(StaticToken("token"))
+
 	cases := map[string]Options{
-		"no domains":        {StorageDir: "/tmp/x"},
-		"empty domain":      {Domains: []string{" "}, StorageDir: "/tmp/x"},
-		"no storage dir":    {Domains: []string{"a.example"}},
-		"negative port":     {Domains: []string{"a.example"}, StorageDir: "/tmp/x", AltTLSALPNPort: -1},
-		"port out of range": {Domains: []string{"a.example"}, StorageDir: "/tmp/x", AltTLSALPNPort: 70000},
+		"no domains":                    {StorageDir: "/tmp/x"},
+		"empty domain":                  {Domains: []string{" "}, StorageDir: "/tmp/x"},
+		"no storage dir":                {Domains: []string{"a.example"}},
+		"negative port":                 {Domains: []string{"a.example"}, StorageDir: "/tmp/x", AltTLSALPNPort: -1},
+		"port out of range":             {Domains: []string{"a.example"}, StorageDir: "/tmp/x", AltTLSALPNPort: 70000},
+		"wildcard without DNS provider": {Domains: []string{"*.a.example"}, StorageDir: "/tmp/x"},
+		"resolvers without DNS provider": {
+			Domains: []string{"a.example"}, StorageDir: "/tmp/x", DNSResolvers: []string{"1.1.1.1"},
+		},
+		"ALPN port with DNS provider": {
+			Domains: []string{"a.example"}, StorageDir: "/tmp/x", AltTLSALPNPort: 8443, DNSProvider: provider,
+		},
+		"empty resolver": {
+			Domains: []string{"a.example"}, StorageDir: "/tmp/x", DNSProvider: provider, DNSResolvers: []string{" "},
+		},
 	}
 
 	for name, opts := range cases {
@@ -178,4 +223,12 @@ func TestOptionsValidate_Errors(t *testing.T) {
 func TestOptionsValidate_Success(t *testing.T) {
 	opts := Options{Domains: []string{"kopia.home", "mint-box.home"}, StorageDir: "/tmp/x", AltTLSALPNPort: 8443}
 	require.NoError(t, opts.Validate())
+
+	dnsOpts := Options{
+		Domains:      []string{"kopia.example", "*.kopia.example"},
+		StorageDir:   "/tmp/x",
+		DNSProvider:  NewCloudflareDNSProvider(StaticToken("token")),
+		DNSResolvers: []string{"1.1.1.1", "9.9.9.9:53"},
+	}
+	require.NoError(t, dnsOpts.Validate())
 }

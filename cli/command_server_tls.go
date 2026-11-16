@@ -29,6 +29,17 @@ import (
 
 const oneDay = 24 * time.Hour
 
+const (
+	acmeDNSProviderCloudflare = "cloudflare"
+
+	// acmeCloudflareTokenEnv deliberately has no command-line flag equivalent:
+	// arguments are visible to every user of the machine in the process list.
+	acmeCloudflareTokenEnv = "KOPIA_ACME_CLOUDFLARE_API_TOKEN" //nolint:gosec // the name of the variable, not a credential
+
+	// permission bits that give users other than the owner access to a file.
+	groupAndOthersPermissions = 0o077
+)
+
 func (c *commandServerStart) generateServerCertificate(ctx context.Context) (*x509.Certificate, *rsa.PrivateKey, error) {
 	cert, key, err := tlsutil.GenerateServerCertificate(
 		ctx,
@@ -221,8 +232,19 @@ func (c *commandServerStart) startServerWithOptionalTLSAndListener(ctx context.C
 }
 
 // validateTLSFlags rejects combinations of TLS flags that select more than one certificate source.
-func (c *commandServerStart) validateTLSFlags() error {
+func (c *commandServerStart) validateTLSFlags(ctx context.Context) error {
+	dnsProvider, err := c.acmeDNSProviderFromFlags(ctx)
+	if err != nil {
+		return err
+	}
+
+	c.acmeDNSProvider = dnsProvider
+
 	if len(c.serverStartTLSACMEDomains) == 0 {
+		if dnsProvider != nil {
+			return errors.New("--tls-acme-dns-provider requires --tls-acme-domain")
+		}
+
 		return nil
 	}
 
@@ -251,6 +273,82 @@ func (c *commandServerStart) acmeOptions() acmecert.Options {
 		Email:          c.serverStartTLSACMEEmail,
 		StorageDir:     storageDir,
 		AltTLSALPNPort: c.serverStartTLSACMEALPNPort,
+		DNSProvider:    c.acmeDNSProvider,
+		DNSResolvers:   c.serverStartTLSACMEDNSResolvers,
+	}
+}
+
+// acmeDNSProviderFromFlags returns the DNS provider for the DNS-01 challenge,
+// or nil when the challenge is not enabled.
+//
+// The API token is accepted from a file or from the environment. It is removed
+// from the environment, so this must be called only once.
+func (c *commandServerStart) acmeDNSProviderFromFlags(ctx context.Context) (acmecert.DNSProvider, error) {
+	envName := c.svc.EnvName(acmeCloudflareTokenEnv)
+	envToken := takeSecretFromEnv(envName)
+	tokenFile := c.serverStartTLSACMECloudflareTokenFile
+
+	if c.serverStartTLSACMEDNSProvider == "" {
+		if tokenFile != "" {
+			return nil, errors.New("--tls-acme-cloudflare-api-token-file requires --tls-acme-dns-provider=cloudflare")
+		}
+
+		if len(c.serverStartTLSACMEDNSResolvers) > 0 {
+			return nil, errors.New("--tls-acme-dns-resolver requires --tls-acme-dns-provider")
+		}
+
+		return nil, nil //nolint:nilnil
+	}
+
+	var token acmecert.TokenSource
+
+	switch {
+	case tokenFile != "" && envToken != "":
+		return nil, errors.Errorf("--tls-acme-cloudflare-api-token-file and %v are both set, use only one", envName)
+	case tokenFile != "":
+		warnIfReadableByOthers(ctx, tokenFile)
+
+		token = acmecert.TokenFromFile(tokenFile)
+	case envToken != "":
+		token = acmecert.StaticToken(envToken)
+	default:
+		return nil, errors.Errorf("--tls-acme-dns-provider=cloudflare requires an API token in --tls-acme-cloudflare-api-token-file or %v", envName)
+	}
+
+	// report an unusable token now instead of at the first issuance or renewal.
+	if _, err := token(); err != nil {
+		return nil, errors.Wrap(err, "invalid ACME DNS provider API token")
+	}
+
+	return acmecert.NewCloudflareDNSProvider(token), nil
+}
+
+// takeSecretFromEnv returns the value of an environment variable and removes
+// it from the environment of this process, because snapshot actions and other
+// child processes inherit that environment.
+func takeSecretFromEnv(name string) string {
+	v := os.Getenv(name)
+
+	// Unsetenv only fails for malformed names.
+	os.Unsetenv(name) //nolint:errcheck
+
+	return v
+}
+
+func warnIfReadableByOthers(ctx context.Context, secretFile string) {
+	// Windows permissions are not expressed in the file mode.
+	if isWindows() {
+		return
+	}
+
+	st, err := os.Stat(secretFile)
+	if err != nil {
+		// reported with more context when the file is read.
+		return
+	}
+
+	if st.Mode().Perm()&groupAndOthersPermissions != 0 {
+		log(ctx).Warnf("%v is accessible by other users (mode %04o), restrict it to its owner, e.g. chmod 600", secretFile, st.Mode().Perm())
 	}
 }
 

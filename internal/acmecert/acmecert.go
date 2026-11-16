@@ -1,6 +1,6 @@
 // Package acmecert obtains and renews the server TLS certificate from an ACME
 // certificate authority (such as Let's Encrypt or step-ca) using the TLS-ALPN-01
-// challenge, and serves it without requiring a restart on renewal.
+// or the DNS-01 challenge, and serves it without requiring a restart on renewal.
 package acmecert
 
 import (
@@ -45,6 +45,17 @@ type Options struct {
 	// value is only useful when 443 is forwarded to this port.
 	AltTLSALPNPort int
 
+	// DNSProvider, when set, makes the CA validate the domains with the DNS-01
+	// challenge instead of TLS-ALPN-01. The CA then does not need to reach the
+	// server at all, and wildcard domains can be used.
+	DNSProvider DNSProvider
+
+	// DNSResolvers are optional host[:port] addresses of the recursive DNS
+	// servers used to find the zone of each domain and to wait for the challenge
+	// record to be published. Defaults to the system resolvers, which do not
+	// work when they serve a private view of the zone (split-horizon DNS).
+	DNSResolvers []string
+
 	// renewCheckInterval and renewalWindowRatio override certmagic defaults in tests.
 	renewCheckInterval time.Duration
 	renewalWindowRatio float64
@@ -60,6 +71,10 @@ func (o Options) Validate() error {
 		if strings.TrimSpace(d) == "" {
 			return errors.New("domain names must not be empty")
 		}
+
+		if strings.HasPrefix(d, "*.") && o.DNSProvider == nil {
+			return errors.Errorf("wildcard domain %v requires a DNS provider", d)
+		}
 	}
 
 	if o.StorageDir == "" {
@@ -68,6 +83,28 @@ func (o Options) Validate() error {
 
 	if o.AltTLSALPNPort < 0 || o.AltTLSALPNPort > 65535 {
 		return errors.Errorf("invalid TLS-ALPN challenge port: %v", o.AltTLSALPNPort)
+	}
+
+	return o.validateDNS()
+}
+
+func (o Options) validateDNS() error {
+	if o.DNSProvider == nil {
+		if len(o.DNSResolvers) > 0 {
+			return errors.New("DNS resolvers require a DNS provider")
+		}
+
+		return nil
+	}
+
+	if o.AltTLSALPNPort != 0 {
+		return errors.New("TLS-ALPN challenge port cannot be combined with a DNS provider")
+	}
+
+	for _, r := range o.DNSResolvers {
+		if strings.TrimSpace(r) == "" {
+			return errors.New("DNS resolver addresses must not be empty")
+		}
 	}
 
 	return nil
@@ -119,18 +156,27 @@ func New(ctx context.Context, opts Options, logger *zap.Logger) (*Manager, error
 		OCSP: certmagic.OCSPConfig{DisableStapling: true},
 	})
 
-	cfg.Issuers = []certmagic.Issuer{
-		certmagic.NewACMEIssuer(cfg, certmagic.ACMEIssuer{
-			CA:     directoryURL,
-			Email:  opts.Email,
-			Agreed: true,
-			// Only TLS-ALPN-01 is used: port 80 is commonly owned by another web server.
-			DisableHTTPChallenge: true,
-			AltTLSALPNPort:       opts.AltTLSALPNPort,
-			TrustedRoots:         roots,
-			Logger:               logger,
-		}),
+	issuer := certmagic.ACMEIssuer{
+		CA:     directoryURL,
+		Email:  opts.Email,
+		Agreed: true,
+		// HTTP-01 is never used: port 80 is commonly owned by another web server.
+		DisableHTTPChallenge: true,
+		AltTLSALPNPort:       opts.AltTLSALPNPort,
+		TrustedRoots:         roots,
+		Logger:               logger,
 	}
+
+	if opts.DNSProvider != nil {
+		// certmagic uses DNS-01 exclusively when a DNS solver is set.
+		issuer.DNS01Solver = &certmagic.DNS01Solver{
+			DNSProvider: opts.DNSProvider,
+			Resolvers:   opts.DNSResolvers,
+			Logger:      logger,
+		}
+	}
+
+	cfg.Issuers = []certmagic.Issuer{certmagic.NewACMEIssuer(cfg, issuer)}
 
 	for _, domain := range opts.Domains {
 		if err := loadOrObtain(ctx, cfg, domain, logger); err != nil {

@@ -34,7 +34,10 @@ require (
 	github.com/kopia/htmluibuild v0.0.1-0.20261103050955-97972bdde3bb
 	github.com/kylelemons/godebug v1.1.0
 	github.com/letsencrypt/pebble/v2 v2.10.1
+	github.com/libdns/cloudflare v0.2.2
+	github.com/libdns/libdns v1.1.1
 	github.com/mattn/go-colorable v0.1.16
+	github.com/miekg/dns v1.1.73
 	github.com/minio/minio-go/v7 v7.4.1
 	github.com/mocktools/go-smtp-mock/v2 v2.5.4
 	github.com/mxk/go-vss v1.2.1
@@ -126,10 +129,8 @@ require (
 	github.com/klauspost/crc32 v1.3.0 // indirect
 	github.com/kr/fs v0.1.0 // indirect
 	github.com/letsencrypt/challtestsrv v1.4.2 // indirect
-	github.com/libdns/libdns v1.1.1 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/mholt/acmez/v3 v3.1.7 // indirect
-	github.com/miekg/dns v1.1.73 // indirect
 	github.com/minio/crc64nvme v1.1.1 // indirect
 	github.com/minio/md5-simd v1.1.2 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect

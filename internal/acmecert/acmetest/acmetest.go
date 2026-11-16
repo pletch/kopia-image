@@ -68,6 +68,15 @@ func (c *CA) RootPool(tb testing.TB) *x509.CertPool {
 func Start(t *testing.T) *CA {
 	t.Helper()
 
+	return StartWithResolver(t, "")
+}
+
+// StartWithResolver is like Start, but the CA looks up domains and DNS-01
+// challenge records using the DNS server at resolverAddr (host:port) instead of
+// the system resolver.
+func StartWithResolver(t *testing.T, resolverAddr string) *CA {
+	t.Helper()
+
 	t.Setenv("PEBBLE_VA_NOSLEEP", "1")
 	t.Setenv("PEBBLE_WFE_NONCEREJECT", "0")
 	t.Setenv("PEBBLE_AUTHZREUSE", "0")
@@ -79,7 +88,7 @@ func Start(t *testing.T) *CA {
 	authority := ca.New(logger, store, "", "ecdsa", 0, 1, map[string]ca.Profile{
 		"default": {Description: "default"},
 	})
-	validator := va.New(logger, 0, c.TLSALPNPort, false, "", store)
+	validator := va.New(logger, 0, c.TLSALPNPort, false, resolverAddr, store)
 	frontEnd := wfe.New(logger, store, validator, authority, nil, false, false, 0, 0)
 	handler := frontEnd.Handler()
 

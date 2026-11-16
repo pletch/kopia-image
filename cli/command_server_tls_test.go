@@ -93,6 +93,99 @@ func TestServerStart_ACMEFlagConflicts(t *testing.T) {
 	}
 }
 
+func TestServerStart_ACMEDNSFlagErrors(t *testing.T) {
+	const tokenEnv = "KOPIA_ACME_CLOUDFLARE_API_TOKEN"
+
+	dir := testutil.TempDirectory(t)
+
+	tokenFile := filepath.Join(dir, "token")
+	require.NoError(t, os.WriteFile(tokenFile, []byte("file-token\n"), 0o600))
+
+	emptyTokenFile := filepath.Join(dir, "empty")
+	require.NoError(t, os.WriteFile(emptyTokenFile, nil, 0o600))
+
+	const (
+		domain   = "--tls-acme-domain=kopia.example"
+		provider = "--tls-acme-dns-provider=cloudflare"
+	)
+
+	cases := map[string]struct {
+		flags    []string
+		envToken string
+		wantErr  string
+	}{
+		"unknown provider":          {flags: []string{domain, "--tls-acme-dns-provider=other"}}, // rejected by the flag parser, which does not write to stderr here
+		"no token":                  {flags: []string{domain, provider}, wantErr: "requires an API token"},
+		"token from both sources":   {flags: []string{domain, provider, "--tls-acme-cloudflare-api-token-file=" + tokenFile}, envToken: "env-token", wantErr: "use only one"},
+		"missing token file":        {flags: []string{domain, provider, "--tls-acme-cloudflare-api-token-file=" + filepath.Join(dir, "missing")}, wantErr: "API token file"},
+		"empty token file":          {flags: []string{domain, provider, "--tls-acme-cloudflare-api-token-file=" + emptyTokenFile}, wantErr: "API token is empty"},
+		"malformed token":           {flags: []string{domain, provider}, envToken: "two words", wantErr: "API token contains whitespace"},
+		"token file, no provider":   {flags: []string{domain, "--tls-acme-cloudflare-api-token-file=" + tokenFile}, wantErr: "requires --tls-acme-dns-provider"},
+		"resolver, no provider":     {flags: []string{domain, "--tls-acme-dns-resolver=1.1.1.1"}, wantErr: "requires --tls-acme-dns-provider"},
+		"provider, no domain":       {flags: []string{provider}, envToken: "env-token", wantErr: "requires --tls-acme-domain"},
+		"provider with alpn port":   {flags: []string{domain, provider, "--tls-acme-alpn-port=8443"}, envToken: "env-token", wantErr: "cannot be combined with a DNS provider"},
+		"wildcard without provider": {flags: []string{"--tls-acme-domain=*.kopia.example"}, wantErr: "requires a DNS provider"},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			env := testenv.NewCLITest(t, testenv.RepoFormatNotImportant, testenv.NewInProcRunner(t))
+			if tc.envToken != "" {
+				env.Environment[tokenEnv] = tc.envToken
+			}
+
+			args := append([]string{"server", "start", "--address=127.0.0.1:0"}, tc.flags...)
+
+			_, stderr := env.RunAndExpectFailure(t, args...)
+			output := strings.Join(stderr, "\n")
+
+			require.Contains(t, output, tc.wantErr)
+			require.NotContains(t, output, "env-token")
+			require.NotContains(t, output, "file-token")
+		})
+	}
+}
+
+// With a valid DNS provider configuration the server gets as far as contacting
+// the CA, and the API token is no longer in the environment that snapshot
+// actions and other child processes inherit.
+func TestServerStart_ACMEDNSTokenFromEnvIsRemovedFromEnvironment(t *testing.T) {
+	const tokenEnv = "KOPIA_ACME_CLOUDFLARE_API_TOKEN"
+
+	env := testenv.NewCLITest(t, testenv.RepoFormatNotImportant, testenv.NewInProcRunner(t))
+	env.RunAndExpectSuccess(t, "repo", "create", "filesystem", "--path", env.RepoDir)
+
+	env.Environment[tokenEnv] = "env-token"
+
+	// nothing listens on this port, so issuance keeps being retried before any DNS change is attempted.
+	unreachable := "https://127.0.0.1:" + strconv.Itoa(acmetest.FreePort(t)) + "/dir"
+
+	wait, kill := env.RunAndProcessStderr(t, func(line string) bool {
+		require.NotContains(t, line, "env-token")
+
+		return !strings.Contains(line, "will retry")
+	},
+		"server", "start",
+		"--address=127.0.0.1:0",
+		"--random-password",
+		"--random-server-control-password",
+		"--tls-acme-domain=*.kopia.example",
+		"--tls-acme-dns-provider=cloudflare",
+		"--tls-acme-dns-resolver=127.0.0.1",
+		"--tls-acme-directory="+unreachable,
+		"--tls-acme-storage-dir="+testutil.TempDirectory(t),
+	)
+
+	// the in-process runner adds a per-run prefix to environment variable names.
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		require.False(t, strings.HasSuffix(name, tokenEnv), "%v is still set", name)
+	}
+
+	kill()
+	require.NoError(t, wait())
+}
+
 func TestServerStart_ACMECertificate(t *testing.T) {
 	testCA := acmetest.Start(t)
 

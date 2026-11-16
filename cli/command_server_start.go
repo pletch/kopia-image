@@ -58,25 +58,29 @@ type commandServerStart struct {
 
 	serverStartShutdownWhenStdinClosed bool
 
-	serverStartTLSGenerateCert          bool
-	serverStartTLSCertFile              string
-	serverStartTLSKeyFile               string
-	serverStartTLSGenerateRSAKeySize    int
-	serverStartTLSGenerateCertValidDays int
-	serverStartTLSGenerateCertNames     []string
-	serverStartTLSPrintFullServerCert   bool
-	serverStartTLSACMEDomains           []string
-	serverStartTLSACMEDirectory         string
-	serverStartTLSACMECARoot            string
-	serverStartTLSACMEEmail             string
-	serverStartTLSACMEStorageDir        string
-	serverStartTLSACMEALPNPort          int
-	uiTitlePrefix                       string
-	uiPreferencesFile                   string
-	asyncRepoConnect                    bool
-	persistentLogs                      bool
-	debugScheduler                      bool
-	minMaintenanceInterval              time.Duration
+	serverStartTLSGenerateCert            bool
+	serverStartTLSCertFile                string
+	serverStartTLSKeyFile                 string
+	serverStartTLSGenerateRSAKeySize      int
+	serverStartTLSGenerateCertValidDays   int
+	serverStartTLSGenerateCertNames       []string
+	serverStartTLSPrintFullServerCert     bool
+	serverStartTLSACMEDomains             []string
+	serverStartTLSACMEDirectory           string
+	serverStartTLSACMECARoot              string
+	serverStartTLSACMEEmail               string
+	serverStartTLSACMEStorageDir          string
+	serverStartTLSACMEALPNPort            int
+	serverStartTLSACMEDNSProvider         string
+	serverStartTLSACMEDNSResolvers        []string
+	serverStartTLSACMECloudflareTokenFile string
+	acmeDNSProvider                       acmecert.DNSProvider
+	uiTitlePrefix                         string
+	uiPreferencesFile                     string
+	asyncRepoConnect                      bool
+	persistentLogs                        bool
+	debugScheduler                        bool
+	minMaintenanceInterval                time.Duration
 
 	shutdownGracePeriod  time.Duration
 	kopiauiNotifications bool
@@ -138,6 +142,9 @@ func (c *commandServerStart) setup(svc advancedAppServices, parent commandParent
 	cmd.Flag("tls-acme-email", "Contact email for the ACME account").StringVar(&c.serverStartTLSACMEEmail)
 	cmd.Flag("tls-acme-storage-dir", "Directory for the ACME account, keys and certificates (default: 'acme' next to the config file)").StringVar(&c.serverStartTLSACMEStorageDir)
 	cmd.Flag("tls-acme-alpn-port", "Port to listen on for TLS-ALPN-01 challenges if not 443 (the CA validates on 443, so it must be forwarded)").IntVar(&c.serverStartTLSACMEALPNPort)
+	cmd.Flag("tls-acme-dns-provider", "Validate the domains with the DNS-01 challenge using this DNS provider (cloudflare) instead of TLS-ALPN-01").EnumVar(&c.serverStartTLSACMEDNSProvider, acmeDNSProviderCloudflare)
+	cmd.Flag("tls-acme-cloudflare-api-token-file", "File with the Cloudflare API token, re-read at every renewal (alternatively set "+svc.EnvName(acmeCloudflareTokenEnv)+")").StringVar(&c.serverStartTLSACMECloudflareTokenFile)
+	cmd.Flag("tls-acme-dns-resolver", "Recursive DNS server used to check DNS-01 challenge records instead of the system resolver (repeatable)").StringsVar(&c.serverStartTLSACMEDNSResolvers)
 
 	cmd.Flag("async-repo-connect", "Connect to repository asynchronously").Hidden().BoolVar(&c.asyncRepoConnect)
 	cmd.Flag("persistent-logs", "Persist logs in a file").Default(trueStr).BoolVar(&c.persistentLogs)
@@ -161,7 +168,7 @@ func (c *commandServerStart) setup(svc advancedAppServices, parent commandParent
 }
 
 func (c *commandServerStart) serverStartOptions(ctx context.Context) (*server.Options, error) {
-	if err := c.validateTLSFlags(); err != nil {
+	if err := c.validateTLSFlags(ctx); err != nil {
 		return nil, err
 	}
 
