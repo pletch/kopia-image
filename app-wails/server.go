@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,6 +29,8 @@ const (
 	statusRequestTimeout = 3 * time.Second
 	maxLogLines          = 200
 	serverStartTimeout   = 30 * time.Second
+	serverStopGrace      = 5 * time.Second
+	serverKillWait       = 5 * time.Second
 	errorPageLogLines    = 40
 	serverControlUser    = "server-control"
 	uiUser               = "kopia"
@@ -55,6 +58,11 @@ type repoServer struct {
 	id   string
 	host *shell
 
+	// lifecycle serializes start and stop, which the tray, the error page and
+	// shutdown can call at the same time. Without it two overlapping starts
+	// would each launch a server and lose track of the first.
+	lifecycle sync.Mutex
+
 	mu              sync.Mutex
 	cmd             *exec.Cmd
 	stdin           io.WriteCloser
@@ -77,17 +85,34 @@ func newRepoServer(id string, host *shell) *repoServer {
 	return &repoServer{id: id, host: host, status: serverStatus{StartingUp: true}}
 }
 
+// start launches the server, after stopping the one that is running.
 func (s *repoServer) start() error {
-	s.stop()
+	s.lifecycle.Lock()
+	defer s.lifecycle.Unlock()
+
+	s.stopLocked()
+
+	// the server uses a certificate made here; see serverCert
+	cert, err := newServerCert()
+	if err != nil {
+		return err
+	}
+
+	started := false
+
+	defer func() {
+		if !started {
+			cert.remove()
+		}
+	}()
 
 	args := []string{
 		"server", "start",
 		"--ui",
-		"--tls-print-server-cert",
-		"--tls-generate-cert-name=127.0.0.1",
+		"--tls-cert-file", cert.certFile,
+		"--tls-key-file", cert.keyFile,
 		"--random-password",
 		"--random-server-control-password",
-		"--tls-generate-cert",
 		"--async-repo-connect",
 		"--error-notifications=always",
 		"--kopiaui-notifications",
@@ -131,6 +156,8 @@ func (s *repoServer) start() error {
 		return fmt.Errorf("unable to start %v: %w", s.host.kopiaPath, err)
 	}
 
+	started = true
+
 	s.appendLog("--- starting kopia server ---")
 
 	stop := make(chan struct{})
@@ -142,6 +169,8 @@ func (s *repoServer) start() error {
 	s.stdin = stdin
 	s.exited = exited
 	s.status = serverStatus{StartingUp: true}
+	s.certSHA256 = cert.fingerprint
+	s.transport = newPinnedTransport(cert.fingerprint)
 	s.pollStop = stop
 	s.pollKick = kick
 	s.startedAt = time.Now()
@@ -150,12 +179,14 @@ func (s *repoServer) start() error {
 
 	s.host.statusChanged()
 
-	go s.readLines(stdout, false)
-	go s.readLines(stderr, true)
+	go s.readLines(cmd, stdout, false)
+	go s.readLines(cmd, stderr, true)
 	go s.pollLoop(stop, kick)
 
 	go func() {
 		err := cmd.Wait()
+
+		cert.remove()
 		close(exited)
 		s.appendLog(fmt.Sprintf("kopia server exited: %v", err))
 
@@ -198,8 +229,17 @@ func (s *repoServer) resetLocked() {
 }
 
 // stop asks the server to shut down by closing its stdin (--shutdown-on-stdin)
-// and kills it if it is still running after a grace period.
+// and kills it if it is still running after a grace period. The server has
+// exited when stop returns, unless it survives being killed.
 func (s *repoServer) stop() {
+	s.lifecycle.Lock()
+	defer s.lifecycle.Unlock()
+
+	s.stopLocked()
+}
+
+// stopLocked is stop for callers that hold s.lifecycle.
+func (s *repoServer) stopLocked() {
 	s.mu.Lock()
 	cmd, stdin, exited := s.cmd, s.stdin, s.exited
 	s.resetLocked()
@@ -215,64 +255,124 @@ func (s *repoServer) stop() {
 
 	select {
 	case <-exited:
-	case <-time.After(5 * time.Second):
+		return
+	case <-time.After(serverStopGrace):
 		slog.Warn("kopia server did not exit, killing", "repo", s.id)
 		_ = cmd.Process.Kill()
 	}
+
+	// a killed server must be gone before another one starts on its repository
+	select {
+	case <-exited:
+	case <-time.After(serverKillWait):
+		slog.Error("kopia server is still running after being killed", "repo", s.id)
+	}
 }
 
-func (s *repoServer) readLines(r io.Reader, parse bool) {
+// readLines reads the output of the server process cmd line by line. It never
+// stops reading before the stream ends: the server blocks when nobody reads
+// its output.
+func (s *repoServer) readLines(cmd *exec.Cmd, r io.Reader, parse bool) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
 
 	for sc.Scan() {
 		line := strings.TrimRight(sc.Text(), "\r")
-		if parse && s.handleParam(line) {
+		if parse && s.handleParam(cmd, line) {
 			continue
 		}
 
 		s.appendLog(line)
 	}
+
+	if err := sc.Err(); err != nil {
+		// a line longer than the buffer stops the scanner for good
+		slog.Warn("no longer logging kopia server output", "repo", s.id, "err", err)
+		_, _ = io.Copy(io.Discard, r)
+	}
 }
 
-// handleParam processes the "KEY: value" lines the server prints on stderr.
-// It returns true for lines that must not be logged because they hold secrets.
-func (s *repoServer) handleParam(line string) bool {
+// isLoopbackServerAddress reports whether address is an https URL of a
+// loopback IP address, which is the only kind of address the server started
+// here listens on.
+func isLoopbackServerAddress(address string) bool {
+	u, err := url.Parse(address)
+	if err != nil || u.Scheme != "https" || u.Port() == "" {
+		return false
+	}
+
+	ip := net.ParseIP(u.Hostname())
+
+	return ip != nil && ip.IsLoopback()
+}
+
+// handleParam processes the "KEY: value" lines the server process cmd prints
+// on stderr. It returns true for lines that must not be logged because they
+// hold secrets.
+//
+// The connection parameters decide where the proxy sends the UI password, and
+// stderr also carries log messages, whose text may come from elsewhere, such
+// as file names. So each parameter is accepted once, from the process that is
+// current, and only an address on this computer: a later line that looks like
+// a parameter is just a log line.
+//
+// A line that looks like a parameter and comes before the real one is still
+// accepted. That cannot send a password anywhere else: the certificate the
+// proxy insists on is the one start made, never one named on stderr, and its
+// key is the server's alone. The worst such a line does is make the server
+// unreachable until it is restarted.
+func (s *repoServer) handleParam(cmd *exec.Cmd, line string) bool {
 	key, value, ok := strings.Cut(line, ": ")
 	if !ok {
 		return false
 	}
 
 	s.mu.Lock()
-	changed := true
+
+	if s.cmd != cmd {
+		// output of a server that was stopped
+		s.mu.Unlock()
+
+		return key == "SERVER PASSWORD" || key == "SERVER CONTROL PASSWORD" || key == "SERVER CERTIFICATE"
+	}
+
+	changed := false
 	secret := false
 
 	switch key {
 	case "SERVER PASSWORD":
-		s.password = value
 		secret = true
+
+		if s.password == "" {
+			s.password = value
+			changed = true
+		}
 	case "SERVER CONTROL PASSWORD":
-		s.controlPassword = value
 		secret = true
-	case "SERVER CERT SHA256":
-		s.certSHA256 = strings.ToLower(value)
-		s.transport = newPinnedTransport(s.certSHA256)
+
+		if s.controlPassword == "" {
+			s.controlPassword = value
+			changed = true
+		}
 	case "SERVER ADDRESS":
-		s.address = value
+		switch {
+		case s.address != "":
+		case !isLoopbackServerAddress(value):
+			slog.Warn("ignoring kopia server address that is not on this computer", "repo", s.id, "address", value)
+		default:
+			s.address = value
+			changed = true
+		}
 	case "SERVER CERTIFICATE":
-		// The fingerprint printed above is enough to pin the certificate.
+		// not printed for a certificate from files, and never needed
 		secret = true
 	case "NOTIFICATION":
-		changed = false
-
 		var msg notificationMessage
 		if err := json.Unmarshal([]byte(value), &msg); err != nil {
 			slog.Warn("unable to parse notification", "err", err)
 		} else {
 			go s.host.notify(s.id, msg)
 		}
-	default:
-		changed = false
 	}
 
 	kick := s.pollKick
@@ -287,7 +387,7 @@ func (s *repoServer) handleParam(line string) bool {
 }
 
 // newPinnedTransport trusts exactly the certificate with the given SHA256
-// fingerprint, which the server printed for us.
+// fingerprint, which is the one the server was started with.
 func newPinnedTransport(fingerprint string) *http.Transport {
 	return &http.Transport{
 		DialContext:         (&net.Dialer{Timeout: 5 * time.Second}).DialContext,

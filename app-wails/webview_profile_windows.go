@@ -120,7 +120,7 @@ func killOrphanWebViews(dir string) int {
 		}
 
 		cmdline := strings.ToLower(processCommandLine(pe.ProcessID))
-		if !strings.Contains(cmdline, needle) || strings.Contains(cmdline, "--type=") {
+		if !commandLineUsesProfile(cmdline, needle) || strings.Contains(cmdline, "--type=") {
 			continue // another app's WebView2, or a child process
 		}
 
@@ -137,6 +137,30 @@ func killOrphanWebViews(dir string) int {
 	}
 
 	return killed
+}
+
+// commandLineUsesProfile reports whether a WebView2 command line names the
+// profile directory dir or a path inside it. Both are in lower case. A
+// directory whose name merely starts with dir, such as "...\WebView2-old",
+// belongs to another profile.
+func commandLineUsesProfile(cmdline, dir string) bool {
+	dir = strings.TrimRight(dir, `\`)
+	if dir == "" {
+		return false
+	}
+
+	for rest := cmdline; ; {
+		i := strings.Index(rest, dir)
+		if i < 0 {
+			return false
+		}
+
+		rest = rest[i+len(dir):]
+
+		if rest == "" || strings.ContainsRune("\\\" ", rune(rest[0])) {
+			return true
+		}
+	}
 }
 
 func processCommandLine(pid uint32) string {

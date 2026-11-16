@@ -4,12 +4,17 @@ import (
 	"bytes"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"html/template"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -190,18 +195,99 @@ func injectShim(resp *http.Response) error {
 	return nil
 }
 
+// localDirectory returns the cleaned path of an existing folder on a local
+// drive. It refuses relative paths, URLs, and network (UNC) and device paths,
+// which would make the system contact another computer, and anything that is
+// not a folder, which the system would run or open with another program.
+func localDirectory(path string) (string, error) {
+	if path == "" || strings.Contains(path, "://") {
+		return "", errNotLocalDirectory
+	}
+
+	if runtime.GOOS == "windows" {
+		// "C:\..." only: UNC and device paths start with two separators
+		path = filepath.FromSlash(path)
+		if vol := filepath.VolumeName(path); len(vol) != 2 || vol[1] != ':' || !strings.HasPrefix(path[2:], `\`) {
+			return "", errNotLocalDirectory
+		}
+	} else if !filepath.IsAbs(path) {
+		return "", errNotLocalDirectory
+	}
+
+	path = filepath.Clean(path)
+
+	if st, err := os.Stat(path); err != nil || !st.IsDir() {
+		return "", errNotLocalDirectory
+	}
+
+	return path, nil
+}
+
+var (
+	errNotLocalDirectory = errors.New("not an existing local folder")
+	errNotWebURL         = errors.New("not an http or https URL")
+)
+
+// externalURL returns rawURL if it is an absolute http or https URL.
+func externalURL(rawURL string) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", errNotWebURL
+	}
+
+	return u.String(), nil
+}
+
+// allowShimAction reports whether a request may trigger an action of this
+// program, such as opening a folder. Actions need a POST that the page itself
+// sent: browsers label requests from other sites with Sec-Fetch-Site, and
+// such a request must not be able to act here even if it reaches the proxy.
+func allowShimAction(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return false
+	}
+
+	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" {
+		http.Error(w, "cross-site request", http.StatusForbidden)
+		return false
+	}
+
+	return true
+}
+
+// decodeJSONRequest decodes a small JSON request body. It insists on the JSON
+// content type, which a page of another site cannot send without permission.
+func decodeJSONRequest(w http.ResponseWriter, r *http.Request, v any) bool {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		http.Error(w, "content type must be application/json", http.StatusUnsupportedMediaType)
+		return false
+	}
+
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxShimRequestSize)).Decode(v); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return false
+	}
+
+	return true
+}
+
+const maxShimRequestSize = 64 * 1024
+
 func (h *proxyHandler) serveShim(w http.ResponseWriter, r *http.Request, repoID string) {
-	switch strings.TrimPrefix(r.URL.Path, shimPrefix) {
+	action := strings.TrimPrefix(r.URL.Path, shimPrefix)
+
+	if action != "shim.js" && !allowShimAction(w, r) {
+		return
+	}
+
+	switch action {
 	case "shim.js":
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 		_, _ = w.Write(shimJS)
 
 	case "select-dir":
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
 		path, err := h.host.selectDirectory(repoID)
 		if err != nil {
 			slog.Warn("select directory failed", "err", err)
@@ -211,11 +297,6 @@ func (h *proxyHandler) serveShim(w http.ResponseWriter, r *http.Request, repoID 
 		_ = json.NewEncoder(w).Encode(map[string]string{"path": path})
 
 	case "restart":
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
 		if h.host.server(repoID) == nil {
 			http.Error(w, "unknown repository window", http.StatusNotFound)
 			return
@@ -226,30 +307,43 @@ func (h *proxyHandler) serveShim(w http.ResponseWriter, r *http.Request, repoID 
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 
 	case "open-log":
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		h.host.browseDirectory(h.host.logPath)
+		h.host.openPath(h.host.logPath)
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 
 	case "browse-dir":
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
 		var req struct {
 			Path string `json:"path"`
 		}
 
-		if err := json.NewDecoder(io.LimitReader(r.Body, 64*1024)).Decode(&req); err != nil || req.Path == "" {
-			http.Error(w, "invalid request", http.StatusBadRequest)
+		if !decodeJSONRequest(w, r, &req) {
 			return
 		}
 
-		h.host.browseDirectory(req.Path)
+		if err := h.host.browseDirectory(req.Path); err != nil {
+			slog.Warn("not opening path requested by the web UI", "path", req.Path, "err", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+
+	case "open-url":
+		var req struct {
+			URL string `json:"url"`
+		}
+
+		if !decodeJSONRequest(w, r, &req) {
+			return
+		}
+
+		if err := h.host.openExternalURL(req.URL); err != nil {
+			slog.Warn("not opening URL requested by the web UI", "url", req.URL, "err", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+
+			return
+		}
+
 		w.WriteHeader(http.StatusNoContent)
 
 	default:

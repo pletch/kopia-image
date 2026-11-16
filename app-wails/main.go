@@ -454,6 +454,10 @@ func (s *shell) addRepository() {
 }
 
 func (s *shell) anyWindowVisible() bool {
+	if s.app == nil {
+		return false
+	}
+
 	for _, w := range s.app.Window.GetAll() {
 		if strings.HasPrefix(w.Name(), windowNamePrefix) && w.IsVisible() && !w.IsMinimised() {
 			return true
@@ -486,10 +490,41 @@ func (s *shell) selectDirectory(repoID string) (string, error) {
 	return dlg.PromptForSingleSelection()
 }
 
-func (s *shell) browseDirectory(path string) {
+// openPath opens a file or folder with the program the system associates with
+// it. For a path that comes from the web UI, use browseDirectory.
+func (s *shell) openPath(path string) {
 	if err := s.app.Browser.OpenFile(path); err != nil {
-		slog.Warn("unable to open directory", "path", path, "err", err)
+		slog.Warn("unable to open", "path", path, "err", err)
 	}
+}
+
+// browseDirectory shows a folder in the system file manager. The path comes
+// from the web UI, so anything but an existing local folder is refused: the
+// system would run a program, open a document or contact a server instead.
+func (s *shell) browseDirectory(path string) error {
+	dir, err := localDirectory(path)
+	if err != nil {
+		return err
+	}
+
+	s.openPath(dir)
+
+	return nil
+}
+
+// openExternalURL opens a web page in the system browser. Only http and https
+// URLs are opened: other schemes start other programs.
+func (s *shell) openExternalURL(rawURL string) error {
+	u, err := externalURL(rawURL)
+	if err != nil {
+		return err
+	}
+
+	if err := s.app.Browser.OpenURL(u); err != nil {
+		return fmt.Errorf("unable to open %v: %w", u, err)
+	}
+
+	return nil
 }
 
 // notify handles a notification printed by a repository server: it applies the
@@ -645,7 +680,7 @@ func (s *shell) rebuildTrayMenu() {
 		})
 	}
 
-	menu.Add("Open Log File").OnClick(func(*application.Context) { s.browseDirectory(s.logPath) })
+	menu.Add("Open Log File").OnClick(func(*application.Context) { s.openPath(s.logPath) })
 	menu.AddSeparator()
 	menu.Add("Quit").OnClick(func(*application.Context) { s.app.Quit() })
 
