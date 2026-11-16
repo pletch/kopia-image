@@ -104,7 +104,7 @@ func (s *Server) handleWebDAV(ctx context.Context, rc requestContext) {
 			return
 		}
 
-		entry = snapshotfs.DirectoryEntry(rc.rep, oid, nil)
+		entry = s.webdavSnapshotRoot(ctx, rc.rep, oid)
 	}
 
 	prefix := webdavPathPrefix + share

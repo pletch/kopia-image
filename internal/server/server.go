@@ -106,7 +106,8 @@ type Server struct {
 	// +checklocks:serverMutex
 	mounts map[object.ID]mount.Controller
 
-	webdavLocks webdav.LockSystem
+	webdavLocks      webdav.LockSystem
+	webdavImageRoots imageRootCache
 
 	taskmgr              *uitask.Manager
 	authCookieSigningKey []byte
