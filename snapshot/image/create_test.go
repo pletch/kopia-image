@@ -44,11 +44,11 @@ func bytesSource(data []byte) func() (io.ReadCloser, error) {
 	}
 }
 
-func testSource(t *testing.T) snapshot.SourceInfo {
-	t.Helper()
+func testSource(tb testing.TB) snapshot.SourceInfo {
+	tb.Helper()
 
 	p, err := DiskSourcePath(testDiskGUID)
-	require.NoError(t, err)
+	require.NoError(tb, err)
 
 	return snapshot.SourceInfo{Host: "desktop", UserName: "tim", Path: p}
 }

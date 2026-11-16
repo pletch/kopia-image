@@ -267,60 +267,6 @@ func (opt *CreateOptions) writeVolume(ctx context.Context, rep repo.RepositoryWr
 	return res.oid, res.stats, err
 }
 
-// writeImageObject writes exactly size bytes from r as a FIXED-4M object.
-func (opt *CreateOptions) writeImageObject(ctx context.Context, rep repo.RepositoryWriter, r io.Reader, size int64, name string) (object.ID, VolumeStats, error) {
-	w := rep.NewObjectWriter(ctx, object.WriterOptions{
-		Description:        imageObjectDescription + name,
-		Splitter:           imageSplitter,
-		Compressor:         opt.Compressor,
-		MetadataCompressor: opt.MetadataCompressor,
-		AsyncWrites:        opt.AsyncWrites,
-	})
-	defer w.Close() //nolint:errcheck
-
-	newBuffer := opt.NewBuffer
-	if newBuffer == nil {
-		newBuffer = func(n int) []byte { return make([]byte, n) }
-	}
-
-	buf := newBuffer(DefaultChunkSize)
-	zero := make([]byte, DefaultChunkSize)
-
-	var stats VolumeStats
-
-	for total := int64(0); total < size; {
-		if err := ctx.Err(); err != nil {
-			return object.EmptyID, stats, errors.Wrap(err, "imaging canceled")
-		}
-
-		chunk := buf[:min(int64(len(buf)), size-total)]
-
-		n, err := io.ReadFull(r, chunk)
-		if err != nil {
-			return object.EmptyID, stats, errors.Wrapf(err, "error reading volume at offset %v of %v", total+int64(n), size)
-		}
-
-		if bytes.Equal(chunk, zero[:n]) {
-			stats.ZeroChunks++
-		}
-
-		if _, err := w.Write(chunk); err != nil {
-			return object.EmptyID, stats, errors.Wrap(err, "error writing image")
-		}
-
-		stats.ChunksTotal++
-		stats.BytesRead += int64(n)
-		total += int64(n)
-	}
-
-	oid, err := w.Result()
-	if err != nil {
-		return object.EmptyID, stats, errors.Wrap(err, "error finishing image")
-	}
-
-	return oid, stats, nil
-}
-
 func (opt *CreateOptions) writeSmallObject(ctx context.Context, rep repo.RepositoryWriter, name string, data []byte, comp compression.Name) (object.ID, error) {
 	w := rep.NewObjectWriter(ctx, object.WriterOptions{
 		Description:        metadataObjectDesciption + name,

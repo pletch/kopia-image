@@ -68,6 +68,15 @@ func (r *MaskedReader) SourceBytesRead() int64 {
 	return r.sourceBytesRead.Load()
 }
 
+// IsMasked reports whether [off, off+length) lies entirely within the mask,
+// so that it reads as zeros without touching the source.
+func (r *MaskedReader) IsMasked(off, length int64) bool {
+	// the mask is normalized, so a masked range lies within a single extent
+	i := sort.Search(len(r.mask), func(i int) bool { return r.mask[i].End() > off })
+
+	return i < len(r.mask) && r.mask[i].Start <= off && r.mask[i].End() >= off+length
+}
+
 // ReadAt implements io.ReaderAt.
 func (r *MaskedReader) ReadAt(p []byte, off int64) (int, error) {
 	if off < 0 {
