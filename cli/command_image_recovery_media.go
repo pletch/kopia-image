@@ -86,7 +86,7 @@ type commandImageRecoveryMediaCreate struct {
 
 func (c *commandImageRecoveryMediaCreate) setup(svc advancedAppServices, parent commandParent) {
 	cmd := parent.Command("create", "Build recovery media from this computer's Windows Recovery Environment. Run as administrator.")
-	cmd.Flag("usb", `USB disk to erase and make bootable: its number or \\.\PhysicalDriveN`).StringVar(&c.usb)
+	cmd.Flag("usb", `USB disk to erase and make bootable: its number or \\.\PhysicalDriveN (default: choose from a list)`).StringVar(&c.usb)
 	cmd.Flag("output-dir", "Write the media's files to this folder, to copy onto any FAT32 USB stick").StringVar(&c.outputDir)
 	cmd.Flag("vhdx", "Write a bootable virtual disk for Hyper-V, to test the media").StringVar(&c.vhdx)
 	cmd.Flag("connect-from", "Repository connection file to put on the media, such as one with read-only access (default: the current one)").StringVar(&c.connectFrom)
@@ -213,8 +213,17 @@ func (c *commandImageRecoveryMediaCreate) validateTarget(ctx context.Context, re
 		}
 	}
 
-	if n != 1 {
-		return nil, errors.New("pass one of --usb, --output-dir or --vhdx")
+	if n > 1 {
+		return nil, errors.New("pass only one of --usb, --output-dir or --vhdx")
+	}
+
+	if n == 0 {
+		usb, err := c.pickUSB()
+		if err != nil {
+			return nil, err
+		}
+
+		c.usb = usb
 	}
 
 	switch {
@@ -758,4 +767,45 @@ func (c *commandImageRecoveryMediaKit) run(ctx context.Context, rep repo.Reposit
 	}
 
 	return errors.Wrap(os.WriteFile(c.output, []byte(kit), 0o600), "unable to write the kit") //nolint:mnd
+}
+
+// pickUSB asks which USB disk to make recovery media when no target is
+// given, as when the media is created from the KopiaUI tray menu.
+func (c *commandImageRecoveryMediaCreate) pickUSB() (string, error) {
+	disks, err := imagerestore.ListDisks()
+	if err != nil {
+		return "", errors.Wrap(err, "unable to list the disks")
+	}
+
+	disks = slices.DeleteFunc(disks, func(d imagerestore.DiskInfo) bool {
+		return d.Bus != blockdev.BusUSB || d.HasMountPoint(systemRoot()) || d.Size < minRecoveryUSBBytes
+	})
+
+	if len(disks) == 0 {
+		return "", errors.Errorf("no USB disk of %v or more is attached: insert a USB stick, or pass --output-dir or --vhdx", units.BytesString(int64(minRecoveryUSBBytes)))
+	}
+
+	c.out.printStdout("USB disks:\n")
+
+	for i := range disks {
+		c.out.printStdout("  %v. %v\n     holds %v\n", i+1, disks[i].Describe(), strings.Join(disks[i].DescribeVolumes(), "; "))
+	}
+
+	for {
+		c.out.printStdout("USB disk to make recovery media, which erases it (number from the list, or q to quit): ")
+
+		a, err := readLine(c.svc)
+		if err != nil {
+			return "", err
+		}
+
+		a = strings.TrimSpace(a)
+		if strings.EqualFold(a, "q") {
+			return "", errors.New("canceled; nothing was written")
+		}
+
+		if n, err := strconv.Atoi(a); err == nil && n >= 1 && n <= len(disks) {
+			return disks[n-1].Path, nil
+		}
+	}
 }

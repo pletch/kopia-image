@@ -642,6 +642,7 @@ func (s *shell) rebuildTrayMenu() {
 
 	menu.AddSeparator()
 	menu.Add("Connect To Another Repository...").OnClick(func(*application.Context) { s.addRepository() })
+	s.addRecoveryMediaMenu(menu)
 	menu.AddSeparator()
 
 	autostart, _ := s.app.Autostart.IsEnabled()

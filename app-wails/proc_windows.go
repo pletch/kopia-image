@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -36,4 +37,34 @@ func electronKopiaUIRunning() bool {
 	}
 
 	return strings.Contains(strings.ToLower(string(out)), `"kopiaui.exe"`)
+}
+
+// runElevatedConsole runs a console program as an administrator, after the
+// UAC prompt, in a console window that stays open when it ends so that its
+// output can be read.
+func runElevatedConsole(exe string, args []string) error {
+	system32, err := windows.GetSystemDirectory()
+	if err != nil {
+		return err //nolint:wrapcheck
+	}
+
+	parts := []string{syscall.EscapeArg(exe)}
+	for _, a := range args {
+		parts = append(parts, syscall.EscapeArg(a))
+	}
+
+	// cmd /k removes the outermost quotes of the command it is given
+	params := `/k "` + strings.Join(parts, " ") + `"`
+
+	verb, _ := windows.UTF16PtrFromString("runas")
+	file, _ := windows.UTF16PtrFromString(filepath.Join(system32, "cmd.exe"))
+	cmdArgs, _ := windows.UTF16PtrFromString(params)
+	dir, _ := windows.UTF16PtrFromString(filepath.Dir(exe))
+
+	err = windows.ShellExecute(0, verb, file, cmdArgs, dir, windows.SW_SHOWNORMAL)
+	if errors.Is(err, windows.ERROR_CANCELLED) { //nolint:misspell // the Windows API name
+		return errElevationCanceled
+	}
+
+	return err //nolint:wrapcheck
 }
