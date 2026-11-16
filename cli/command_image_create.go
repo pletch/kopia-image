@@ -9,8 +9,10 @@ import (
 
 	"github.com/pkg/errors"
 
+	"github.com/kopia/kopia/internal/clock"
 	"github.com/kopia/kopia/internal/units"
 	"github.com/kopia/kopia/repo"
+	"github.com/kopia/kopia/repo/compression"
 	"github.com/kopia/kopia/snapshot"
 	"github.com/kopia/kopia/snapshot/image"
 	"github.com/kopia/kopia/snapshot/image/blockdev"
@@ -18,7 +20,30 @@ import (
 	"github.com/kopia/kopia/snapshot/policy"
 )
 
-const defaultImageFlushInterval = 10 * time.Minute
+const (
+	defaultImageFlushInterval = 10 * time.Minute
+
+	// defaultImageCompressor compresses image chunks unless the image
+	// source's own policy chooses a compressor: partly used chunks are mostly
+	// zeroed free space, which would otherwise be uploaded uncompressed. The
+	// inherited default is "none", which every repository stores as its
+	// global policy, so it does not express a choice about images.
+	defaultImageCompressor compression.Name = "zstd-fastest"
+)
+
+// imageCompressor returns the image chunk compressor for a policy compressor
+// and whether the image source's own policy set it. "none" means no
+// compression.
+func imageCompressor(policyCompressor compression.Name, setOnSource bool) compression.Name {
+	switch {
+	case !setOnSource:
+		return defaultImageCompressor
+	case policyCompressor == "none":
+		return ""
+	default:
+		return policyCompressor
+	}
+}
 
 type commandImageCreate struct {
 	volumes       []string
@@ -43,7 +68,35 @@ func (c *commandImageCreate) setup(svc appServices, parent commandParent) {
 	c.out.setup(svc)
 }
 
-func (c *commandImageCreate) run(ctx context.Context, rep repo.RepositoryWriter) error {
+func (c *commandImageCreate) run(ctx context.Context, rep repo.RepositoryWriter) (err error) {
+	statePath := c.statePath
+	if statePath == "" {
+		if statePath, err = disksource.DefaultStatePath(); err != nil {
+			return errors.Wrap(err, "unable to find the image state file")
+		}
+	}
+
+	status := &disksource.RunStatus{Volumes: c.volumes, StartTime: clock.Now()}
+
+	if !c.dryRun {
+		defer func() {
+			status.EndTime = clock.Now()
+			status.Success = err == nil
+
+			if err != nil {
+				status.Error = err.Error()
+			}
+
+			if werr := disksource.WriteRunStatus(disksource.StatusPath(statePath), status); werr != nil {
+				log(ctx).Errorf("%v", werr)
+			}
+		}()
+	}
+
+	return c.imageDisks(ctx, rep, statePath, status)
+}
+
+func (c *commandImageCreate) imageDisks(ctx context.Context, rep repo.RepositoryWriter, statePath string, status *disksource.RunStatus) error {
 	logf := func(format string, args ...any) { log(ctx).Infof(format, args...) }
 
 	disks, err := disksource.DisksForVolumes(c.volumes)
@@ -63,13 +116,6 @@ func (c *commandImageCreate) run(ctx context.Context, rep repo.RepositoryWriter)
 		plans = append(plans, plan)
 	}
 
-	statePath := c.statePath
-	if statePath == "" {
-		if statePath, err = disksource.DefaultStatePath(); err != nil {
-			return errors.Wrap(err, "unable to find the image state file")
-		}
-	}
-
 	guard, err := disksource.Acquire(statePath, logf)
 	if err != nil {
 		return errors.Wrap(err, "unable to start imaging")
@@ -82,7 +128,12 @@ func (c *commandImageCreate) run(ctx context.Context, rep repo.RepositoryWriter)
 	}()
 
 	for _, plan := range plans {
-		if err := c.imageDisk(ctx, rep, plan, guard.State, logf); err != nil {
+		man, md, err := c.imageDisk(ctx, rep, plan, guard.State, logf)
+		if man != nil {
+			status.Images = append(status.Images, runImage(man, md))
+		}
+
+		if err != nil {
 			return errors.Wrapf(err, "unable to image disk %v", plan.DiskNumber)
 		}
 	}
@@ -90,22 +141,34 @@ func (c *commandImageCreate) run(ctx context.Context, rep repo.RepositoryWriter)
 	return nil
 }
 
-func (c *commandImageCreate) imageDisk(ctx context.Context, rep repo.RepositoryWriter, plan *disksource.Plan, state *disksource.ShadowState, logf func(string, ...any)) (err error) {
+func runImage(man *snapshot.Manifest, md *image.Metadata) disksource.RunImage {
+	ri := disksource.RunImage{Source: man.Source.String(), SnapshotID: string(man.ID), UploadedBytes: md.UploadedBytes}
+
+	for i := range md.Volumes {
+		ri.BytesRead += md.Volumes[i].Stats.BytesRead
+	}
+
+	return ri
+}
+
+// imageDisk images one disk. It returns the saved snapshot also when a later
+// step, such as applying retention, fails.
+func (c *commandImageCreate) imageDisk(ctx context.Context, rep repo.RepositoryWriter, plan *disksource.Plan, state *disksource.ShadowState, logf func(string, ...any)) (man *snapshot.Manifest, md *image.Metadata, err error) {
 	sourcePath, err := image.DiskSourcePath(plan.Layout.DiskGUID)
 	if err != nil {
-		return errors.Wrap(err, "invalid disk GUID")
+		return nil, nil, errors.Wrap(err, "invalid disk GUID")
 	}
 
 	src := snapshot.SourceInfo{Host: rep.ClientOptions().Hostname, UserName: rep.ClientOptions().Username, Path: sourcePath}
 
-	pol, _, _, err := policy.GetEffectivePolicy(ctx, rep, src)
+	pol, def, _, err := policy.GetEffectivePolicy(ctx, rep, src)
 	if err != nil {
-		return errors.Wrapf(err, "unable to get the policy of %v", src)
+		return nil, nil, errors.Wrapf(err, "unable to get the policy of %v", src)
 	}
 
 	session, err := disksource.OpenSession(ctx, plan, state, logf)
 	if err != nil {
-		return errors.Wrap(err, "unable to prepare the disk")
+		return nil, nil, errors.Wrap(err, "unable to prepare the disk")
 	}
 
 	closeSession := func() error {
@@ -118,7 +181,7 @@ func (c *commandImageCreate) imageDisk(ctx context.Context, rep repo.RepositoryW
 
 	if c.dryRun {
 		c.printDryRun(plan, session)
-		return nil
+		return nil, nil, nil
 	}
 
 	parallel := c.parallel
@@ -126,12 +189,12 @@ func (c *commandImageCreate) imageDisk(ctx context.Context, rep repo.RepositoryW
 		parallel = runtime.GOMAXPROCS(0)
 	}
 
-	man, md, err := image.Create(ctx, rep, &image.CreateOptions{
+	man, md, err = image.Create(ctx, rep, &image.CreateOptions{
 		Source:             src,
 		Description:        c.descriptionFor(plan),
 		Layout:             plan.Layout,
 		Volumes:            session.Volumes(),
-		Compressor:         pol.CompressionPolicy.CompressorName,
+		Compressor:         imageCompressor(pol.CompressionPolicy.CompressorName, def.CompressionPolicy.CompressorName == src),
 		MetadataCompressor: pol.MetadataCompressionPolicy.MetadataCompressor(),
 		AsyncWrites:        parallel,
 		FlushInterval:      c.flushInterval,
@@ -139,7 +202,7 @@ func (c *commandImageCreate) imageDisk(ctx context.Context, rep repo.RepositoryW
 		Logf:               logf,
 	})
 	if err != nil {
-		return err //nolint:wrapcheck
+		return nil, nil, err //nolint:wrapcheck
 	}
 
 	// Remove the shadow copies before the retention pass. The image is already
@@ -152,16 +215,16 @@ func (c *commandImageCreate) imageDisk(ctx context.Context, rep repo.RepositoryW
 	closeSession = func() error { return nil }
 
 	if _, err := policy.ApplyRetentionPolicy(ctx, rep, src, true); err != nil {
-		return errors.Wrap(err, "unable to apply the retention policy")
+		return man, md, errors.Wrap(err, "unable to apply the retention policy")
 	}
 
 	if err := rep.Flush(ctx); err != nil {
-		return errors.Wrap(err, "unable to flush")
+		return man, md, errors.Wrap(err, "unable to flush")
 	}
 
 	c.printSummary(man, md)
 
-	return nil
+	return man, md, nil
 }
 
 func (c *commandImageCreate) descriptionFor(plan *disksource.Plan) string {
