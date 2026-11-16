@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -16,7 +15,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"golang.org/x/sys/windows"
 
 	kopiafs "github.com/kopia/kopia/fs"
 	"github.com/kopia/kopia/internal/repotesting"
@@ -27,6 +25,7 @@ import (
 	"github.com/kopia/kopia/snapshot/image"
 	"github.com/kopia/kopia/snapshot/image/blockdev"
 	"github.com/kopia/kopia/snapshot/image/disksource"
+	"github.com/kopia/kopia/snapshot/image/imagerestore"
 	"github.com/kopia/kopia/snapshot/image/ntfsfs"
 )
 
@@ -102,47 +101,21 @@ func verifyFiles(t *testing.T, root string, want map[string][]byte) {
 	require.Equal(t, len(want)-1, count, "unexpected files in the restored volume")
 }
 
-// writeImageToDisk writes an image object to a disk at an offset, as
-// "kopia image restore" will.
+// writeImageToDisk writes an image object into a partition of a disk with
+// kopia image restore's own target, which locks the disk's volumes so that
+// Windows cannot mount the partition while it is written.
 func writeImageToDisk(ctx context.Context, t *testing.T, rep repo.Repository, oid object.ID, diskNumber uint32, offset int64) {
 	t.Helper()
 
-	path := blockdev.DiskPath(diskNumber)
-
-	h, err := windows.CreateFile(windows.StringToUTF16Ptr(path),
-		windows.GENERIC_READ|windows.GENERIC_WRITE,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
-		nil, windows.OPEN_EXISTING, windows.FILE_FLAG_NO_BUFFERING|windows.FILE_FLAG_WRITE_THROUGH, 0)
+	target, err := imagerestore.OpenTarget(blockdev.DiskPath(diskNumber), 0, 0)
 	require.NoError(t, err)
 
-	f := os.NewFile(uintptr(h), path)
-	defer f.Close()
-
-	r, err := rep.OpenObject(ctx, oid)
+	// a new VHDX reads as zeros, so zero chunks need not be written
+	_, err = imagerestore.WriteObject(ctx, rep, oid, target, offset, imagerestore.Options{TargetIsZeroed: true})
 	require.NoError(t, err)
 
-	defer r.Close()
-
-	buf := blockdev.AlignedBuffer(image.DefaultChunkSize)
-	zero := make([]byte, image.DefaultChunkSize)
-
-	for off := int64(0); ; {
-		n, err := io.ReadFull(r, buf)
-
-		// a new VHDX reads as zeros, so zero chunks need not be written
-		if n > 0 && !bytes.Equal(buf[:n], zero[:n]) {
-			_, werr := f.WriteAt(buf[:n], offset+off)
-			require.NoError(t, werr)
-		}
-
-		off += int64(n)
-
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return
-		}
-
-		require.NoError(t, err)
-	}
+	require.NoError(t, target.Sync())
+	require.NoError(t, target.Close())
 }
 
 func TestImageAndRestoreVHDX(t *testing.T) {

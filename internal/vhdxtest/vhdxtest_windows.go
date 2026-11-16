@@ -12,8 +12,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/gofrs/flock"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
 )
@@ -49,7 +52,7 @@ func New(t *testing.T) *Disk {
 
 	t.Cleanup(func() {
 		// t.Context() is already canceled when cleanups run; detaching a detached disk fails harmlessly
-		if out, err := run(context.Background(), d.dir, "select vdisk file="+quote(d.File)+"\ndetach vdisk\n"); err != nil && !d.detached {
+		if out, _, err := run(context.Background(), d.dir, "select vdisk file="+quote(d.File)+"\ndetach vdisk\n"); err != nil && !d.detached {
 			t.Logf("unable to detach %v: %v\n%s", d.File, err, out)
 		}
 	})
@@ -136,25 +139,53 @@ func (d *Disk) mount(commands string) string {
 func (d *Disk) diskpart(ctx context.Context, script string) string {
 	d.t.Helper()
 
-	out, err := run(ctx, d.dir, script)
-	require.NoError(d.t, err, "diskpart failed:\n%s", out)
+	start := time.Now() //nolint:forbidigo // test timing diagnostics
+
+	out, waited, err := run(ctx, d.dir, script)
+
+	d.t.Logf("diskpart took %v (%v waiting for other tests): %q",
+		time.Since(start).Truncate(time.Millisecond), waited.Truncate(time.Millisecond), strings.ReplaceAll(script, "\n", "; ")) //nolint:forbidigo
+	require.NoError(d.t, err, "diskpart failed running:\n%s\noutput:\n%s", script, out)
 
 	return string(out)
 }
 
-// run runs a diskpart script.
-func run(ctx context.Context, dir, script string) ([]byte, error) {
+// diskpartLockFile serializes diskpart across test processes. The Virtual Disk
+// Service handles concurrent diskpart instances slowly and unreliably: when
+// test packages ran in parallel, even a "detail vdisk" waited tens of seconds
+// behind other tests' operations, and runs failed intermittently.
+var diskpartLockFile = filepath.Join(os.TempDir(), "kopia-vhdxtest-diskpart.lock")
+
+const diskpartLockRetry = 200 * time.Millisecond
+
+// run runs a diskpart script while holding the machine-wide diskpart lock and
+// returns its output and how long it waited for the lock.
+func run(ctx context.Context, dir, script string) ([]byte, time.Duration, error) {
+	start := time.Now() //nolint:forbidigo
+
+	lock := flock.New(diskpartLockFile)
+
+	if _, err := lock.TryLockContext(ctx, diskpartLockRetry); err != nil {
+		return nil, 0, fmt.Errorf("unable to lock %v: %w", diskpartLockFile, err)
+	}
+
+	defer lock.Unlock() //nolint:errcheck
+
+	waited := time.Since(start) //nolint:forbidigo
+
 	f, err := os.CreateTemp(dir, "diskpart-*.txt")
 	if err != nil {
-		return nil, fmt.Errorf("diskpart script: %w", err)
+		return nil, waited, fmt.Errorf("diskpart script: %w", err)
 	}
 
 	_, writeErr := f.WriteString(script)
 	if err := errors.Join(writeErr, f.Close()); err != nil {
-		return nil, err
+		return nil, waited, err
 	}
 
-	return exec.CommandContext(ctx, "diskpart", "/s", f.Name()).CombinedOutput() //nolint:gosec,wrapcheck
+	out, err := exec.CommandContext(ctx, "diskpart", "/s", f.Name()).CombinedOutput() //nolint:gosec
+
+	return out, waited, err //nolint:wrapcheck
 }
 
 // quote quotes a path for diskpart; Go's %q would double its backslashes.

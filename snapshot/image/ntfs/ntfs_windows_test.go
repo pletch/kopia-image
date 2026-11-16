@@ -3,11 +3,13 @@ package ntfs_test
 import (
 	"bytes"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/mxk/go-vss"
 	"github.com/stretchr/testify/require"
@@ -79,8 +81,7 @@ func TestProbeShadowCopyOfVHDX(t *testing.T) {
 	require.Equal(t, image.PartitionTypeBasicData, part.TypeGUID)
 	require.Equal(t, extents[0].Length, part.Length)
 
-	id, err := vss.Create(volume)
-	require.NoError(t, err)
+	id := createShadowCopy(t, volume)
 
 	t.Cleanup(func() { require.NoError(t, vss.Remove(id)) })
 
@@ -157,5 +158,28 @@ func TestProbeShadowCopyOfVHDX(t *testing.T) {
 
 	for _, e := range free {
 		require.Equal(t, make([]byte, e.Length), imageCopy[e.Start:e.End()], "free extent %+v not zero", e)
+	}
+}
+
+// createShadowCopy creates a shadow copy, retrying while another one is being
+// created, as by tests in other packages running at the same time.
+func createShadowCopy(t *testing.T, volume string) string {
+	t.Helper()
+
+	const vssErrorInProgress = 9
+
+	for attempt := 1; ; attempt++ {
+		id, err := vss.Create(volume)
+		if err == nil {
+			return id
+		}
+
+		var e vss.CreateError
+		if !errors.As(err, &e) || e != vssErrorInProgress || attempt == 10 {
+			require.NoError(t, err)
+		}
+
+		t.Logf("another shadow copy is being created; retrying (%v)", attempt)
+		time.Sleep(5 * time.Second) //nolint:forbidigo
 	}
 }
