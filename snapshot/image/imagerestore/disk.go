@@ -67,8 +67,12 @@ func LoadSnapshot(ctx context.Context, rep repo.Repository, man *snapshot.Manife
 
 func readJSONFile(ctx context.Context, dir fs.Directory, name string, v any) error {
 	e, err := dir.Child(ctx, name)
+	if errors.Is(err, fs.ErrEntryNotFound) {
+		return errors.Errorf("%v not found; is this an image snapshot?", name)
+	}
+
 	if err != nil {
-		return errors.Wrapf(err, "%v not found; is this an image snapshot?", name)
+		return errors.Wrapf(err, "unable to read %v", name)
 	}
 
 	f, ok := e.(fs.File)

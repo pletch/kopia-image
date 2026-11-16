@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"testing"
 
@@ -12,24 +13,26 @@ import (
 	"github.com/kopia/kopia/snapshot/image"
 )
 
-func TestGetLocalBackupPaths_skipsImageSources(t *testing.T) {
-	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
+const testImageDiskGUID = "0f6ab3f2-1c3d-4e5f-8a9b-0c1d2e3f4a5b"
 
-	const diskGUID = "0f6ab3f2-1c3d-4e5f-8a9b-0c1d2e3f4a5b"
+// createTestImage creates an image snapshot of a disk with one 9 MiB raw
+// volume for the repository's user@host and returns its manifest.
+func createTestImage(ctx context.Context, t *testing.T, env *repotesting.Environment) *snapshot.Manifest {
+	t.Helper()
 
-	imagePath, err := image.DiskSourcePath(diskGUID)
+	imagePath, err := image.DiskSourcePath(testImageDiskGUID)
 	require.NoError(t, err)
 
-	data := bytes.Repeat([]byte{7}, 1<<20)
+	data := append(bytes.Repeat([]byte{7}, 4<<20), make([]byte, 5<<20)...)
 
-	_, _, err = image.Create(ctx, env.RepositoryWriter, &image.CreateOptions{
+	man, _, err := image.Create(ctx, env.RepositoryWriter, &image.CreateOptions{
 		Source: snapshot.SourceInfo{
 			Host:     env.Repository.ClientOptions().Hostname,
 			UserName: env.Repository.ClientOptions().Username,
 			Path:     imagePath,
 		},
 		Layout: &image.Layout{
-			DiskGUID:   diskGUID,
+			DiskGUID:   testImageDiskGUID,
 			SectorSize: 512,
 			DiskSize:   1 << 30,
 			Partitions: []image.Partition{{
@@ -43,6 +46,14 @@ func TestGetLocalBackupPaths_skipsImageSources(t *testing.T) {
 		}},
 	})
 	require.NoError(t, err)
+
+	return man
+}
+
+func TestGetLocalBackupPaths_skipsImageSources(t *testing.T) {
+	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
+
+	createTestImage(ctx, t, env)
 
 	sources, err := snapshot.ListSources(ctx, env.Repository)
 	require.NoError(t, err)

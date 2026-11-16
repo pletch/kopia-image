@@ -38,6 +38,10 @@ func TestImageCreateAndList(t *testing.T) {
 
 	source := out[0]
 
+	out = env.RunAndExpectSuccess(t, "image", "check")
+	require.Contains(t, strings.Join(out, "\n"), "All 1 image snapshots passed.")
+	env.RunAndExpectSuccess(t, "image", "check", source, "--full")
+
 	// image sources work with the standard snapshot and policy commands
 	require.Len(t, env.RunAndExpectSuccess(t, "snapshot", "list", source), 2)
 	env.RunAndExpectSuccess(t, "policy", "set", source, "--keep-latest=1", "--keep-hourly=0", "--keep-daily=0",
