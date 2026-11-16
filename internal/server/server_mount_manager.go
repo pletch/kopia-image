@@ -9,6 +9,7 @@ import (
 	"github.com/kopia/kopia/internal/mount"
 	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/repo/object"
+	"github.com/kopia/kopia/snapshot/image/ntfsfs"
 	"github.com/kopia/kopia/snapshot/snapshotfs"
 )
 
@@ -37,7 +38,10 @@ func (s *Server) getMountController(ctx context.Context, rep repo.Repository, oi
 
 	userLog(ctx).Debugf("mount controller for %v not found, starting", oid)
 
-	c, err := mount.Directory(ctx, snapshotfs.DirectoryEntry(rep, oid, nil), "*", mount.Options{
+	// an image snapshot shows each NTFS volume's files next to its image
+	root := ntfsfs.WithBrowsableVolumes(ctx, rep, snapshotfs.DirectoryEntry(rep, oid, nil))
+
+	c, err := mount.Directory(ctx, root, "*", mount.Options{
 		DriveLabel: mount.SnapshotDriveLabel(ctx, rep, oid),
 	})
 	if err != nil {

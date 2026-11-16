@@ -12,6 +12,7 @@ import (
 	"github.com/kopia/kopia/internal/mount"
 	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/repo/object"
+	"github.com/kopia/kopia/snapshot/image/ntfsfs"
 	"github.com/kopia/kopia/snapshot/snapshotfs"
 )
 
@@ -71,6 +72,9 @@ func (c *commandMount) run(ctx context.Context, rep repo.Repository) error {
 		if err != nil {
 			return errors.Wrapf(err, "unable to get directory entry for %v", c.mountObjectID)
 		}
+
+		// an image snapshot shows each NTFS volume's files next to its image
+		entry = ntfsfs.WithBrowsableVolumes(ctx, rep, entry)
 
 		// a path below the snapshot root does not parse as an object ID and keeps the default label
 		if oid, err := object.ParseID(c.mountObjectID); err == nil {

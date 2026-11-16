@@ -93,7 +93,9 @@ kopia image schedule remove   # remove the tasks and the saved password
 
 Run the first image by hand (`kopia image schedule run`, or
 `kopia image create C:`) and watch it finish: the first upload is the full disk
-and can take longer than the time limit on a slow connection.
+and can take longer than the time limit on a slow connection. If it is stopped
+or interrupted, the next run reads the disk again but uploads only what is still
+missing, so a slow first upload completes over several runs.
 
 ### Monitoring
 
@@ -134,6 +136,33 @@ The check confirms that every chunk is in the repository index, that every
 chunk's pack file exists in storage and is long enough, and fetches and
 authenticates a sample of chunks (`--sample`, default 1%; `--full` for all).
 Chunks this computer has read before may come from its local cache.
+
+## Browsing images and restoring files
+
+NTFS volume images can be browsed file by file without restoring them. Only
+the parts of the image a listing or file read needs are downloaded.
+
+```shell
+kopia image ls <snapshot-id>                       # the volumes in the image
+kopia image ls <snapshot-id>/p3-C/Users/tim -l     # files, with sizes and times
+kopia image restore-files <snapshot-id>/p3-C/Users/tim/Documents C:\Recovered
+```
+
+The path starts with a snapshot ID from `kopia image list` or an image source
+such as `tim@desktop:image:disk:<GUID>` (its latest image), then the volume
+(`p3-C`, `p3-C.img` or the partition number `3`), then the path in it.
+`restore-files` restores the file or folder into the given folder and does not
+replace existing files unless you pass `--overwrite-files`. It restores file
+contents and modification times, not NTFS permissions, and skips alternate data
+streams; restore the whole disk image to keep those.
+
+Mounting an image snapshot, with `kopia mount <snapshot-root-id> Z:` or the
+**Mount** button in the Kopia UI, shows a folder such as `p3-C` next to each NTFS
+volume image, so you can browse and copy files in Explorer.
+
+NTFS metadata files such as `$MFT` are hidden. Alternate data streams appear as
+files named `name:stream`. Files encrypted with EFS are listed but their
+contents are not readable.
 
 ## Restoring
 
