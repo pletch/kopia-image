@@ -4,10 +4,13 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -67,4 +70,93 @@ func runElevatedConsole(exe string, args []string) error {
 	}
 
 	return err //nolint:wrapcheck
+}
+
+var procShellExecuteExW = windows.NewLazySystemDLL("shell32.dll").NewProc("ShellExecuteExW")
+
+// shellExecuteInfo is SHELLEXECUTEINFOW.
+type shellExecuteInfo struct {
+	cbSize        uint32
+	fMask         uint32
+	hwnd          windows.HWND
+	verb          *uint16
+	file          *uint16
+	parameters    *uint16
+	directory     *uint16
+	show          int32
+	instApp       windows.Handle
+	idList        uintptr
+	class         *uint16
+	keyClass      windows.Handle
+	hotKey        uint32
+	iconOrMonitor windows.Handle
+	process       windows.Handle
+}
+
+const (
+	seeMaskNoCloseProcess = 0x00000040
+	seeMaskNoAsync        = 0x00000100
+)
+
+// runElevatedHidden runs a program as an administrator, after the UAC
+// prompt, without a window, and returns its exit code. It waits at most
+// timeout for the program to end once it started.
+func runElevatedHidden(exe string, args []string, timeout time.Duration) (uint32, error) {
+	parts := make([]string, 0, len(args))
+	for _, a := range args {
+		parts = append(parts, syscall.EscapeArg(a))
+	}
+
+	verb, _ := windows.UTF16PtrFromString("runas")
+	file, err := windows.UTF16PtrFromString(exe)
+	if err != nil {
+		return 0, err //nolint:wrapcheck
+	}
+
+	params, err := windows.UTF16PtrFromString(strings.Join(parts, " "))
+	if err != nil {
+		return 0, err //nolint:wrapcheck
+	}
+
+	dir, _ := windows.UTF16PtrFromString(filepath.Dir(exe))
+
+	info := &shellExecuteInfo{
+		fMask:      seeMaskNoCloseProcess | seeMaskNoAsync,
+		verb:       verb,
+		file:       file,
+		parameters: params,
+		directory:  dir,
+		show:       windows.SW_HIDE,
+	}
+	info.cbSize = uint32(unsafe.Sizeof(*info))
+
+	if ok, _, callErr := procShellExecuteExW.Call(uintptr(unsafe.Pointer(info))); ok == 0 {
+		if errors.Is(callErr, windows.ERROR_CANCELLED) { //nolint:misspell // the Windows API name
+			return 0, errElevationCanceled
+		}
+
+		return 0, fmt.Errorf("unable to start %v: %w", filepath.Base(exe), callErr)
+	}
+
+	if info.process == 0 {
+		return 0, fmt.Errorf("unable to follow %v", filepath.Base(exe))
+	}
+
+	defer windows.CloseHandle(info.process) //nolint:errcheck
+
+	ev, err := windows.WaitForSingleObject(info.process, uint32(min(timeout.Milliseconds(), windows.INFINITE-1))) //nolint:gosec // clamped
+	if err != nil {
+		return 0, fmt.Errorf("unable to wait for %v: %w", filepath.Base(exe), err)
+	}
+
+	if ev != windows.WAIT_OBJECT_0 {
+		return 0, fmt.Errorf("%v did not end within %v", filepath.Base(exe), timeout)
+	}
+
+	var code uint32
+	if err := windows.GetExitCodeProcess(info.process, &code); err != nil {
+		return 0, fmt.Errorf("unable to read the exit code of %v: %w", filepath.Base(exe), err)
+	}
+
+	return code, nil
 }

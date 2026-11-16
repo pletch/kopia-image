@@ -275,6 +275,38 @@ func decodeJSONRequest(w http.ResponseWriter, r *http.Request, v any) bool {
 
 const maxShimRequestSize = 64 * 1024
 
+// serveRunImageTask starts the scheduled image task as an administrator. It
+// answers {"status":"started"} or {"status":"canceled"} when the person
+// declines the prompt, and an error otherwise.
+func (h *proxyHandler) serveRunImageTask(w http.ResponseWriter, r *http.Request) {
+	// an empty JSON object: the JSON content type keeps other sites out
+	var req struct{}
+
+	if !decodeJSONRequest(w, r, &req) {
+		return
+	}
+
+	status := "started"
+
+	err := h.host.runImageTaskElevated()
+
+	switch {
+	case errors.Is(err, errElevationCanceled):
+		status = "canceled"
+	case errors.Is(err, errElevationBusy):
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	case err != nil:
+		slog.Warn("unable to start the image task as administrator", "err", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": status})
+}
+
 func (h *proxyHandler) serveShim(w http.ResponseWriter, r *http.Request, repoID string) {
 	action := strings.TrimPrefix(r.URL.Path, shimPrefix)
 
@@ -345,6 +377,9 @@ func (h *proxyHandler) serveShim(w http.ResponseWriter, r *http.Request, repoID 
 		}
 
 		w.WriteHeader(http.StatusNoContent)
+
+	case "run-image-task":
+		h.serveRunImageTask(w, r)
 
 	default:
 		http.NotFound(w, r)

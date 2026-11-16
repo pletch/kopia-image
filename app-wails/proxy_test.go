@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -207,7 +208,8 @@ func shimRequest(method, action, contentType, fetchSite, body string) *httptest.
 	}
 
 	rec := httptest.NewRecorder()
-	(&proxyHandler{host: &shell{servers: map[string]*repoServer{}}}).ServeHTTP(rec, r)
+	sh := &shell{servers: map[string]*repoServer{}, runElevated: refuseElevation}
+	(&proxyHandler{host: sh}).ServeHTTP(rec, r)
 
 	return rec
 }
@@ -251,6 +253,10 @@ func TestServeShim_rejectsRequestsThatMustNotAct(t *testing.T) {
 		{"a network share", http.MethodPost, "browse-dir", "application/json", "same-origin", jsonPath(`\\attacker.example\share`), http.StatusBadRequest},
 		{"empty path", http.MethodPost, "browse-dir", "application/json", "same-origin", `{}`, http.StatusBadRequest},
 		{"a program as a URL", http.MethodPost, "open-url", "application/json", "same-origin", `{"url":"file:///C:/Windows/System32/calc.exe"}`, http.StatusBadRequest},
+		{"GET runs the image task", http.MethodGet, "run-image-task", "application/json", "same-origin", `{}`, http.StatusMethodNotAllowed},
+		{"another site runs the image task", http.MethodPost, "run-image-task", "application/json", "cross-site", `{}`, http.StatusForbidden},
+		{"a form runs the image task", http.MethodPost, "run-image-task", "application/x-www-form-urlencoded", "", `{}`, http.StatusUnsupportedMediaType},
+		{"text runs the image task", http.MethodPost, "run-image-task", "text/plain", "", `{}`, http.StatusUnsupportedMediaType},
 		{"unknown repository", http.MethodPost, "restart", "", "same-origin", "", http.StatusNotFound},
 		{"unknown action", http.MethodPost, "format-disk", "", "same-origin", "", http.StatusNotFound},
 	}
@@ -306,5 +312,64 @@ func TestStartupPage_escapesServerOutput(t *testing.T) {
 	body := rec.Body.String()
 	if strings.Contains(body, "<script>alert") || strings.Contains(body, "<img src=x") {
 		t.Fatalf("server output reached the page unescaped: %s", body)
+	}
+}
+
+// refuseElevation fails a test that would show an administrator prompt.
+func refuseElevation(string, []string, time.Duration) (uint32, error) {
+	return 0, errors.New("a test must not ask for administrator rights")
+}
+
+func TestServeShim_runImageTask(t *testing.T) {
+	run := func(sh *shell) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, shimPrefix+"run-image-task", strings.NewReader(`{}`))
+		r.Header.Set(windowNameHeader, windowName(defaultRepoID))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Sec-Fetch-Site", "same-origin")
+
+		rec := httptest.NewRecorder()
+		(&proxyHandler{host: sh}).ServeHTTP(rec, r)
+
+		return rec
+	}
+
+	var gotExe string
+
+	var gotArgs []string
+
+	sh := &shell{servers: map[string]*repoServer{}, kopiaPath: `C:\Program Files\KopiaUI\kopia.exe`}
+	sh.runElevated = func(exe string, args []string, _ time.Duration) (uint32, error) {
+		gotExe, gotArgs = exe, args
+		return 0, nil
+	}
+
+	// the command is fixed, whatever the page sends
+	if rec := run(sh); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"started"`) {
+		t.Fatalf("started: got %v: %s", rec.Code, rec.Body)
+	}
+
+	if gotExe != sh.kopiaPath || strings.Join(gotArgs, " ") != "image schedule run" {
+		t.Fatalf("ran %q %q", gotExe, gotArgs)
+	}
+
+	sh.runElevated = func(string, []string, time.Duration) (uint32, error) { return 0, errElevationCanceled }
+	if rec := run(sh); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"canceled"`) {
+		t.Fatalf("declined prompt: got %v: %s", rec.Code, rec.Body)
+	}
+
+	sh.runElevated = func(string, []string, time.Duration) (uint32, error) { return 1, nil }
+	if rec := run(sh); rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "exit code 1") {
+		t.Fatalf("failed run: got %v: %s", rec.Code, rec.Body)
+	}
+
+	// a second request while the prompt is open does not open another
+	sh.elevationMu.Lock()
+
+	rec := run(sh)
+
+	sh.elevationMu.Unlock()
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("prompt already open: got %v: %s", rec.Code, rec.Body)
 	}
 }

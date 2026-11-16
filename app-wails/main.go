@@ -102,6 +102,13 @@ type shell struct {
 	tooltipReset *time.Timer
 
 	trayDirty chan struct{}
+
+	// elevationMu is held while an administrator prompt asked for by the
+	// web UI is open, so that a page cannot stack prompts.
+	elevationMu sync.Mutex
+
+	// runElevated is nil except in tests: runElevatedHidden is used.
+	runElevated elevatedRunner
 }
 
 func main() {
