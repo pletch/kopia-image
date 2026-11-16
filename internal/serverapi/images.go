@@ -28,6 +28,9 @@ type ImageSnapshot struct {
 	EndTime     fs.UTCTimestamp     `json:"endTime"`
 	Pins        []string            `json:"pins"`
 
+	// RootID is the snapshot root, for browsing and mounting the image.
+	RootID string `json:"rootID"`
+
 	// Size is the size of the image's volumes as stored, before zeroed
 	// chunks are left out.
 	Size int64 `json:"size"`

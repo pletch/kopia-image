@@ -167,6 +167,7 @@ func TestImagesList(t *testing.T) {
 
 	img := resp.Images[0]
 	require.Equal(t, local.ID, img.ID)
+	require.Equal(t, local.RootObjectID().String(), img.RootID)
 	require.Empty(t, img.MetadataError)
 	require.Equal(t, "0f6ab3f2-1c3d-4e5f-8a9b-0c1d2e3f4a51", img.DiskGUID)
 	require.Equal(t, int64(len(data)), img.BytesRead)
@@ -322,4 +323,24 @@ func TestImagesAPI_requiresCSRFToken(t *testing.T) {
 
 	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 	require.Empty(t, host.ranTasks())
+}
+
+// TestImagesPageIsServed checks that the server answers the web UI's
+// /images route with the UI page, so that the page can be reloaded.
+func TestImagesPageIsServed(t *testing.T) {
+	_, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
+
+	srvInfo := servertesting.StartServer(t, env, false)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srvInfo.BaseURL+"/images", http.NoBody)
+	require.NoError(t, err)
+	req.SetBasicAuth(servertesting.TestUIUsername, servertesting.TestUIPassword)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Contains(t, resp.Header.Get("Content-Type"), "text/html")
 }

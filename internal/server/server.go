@@ -860,6 +860,7 @@ func (s *Server) applySourceManagerChanges(ctx context.Context, changes sourceMa
 
 func (s *Server) isKnownUIRoute(path string) bool {
 	return strings.HasPrefix(path, "/snapshots") ||
+		strings.HasPrefix(path, "/images") ||
 		strings.HasPrefix(path, "/policies") ||
 		strings.HasPrefix(path, "/tasks") ||
 		strings.HasPrefix(path, "/preferences") ||

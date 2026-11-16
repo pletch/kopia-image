@@ -127,6 +127,7 @@ func convertImageSnapshot(ctx context.Context, rc requestContext, m *snapshot.Ma
 		StartTime:   m.StartTime,
 		EndTime:     m.EndTime,
 		Pins:        append([]string{}, m.Pins...),
+		RootID:      m.RootObjectID().String(),
 		Volumes:     []serverapi.ImageVolume{},
 	}
 
