@@ -163,3 +163,5 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20261019180522-ce908d29299b // indirect
 	gopkg.in/ini.v1 v1.67.3 // indirect
 )
+
+replace github.com/kopia/htmluibuild => github.com/pletch/htmluibuild v0.0.1-0.20261116221022-3a4b4c66bcd3
