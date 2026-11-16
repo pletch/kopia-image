@@ -149,6 +149,8 @@ func testAPIServerRepository(t *testing.T, allowRepositoryUsers bool) {
 
 	require.NoError(t, err)
 
+	verifyServerRootCA(ctx, t, sp.BaseURL, tlsCert)
+
 	// open new write session in repository client
 
 	_, writeSess, err := rep.NewWriter(ctx, repo.WriteSessionOptions{Purpose: "some writer"})
@@ -407,4 +409,26 @@ func TestFindManifestsPaginationOverGRPC(t *testing.T) {
 
 	// make sure we got them all
 	require.Empty(t, uniqueIDs)
+}
+
+// verifyServerRootCA connects to a server by trusting its certificate as a
+// certificate authority instead of pinning its fingerprint, and checks that
+// a connection trusting neither fails.
+func verifyServerRootCA(ctx context.Context, t *testing.T, baseURL, certFile string) {
+	t.Helper()
+
+	ca, err := os.ReadFile(certFile)
+	require.NoError(t, err)
+
+	rep, err := servertesting.ConnectAndOpenAPIServer(t, ctx, &repo.APIServerInfo{
+		BaseURL: baseURL,
+		RootCA:  ca,
+	}, repo.ClientOptions{Username: "foo", Hostname: "bar"}, content.CachingOptions{}, "baz", &repo.Options{})
+	require.NoError(t, err)
+	require.NoError(t, rep.Close(ctx))
+
+	_, err = servertesting.ConnectAndOpenAPIServer(t, ctx, &repo.APIServerInfo{
+		BaseURL: baseURL,
+	}, repo.ClientOptions{Username: "foo", Hostname: "bar"}, content.CachingOptions{}, "baz", &repo.Options{})
+	require.Error(t, err, "the server's self-signed certificate is not trusted by the system")
 }

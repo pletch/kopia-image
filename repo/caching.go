@@ -51,7 +51,8 @@ func setupCachingOptionsWithDefaults(ctx context.Context, configPath string, lc 
 	if opt.CacheDirectory == "" {
 		cacheDir, err := os.UserCacheDir()
 		if err != nil {
-			return errors.Wrap(err, "unable to determine cache directory")
+			// e.g. %LocalAppData% is not defined in Windows PE
+			return errors.Wrap(err, "unable to determine the cache directory; pass --cache-directory or set KOPIA_CACHE_DIRECTORY")
 		}
 
 		h := sha256.New()

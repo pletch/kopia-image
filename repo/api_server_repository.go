@@ -16,6 +16,12 @@ type APIServerInfo struct {
 	BaseURL                             string `json:"url"`
 	TrustedServerCertificateFingerprint string `json:"serverCertFingerprint"`
 	LocalCacheKeyDerivationAlgorithm    string `json:"localCacheKeyDerivationAlgorithm,omitempty"`
+
+	// RootCA holds PEM certificate authorities that the server's certificate
+	// is verified with instead of the system's, so that a server whose
+	// certificate a private CA renews often can be trusted without a
+	// fingerprint that changes with every renewal.
+	RootCA []byte `json:"rootCA,omitempty"`
 }
 
 // ConnectAPIServer sets up repository connection to a particular API server.

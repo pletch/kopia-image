@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"io"
 	"net"
@@ -1307,7 +1308,16 @@ func openGRPCAPIRepository(ctx context.Context, si *APIServerInfo, password stri
 
 		transportCreds = credentials.NewTLS(c)
 	} else {
-		transportCreds = credentials.NewClientTLSFromCert(nil, "")
+		var roots *x509.CertPool
+
+		if len(si.RootCA) > 0 {
+			roots = x509.NewCertPool()
+			if !roots.AppendCertsFromPEM(si.RootCA) {
+				return nil, errors.New("the server's root CA holds no PEM certificate")
+			}
+		}
+
+		transportCreds = credentials.NewClientTLSFromCert(roots, "")
 	}
 
 	uri, err := baseURLToURI(si.BaseURL)

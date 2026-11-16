@@ -151,3 +151,27 @@ func SectorSize(d *Device) (int64, error) {
 
 	return sectorSize, err
 }
+
+const ioctlStorageQueryProperty = 0x002D1400
+
+// DescribeDisk returns the model and bus of a physical disk.
+func DescribeDisk(diskNumber uint32) (DiskDescriptor, error) {
+	h, err := openForQuery(DiskPath(diskNumber))
+	if err != nil {
+		return DiskDescriptor{}, err
+	}
+	defer windows.CloseHandle(h) //nolint:errcheck
+
+	// STORAGE_PROPERTY_QUERY for StorageDeviceProperty, PropertyStandardQuery: all zero
+	var (
+		query [12]byte
+		out   [1024]byte
+	)
+
+	n, err := IoControl(h, ioctlStorageQueryProperty, query[:], out[:])
+	if err != nil {
+		return DiskDescriptor{}, errors.Wrapf(err, "unable to query disk %v", diskNumber)
+	}
+
+	return decodeDeviceDescriptor(out[:n])
+}

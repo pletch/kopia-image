@@ -64,7 +64,7 @@ func (c *commandImageRestore) run(ctx context.Context, rep repo.Repository) erro
 		return err //nolint:wrapcheck
 	}
 
-	c.printPlan(s, volumes)
+	printImageRestorePlan(&c.out, s, volumes)
 
 	t, err := c.openTarget(s)
 	if t == nil && err == nil {
@@ -91,7 +91,7 @@ func (c *commandImageRestore) run(ctx context.Context, rep repo.Repository) erro
 		return nil
 	}
 
-	return c.restore(ctx, rep, s, t, volumes)
+	return restoreImageToTarget(ctx, &c.out, rep, s, t, volumes, c.parallel)
 }
 
 // openTarget opens the restore target, read-only for a dry run so that the
@@ -130,11 +130,12 @@ func (c *commandImageRestore) checkTarget(s *imagerestore.Snapshot, t imageresto
 	return nil
 }
 
-func (c *commandImageRestore) restore(ctx context.Context, rep repo.Repository, s *imagerestore.Snapshot, t imagerestore.Target, volumes []image.Volume) error {
+// restoreImageToTarget restores the volumes of an image to an open target,
+// printing progress and a summary.
+func restoreImageToTarget(ctx context.Context, out *textOutput, rep repo.Repository, s *imagerestore.Snapshot, t imagerestore.Target, volumes []image.Volume, parallel int) error {
 	start := clock.Now()
-	progress := newImageRestoreProgress(c.out.printStderr)
+	progress := newImageRestoreProgress(out.printStderr)
 
-	parallel := c.parallel
 	if parallel <= 0 {
 		parallel = defaultImageRestoreParallel
 	}
@@ -158,26 +159,26 @@ func (c *commandImageRestore) restore(ctx context.Context, rep repo.Repository, 
 	for i := range results {
 		r := &results[i]
 		total += r.Stats.Bytes
-		c.out.printStdout("  %v: %v, fetched %v in %v of %v chunks, %v of zeros\n",
+		out.printStdout("  %v: %v, fetched %v in %v of %v chunks, %v of zeros\n",
 			r.Volume.EntryName, units.BytesString(r.Stats.Bytes), units.BytesString(r.Stats.FetchedBytes),
 			r.Stats.FetchedChunks, r.Stats.Chunks, units.BytesString(r.Stats.ZeroBytes))
 	}
 
-	c.out.printStdout("Restored %v volume(s), %v, to %v in %v (%v).\n",
+	out.printStdout("Restored %v volume(s), %v, to %v in %v (%v).\n",
 		len(results), units.BytesString(total), t.Path(), elapsed.Truncate(time.Second),
 		units.BytesPerSecondsString(float64(total)/max(elapsed.Seconds(), 1e-3)))
-	c.out.printStdout("Volumes that used BitLocker are restored decrypted; re-enable BitLocker after the first boot.\n")
+	out.printStdout("Volumes that used BitLocker are restored decrypted; re-enable BitLocker after the first boot.\n")
 
 	return nil
 }
 
-func (c *commandImageRestore) printPlan(s *imagerestore.Snapshot, volumes []image.Volume) {
-	c.out.printStdout("Image snapshot %v of %v taken %v\n", s.Manifest.ID, s.Manifest.Source, formatTimestamp(s.Manifest.StartTime.ToTime()))
-	c.out.printStdout("Disk %v: %v, %v-byte sectors, %v partitions\n", s.Layout.DiskGUID, units.BytesString(s.Layout.DiskSize), s.Layout.SectorSize, len(s.Layout.Partitions))
+func printImageRestorePlan(out *textOutput, s *imagerestore.Snapshot, volumes []image.Volume) {
+	out.printStdout("Image snapshot %v of %v taken %v\n", s.Manifest.ID, s.Manifest.Source, formatTimestamp(s.Manifest.StartTime.ToTime()))
+	out.printStdout("Disk %v: %v, %v-byte sectors, %v partitions\n", s.Layout.DiskGUID, units.BytesString(s.Layout.DiskSize), s.Layout.SectorSize, len(s.Layout.Partitions))
 
 	for i := range volumes {
 		v := &volumes[i]
-		c.out.printStdout("  %v -> partition %v (%v)\n", v.EntryName, v.PartitionNumber, units.BytesString(v.Size))
+		out.printStdout("  %v -> partition %v (%v)\n", v.EntryName, v.PartitionNumber, units.BytesString(v.Size))
 	}
 }
 

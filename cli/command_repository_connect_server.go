@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"os"
 	"strings"
 
 	"github.com/pkg/errors"
@@ -15,6 +16,7 @@ type commandRepositoryConnectServer struct {
 
 	connectAPIServerURL                              string
 	connectAPIServerCertFingerprint                  string
+	connectAPIServerCAPath                           string
 	connectAPIServerLocalCacheKeyDerivationAlgorithm string
 
 	svc advancedAppServices
@@ -29,6 +31,7 @@ func (c *commandRepositoryConnectServer) setup(svc advancedAppServices, parent c
 	cmd := parent.Command("server", "Connect to a repository API Server.")
 	cmd.Flag("url", "Server URL").Required().StringVar(&c.connectAPIServerURL)
 	cmd.Flag("server-cert-fingerprint", "Server certificate fingerprint").StringVar(&c.connectAPIServerCertFingerprint)
+	cmd.Flag("server-ca-pem-path", "File with the PEM certificate authority that issues the server's certificate, trusted instead of the system's").StringVar(&c.connectAPIServerCAPath)
 	//nolint:lll
 	cmd.Flag("local-cache-key-derivation-algorithm", "Key derivation algorithm used to derive the local cache encryption key").Hidden().Default(repo.DefaultServerRepoCacheKeyDerivationAlgorithm).EnumVar(&c.connectAPIServerLocalCacheKeyDerivationAlgorithm, repo.SupportedLocalCacheKeyDerivationAlgorithms()...)
 	cmd.Action(svc.noRepositoryAction(c.run))
@@ -41,6 +44,19 @@ func (c *commandRepositoryConnectServer) run(ctx context.Context) error {
 		BaseURL:                             strings.TrimSuffix(c.connectAPIServerURL, "/"),
 		TrustedServerCertificateFingerprint: strings.ToLower(c.connectAPIServerCertFingerprint),
 		LocalCacheKeyDerivationAlgorithm:    localCacheKeyDerivationAlgorithm,
+	}
+
+	if c.connectAPIServerCAPath != "" {
+		if as.TrustedServerCertificateFingerprint != "" {
+			return errors.New("--server-ca-pem-path and --server-cert-fingerprint are mutually exclusive")
+		}
+
+		ca, err := os.ReadFile(c.connectAPIServerCAPath)
+		if err != nil {
+			return errors.Wrap(err, "unable to read the server CA")
+		}
+
+		as.RootCA = ca
 	}
 
 	configFile := c.svc.repositoryConfigFileName()
