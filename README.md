@@ -29,6 +29,38 @@ The [`app-wails/`](app-wails) directory is a replacement for the Electron-based 
 
 With a window open the two are about the same, since both render the page with Chromium. Because KopiaUI spends most of its time in the tray, this fork typically saves about 120 MB of RAM, plus about 350 MB of disk.
 
+### Block-level disk images for Windows (`kopia image`)
+
+Upstream Kopia backs up files and folders only. This fork can also take block-level images of whole Windows GPT disks, for bare-metal restore after a failed drive or ransomware. Images go into the same repository as your file snapshots, encrypted and deduplicated, and work with every storage backend and with a repository server.
+
+* **Full images, deduplicated uploads.** Every image is a complete, independent copy of the disk. NTFS volumes are read from a Volume Shadow Copy, with free space, `pagefile.sys`, `hiberfil.sys` and similar files stored as zeros. Only 4 MiB chunks the repository doesn't already have are uploaded, so a nightly image usually uploads a few gigabytes or less. Any image can be restored on its own, with no incremental chains to break.
+* **Restore to a disk or file:** a parallel chunk restore to `\\.\PhysicalDriveN` on Windows, `/dev/sdX` on Linux, or a raw image file. The partition table is recreated with the original GUIDs. Each image also contains a `restore.sh` for a Linux rescue system.
+* **Restore single files:** browse NTFS volume images file by file and restore single files or folders, downloading only the chunks needed. Image snapshots can also be opened with the web UI's Mount button and over WebDAV, where each NTFS volume appears as a folder.
+* **Check without restoring.** `image check` confirms every chunk is indexed and stored, and reads back a sample of chunks. `--ntfs` also checks each NTFS file system:
+  * the boot sector matches its backup;
+  * every MFT record in use is intact;
+  * every cluster a file uses is allocated, and used by only one file;
+  * every file's parent folder exists.
+
+  This reads only file system metadata: about 7 seconds for a 1 TB system volume with 2.3 million files.
+* **Scheduled images and checks:** Task Scheduler tasks that run as SYSTEM. They wake the computer, keep it awake while running and retry on failure. They also clean up shadow copies left over after a crash or power loss, and record each run's result for monitoring.
+
+```
+kopia image create C: --dry-run                 # preview the partitions and the zeroed space
+kopia image create C:                           # image the disk holding C:
+kopia image list
+kopia image check --ntfs                        # latest image of each source, with file system checks
+kopia image ls <snapshot-id>/p3-C/Users -l
+kopia image restore-files <snapshot-id>/p3-C/Users/tim/Documents C:\Recovered
+kopia image restore <snapshot-id> --target \\.\PhysicalDrive2 --dry-run
+kopia image schedule install C: --at 02:00 --check-day Sun --check-ntfs
+```
+
+Run `kopia image create` and `kopia image schedule` as administrator. Images use the source `user@host:image:disk:<GUID>`, so retention is set with `kopia policy set` as usual. MBR disks, dynamic disks, Storage Spaces and ReFS volumes are refused. BitLocker volumes are imaged decrypted, and are protected by the repository's encryption. See [Disk Images](site/content/docs/Advanced/Disk%20Images/_index.md) for the details.
+
+> [!WARNING]
+> Disk images are new. Restores have been tested on virtual disks, but a restored system disk has not yet been boot-tested. Test a restore on spare hardware or a virtual machine before relying on images.
+
 ### Upstream pull requests not yet merged
 
 This fork carries the following open pull requests from [kopia/kopia](https://github.com/kopia/kopia/pulls). Each will be dropped from the fork once it is merged (or superseded) upstream.
