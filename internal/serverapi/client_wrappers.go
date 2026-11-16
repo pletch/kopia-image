@@ -244,3 +244,38 @@ func matchSourceParameters(match *snapshot.SourceInfo) string {
 
 	return "?" + strings.Join(clauses, "&")
 }
+
+// ListImages lists the image snapshots of the server's host, or of every host.
+func ListImages(ctx context.Context, c *apiclient.KopiaAPIClient, all bool) (*ImagesResponse, error) {
+	u := "images"
+	if all {
+		u += "?all=1"
+	}
+
+	resp := &ImagesResponse{}
+	if err := c.Get(ctx, u, nil, resp); err != nil {
+		return nil, errors.Wrap(err, "ListImages")
+	}
+
+	return resp, nil
+}
+
+// ImageStatus returns the status of kopia image on the server's computer.
+func ImageStatus(ctx context.Context, c *apiclient.KopiaAPIClient) (*ImageStatusResponse, error) {
+	resp := &ImageStatusResponse{}
+	if err := c.Get(ctx, "images/status", nil, resp); err != nil {
+		return nil, errors.Wrap(err, "ImageStatus")
+	}
+
+	return resp, nil
+}
+
+// RunImageTask starts the scheduled image task on the server's computer.
+func RunImageTask(ctx context.Context, c *apiclient.KopiaAPIClient) (*RunImageTaskResponse, error) {
+	resp := &RunImageTaskResponse{}
+	if err := c.Post(ctx, "images/schedule/run", &Empty{}, resp); err != nil {
+		return nil, errors.Wrap(err, "RunImageTask")
+	}
+
+	return resp, nil
+}

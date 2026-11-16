@@ -446,17 +446,10 @@ func (c *commandImageRecover) openRepository(ctx context.Context, cfgPath string
 // recoverableImages returns the complete images of every computer, those of
 // the preferred sources first, newest first.
 func recoverableImages(ctx context.Context, rep repo.Repository, preferred []string) ([]*snapshot.Manifest, error) {
-	ids, err := snapshot.ListSnapshotManifests(ctx, rep, nil, map[string]string{image.TagKey: image.TagValue})
+	mans, err := image.ListSnapshots(ctx, rep)
 	if err != nil {
-		return nil, errors.Wrap(err, "unable to list image snapshots")
+		return nil, err //nolint:wrapcheck
 	}
-
-	mans, err := snapshot.LoadSnapshots(ctx, rep, ids)
-	if err != nil {
-		return nil, errors.Wrap(err, "unable to load image snapshots")
-	}
-
-	mans = slices.DeleteFunc(mans, func(m *snapshot.Manifest) bool { return m.IncompleteReason != "" })
 
 	rank := func(m *snapshot.Manifest) int {
 		if i := slices.Index(preferred, m.Source.String()); i >= 0 {

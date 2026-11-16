@@ -24,9 +24,6 @@ import (
 )
 
 const (
-	defaultImageTaskFolder  = `\Kopia`
-	imageCreateTaskName     = "Image create"
-	imageCheckTaskName      = "Image check"
 	imageScheduleConfigName = "repository.config"
 
 	// imageScheduleExeDir holds the copy of kopia that the tasks run.
@@ -60,7 +57,7 @@ type imageScheduleLocation struct {
 }
 
 func (l *imageScheduleLocation) flags(cmd *kingpin.CmdClause) {
-	cmd.Flag("task-folder", "Task Scheduler folder of the image tasks").Default(defaultImageTaskFolder).Hidden().StringVar(&l.taskFolder)
+	cmd.Flag("task-folder", "Task Scheduler folder of the image tasks").Default(schedule.DefaultTaskFolder).Hidden().StringVar(&l.taskFolder)
 	cmd.Flag("config-dir", "Folder for the scheduled tasks' repository config (default: ProgramData\\kopia\\image)").Hidden().StringVar(&l.configDir)
 	cmd.Flag("state-file", "Shadow copy state file passed to the scheduled runs").Hidden().StringVar(&l.statePath)
 }
@@ -71,12 +68,12 @@ func (l *imageScheduleLocation) resolve() error {
 	}
 
 	if l.configDir == "" {
-		pd, err := schedule.ProgramDataDir()
+		dir, err := schedule.DefaultConfigDir()
 		if err != nil {
 			return err //nolint:wrapcheck
 		}
 
-		l.configDir = filepath.Join(pd, "kopia", "image")
+		l.configDir = dir
 		l.defaultConfigDir = true
 	}
 
@@ -93,7 +90,7 @@ func (l *imageScheduleLocation) resolve() error {
 }
 
 func (l *imageScheduleLocation) taskName(name string) string {
-	return strings.TrimSuffix(l.taskFolder, `\`) + `\` + name
+	return schedule.TaskPath(l.taskFolder, name)
 }
 
 // taskExe is the copy of kopia that the tasks run. The tasks run as SYSTEM,
@@ -185,7 +182,7 @@ func (c *commandImageScheduleInstall) run(ctx context.Context, rep repo.Reposito
 	}
 
 	if checkTask == nil {
-		if err := schedule.Delete(ctx, c.loc.taskName(imageCheckTaskName)); err != nil && !errors.Is(err, schedule.ErrTaskNotFound) {
+		if err := schedule.Delete(ctx, c.loc.taskName(schedule.CheckTaskName)); err != nil && !errors.Is(err, schedule.ErrTaskNotFound) {
 			return errors.Wrap(err, "unable to remove the previous check task")
 		}
 	}
@@ -222,7 +219,7 @@ func (c *commandImageScheduleInstall) tasks() (createTask, checkTask *schedule.T
 	createArgs = append(createArgs, "--flush-interval", c.flushInterval.String(), "--state-file", c.loc.statePath)
 
 	createTask = &schedule.Task{
-		Name:             c.loc.taskName(imageCreateTaskName),
+		Name:             c.loc.taskName(schedule.CreateTaskName),
 		Description:      "Creates kopia block-level images of the disks holding " + strings.Join(c.volumes, " "),
 		Command:          exe,
 		Arguments:        createArgs,
@@ -256,7 +253,7 @@ func (c *commandImageScheduleInstall) tasks() (createTask, checkTask *schedule.T
 	}
 
 	checkTask = &schedule.Task{
-		Name:             c.loc.taskName(imageCheckTaskName),
+		Name:             c.loc.taskName(schedule.CheckTaskName),
 		Description:      "Checks the latest kopia images of this computer",
 		Command:          exe,
 		Arguments:        checkArgs,
@@ -446,7 +443,7 @@ func (c *commandImageScheduleShow) run(ctx context.Context) error {
 		return err
 	}
 
-	for _, name := range []string{imageCreateTaskName, imageCheckTaskName} {
+	for _, name := range []string{schedule.CreateTaskName, schedule.CheckTaskName} {
 		full := c.loc.taskName(name)
 
 		props, err := schedule.Query(ctx, full)
@@ -459,8 +456,10 @@ func (c *commandImageScheduleShow) run(ctx context.Context) error {
 			return err //nolint:wrapcheck
 		}
 
+		ts := schedule.StatusFromProperties(props)
+
 		c.out.printStdout("%v: %v, next run %v, last run %v (result %v)\n",
-			full, props["Status"], props["Next Run Time"], props["Last Run Time"], props["Last Result"])
+			full, ts.Status, ts.NextRunTime, ts.LastRunTime, ts.LastResult)
 	}
 
 	st, err := disksource.ReadRunStatus(disksource.StatusPath(c.loc.statePath))
@@ -518,11 +517,11 @@ func (c *commandImageScheduleRun) run(ctx context.Context) error {
 		return err
 	}
 
-	if err := schedule.Run(ctx, c.loc.taskName(imageCreateTaskName)); err != nil {
+	if err := schedule.Run(ctx, c.loc.taskName(schedule.CreateTaskName)); err != nil {
 		return err //nolint:wrapcheck
 	}
 
-	c.out.printStdout("Started %q; follow it with 'kopia image schedule show'.\n", c.loc.taskName(imageCreateTaskName))
+	c.out.printStdout("Started %q; follow it with 'kopia image schedule show'.\n", c.loc.taskName(schedule.CreateTaskName))
 
 	return nil
 }
@@ -547,7 +546,7 @@ func (c *commandImageScheduleRemove) run(ctx context.Context) error {
 		return err
 	}
 
-	for _, name := range []string{imageCreateTaskName, imageCheckTaskName} {
+	for _, name := range []string{schedule.CreateTaskName, schedule.CheckTaskName} {
 		err := schedule.Delete(ctx, c.loc.taskName(name))
 
 		switch {

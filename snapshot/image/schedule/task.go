@@ -21,6 +21,11 @@ import (
 // ErrNotSupported is returned on platforms without Windows Task Scheduler.
 var ErrNotSupported = errors.New("scheduling kopia image runs is supported only on Windows")
 
+// ErrAccessDenied is returned when Task Scheduler refuses the caller, such as
+// a user who is not running as administrator starting a task that runs as
+// SYSTEM.
+var ErrAccessDenied = errors.New("access to the scheduled task is denied")
+
 // systemSID is the security identifier of the LocalSystem account, which
 // volume shadow copies require.
 const systemSID = "S-1-5-18"

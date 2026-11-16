@@ -52,17 +52,6 @@ func (c *commandImageRecoveryMedia) setup(svc advancedAppServices, parent comman
 	c.kit.setup(svc, cmd)
 }
 
-// imageStateDir returns ProgramData\kopia\image, where the scheduled tasks'
-// connection and the recovery media record live.
-func imageStateDir() (string, error) {
-	pd, err := schedule.ProgramDataDir()
-	if err != nil {
-		return "", err //nolint:wrapcheck
-	}
-
-	return filepath.Join(pd, "kopia", "image"), nil
-}
-
 type commandImageRecoveryMediaCreate struct {
 	usb           string
 	outputDir     string
@@ -180,9 +169,9 @@ func (c *commandImageRecoveryMediaCreate) prepareStateDir() error {
 		return nil
 	}
 
-	stateDir, err := imageStateDir()
+	stateDir, err := schedule.DefaultConfigDir()
 	if err != nil {
-		return err
+		return err //nolint:wrapcheck
 	}
 
 	if err := securedir.Secure(filepath.Dir(stateDir), securedir.UsersRead); err != nil {
@@ -658,9 +647,9 @@ func (c *commandImageRecoveryMediaStatus) run(ctx context.Context, rep repo.Repo
 		return recoverymedia.ErrNotSupported
 	}
 
-	stateDir, err := imageStateDir()
+	stateDir, err := schedule.DefaultConfigDir()
 	if err != nil {
-		return err
+		return err //nolint:wrapcheck
 	}
 
 	r, err := recoverymedia.ReadRecord(filepath.Join(stateDir, recoverymedia.RecordFileName))

@@ -160,6 +160,10 @@ func (s *Server) SetupHTMLUIAPIHandlers(m *mux.Router) {
 	m.HandleFunc("/api/v1/repo/throttle", s.handleUI(handleRepoGetThrottle)).Methods(http.MethodGet)
 	m.HandleFunc("/api/v1/repo/throttle", s.handleUI(handleRepoSetThrottle)).Methods(http.MethodPut)
 
+	m.HandleFunc("/api/v1/images", s.handleUI(handleImagesList)).Methods(http.MethodGet)
+	m.HandleFunc("/api/v1/images/status", s.handleUI(handleImagesStatus)).Methods(http.MethodGet)
+	m.HandleFunc("/api/v1/images/schedule/run", s.handleUI(handleImagesScheduleRun)).Methods(http.MethodPost)
+
 	m.HandleFunc("/api/v1/mounts", s.handleUI(handleMountCreate)).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/mounts/{rootObjectID}", s.handleUI(handleMountDelete)).Methods(http.MethodDelete)
 	m.HandleFunc("/api/v1/mounts/{rootObjectID}", s.handleUI(handleMountGet)).Methods(http.MethodGet)
@@ -981,6 +985,10 @@ type Options struct {
 	// WebDAVMounts serves snapshots as read-only WebDAV under /webdav/ and makes mount requests
 	// return the WebDAV URL instead of mounting the snapshot on the server host.
 	WebDAVMounts bool
+
+	// ImageHost gives the image API access to kopia image on this computer;
+	// nil uses Windows Task Scheduler and the files under ProgramData.
+	ImageHost ImageHost
 }
 
 // InitRepositoryFunc is a function that attempts to connect to/open repository.

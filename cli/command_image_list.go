@@ -2,22 +2,14 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
-	"io"
 	"slices"
 	"strings"
 
-	"github.com/pkg/errors"
-
-	"github.com/kopia/kopia/fs"
 	"github.com/kopia/kopia/internal/units"
 	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/snapshot"
 	"github.com/kopia/kopia/snapshot/image"
-	"github.com/kopia/kopia/snapshot/snapshotfs"
 )
-
-const maxImageMetadataSize = 16 << 20
 
 type commandImageList struct {
 	all bool
@@ -33,20 +25,14 @@ func (c *commandImageList) setup(svc appServices, parent commandParent) {
 }
 
 func (c *commandImageList) run(ctx context.Context, rep repo.Repository) error {
-	ids, err := snapshot.ListSnapshotManifests(ctx, rep, nil, map[string]string{image.TagKey: image.TagValue})
+	mans, err := image.ListSnapshots(ctx, rep)
 	if err != nil {
-		return errors.Wrap(err, "unable to list image snapshots")
-	}
-
-	mans, err := snapshot.LoadSnapshots(ctx, rep, ids)
-	if err != nil {
-		return errors.Wrap(err, "unable to load image snapshots")
+		return err //nolint:wrapcheck
 	}
 
 	host := rep.ClientOptions().Hostname
-	// checkpoints of runs in progress or failed are not images
 	mans = slices.DeleteFunc(mans, func(m *snapshot.Manifest) bool {
-		return m.IncompleteReason != "" || (!c.all && m.Source.Host != host)
+		return !c.all && m.Source.Host != host
 	})
 
 	slices.SortFunc(mans, func(a, b *snapshot.Manifest) int {
@@ -70,7 +56,7 @@ func (c *commandImageList) run(ctx context.Context, rep repo.Repository) error {
 			lastSource = m.Source
 		}
 
-		md, err := readImageMetadata(ctx, rep, m)
+		md, err := image.ReadMetadata(ctx, rep, m)
 		if err != nil {
 			c.out.printStdout("  %v %v  unable to read %v: %v\n", formatTimestamp(m.StartTime.ToTime()), m.ID, image.MetadataFileName, err)
 			continue
@@ -83,13 +69,7 @@ func (c *commandImageList) run(ctx context.Context, rep repo.Repository) error {
 }
 
 func formatImageListLine(m *snapshot.Manifest, md *image.Metadata) string {
-	var read, chunks, zero int64
-
-	for i := range md.Volumes {
-		read += md.Volumes[i].Stats.BytesRead
-		chunks += md.Volumes[i].Stats.ChunksTotal
-		zero += md.Volumes[i].Stats.ZeroChunks
-	}
+	t := md.Totals()
 
 	var size int64
 	if m.RootEntry != nil && m.RootEntry.DirSummary != nil {
@@ -103,49 +83,8 @@ func formatImageListLine(m *snapshot.Manifest, md *image.Metadata) string {
 
 	return formatTimestamp(m.StartTime.ToTime()) + " " + string(m.ID) +
 		"  size " + units.BytesString(size) +
-		"  read " + units.BytesString(read) +
+		"  read " + units.BytesString(t.BytesRead) +
 		"  uploaded " + uploaded +
-		"  zero chunks " + units.Count(zero) + "/" + units.Count(chunks) +
+		"  zero chunks " + units.Count(t.ZeroChunks) + "/" + units.Count(t.ChunksTotal) +
 		"  took " + md.EndTime.Sub(md.StartTime).Round(1e9).String()
-}
-
-func readImageMetadata(ctx context.Context, rep repo.Repository, m *snapshot.Manifest) (*image.Metadata, error) {
-	root, err := snapshotfs.SnapshotRoot(rep, m)
-	if err != nil {
-		return nil, errors.Wrap(err, "unable to open snapshot root")
-	}
-
-	dir, ok := root.(fs.Directory)
-	if !ok {
-		return nil, errors.New("snapshot root is not a directory")
-	}
-
-	e, err := dir.Child(ctx, image.MetadataFileName)
-	if err != nil {
-		return nil, errors.Wrap(err, "not found")
-	}
-
-	f, ok := e.(fs.File)
-	if !ok {
-		return nil, errors.New("not a file")
-	}
-
-	r, err := f.Open(ctx)
-	if err != nil {
-		return nil, errors.Wrap(err, "unable to open")
-	}
-	defer r.Close() //nolint:errcheck
-
-	b, err := io.ReadAll(io.LimitReader(r, maxImageMetadataSize))
-	if err != nil {
-		return nil, errors.Wrap(err, "unable to read")
-	}
-
-	var md image.Metadata
-
-	if err := json.Unmarshal(b, &md); err != nil {
-		return nil, errors.Wrap(err, "invalid JSON")
-	}
-
-	return &md, nil
 }

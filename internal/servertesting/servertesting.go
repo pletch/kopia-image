@@ -41,6 +41,8 @@ type StartServerOptions struct {
 	GRPCKeepaliveTimeout time.Duration
 
 	WebDAVMounts bool
+
+	ImageHost server.ImageHost
 }
 
 // StartServer starts a test server and returns APIServerInfo.
@@ -76,6 +78,7 @@ func StartServerContextWithOptions(ctx context.Context, t *testing.T, env *repot
 		UIUser:               TestUIUsername,
 		UIPreferencesFile:    filepath.Join(testutil.TempDirectory(t), "ui-pref.json"),
 		WebDAVMounts:         opts.WebDAVMounts,
+		ImageHost:            opts.ImageHost,
 	})
 
 	require.NoError(t, err)

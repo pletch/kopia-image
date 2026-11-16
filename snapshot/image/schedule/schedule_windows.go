@@ -99,10 +99,25 @@ func schtasks(ctx context.Context, args ...string) ([]byte, error) {
 
 	out, err := exec.CommandContext(ctx, filepath.Join(system32, "schtasks.exe"), args...).CombinedOutput() //nolint:gosec
 	if err != nil {
-		return out, errors.Errorf("schtasks %v failed: %v: %s", args[0], err, bytes.TrimSpace(out))
+		err = errors.Errorf("schtasks %v failed: %v: %s", args[0], err, bytes.TrimSpace(out))
+
+		if isAccessDenied(out) {
+			return out, errors.Wrap(ErrAccessDenied, err.Error())
+		}
+
+		return out, err
 	}
 
 	return out, nil
+}
+
+// isAccessDenied reports whether schtasks output says access is denied.
+// schtasks prints the system message of ERROR_ACCESS_DENIED, in the
+// language of the computer.
+func isAccessDenied(out []byte) bool {
+	msg := strings.TrimSuffix(windows.ERROR_ACCESS_DENIED.Error(), ".")
+
+	return bytes.Contains(out, []byte(msg)) || bytes.Contains(out, []byte("Access is denied"))
 }
 
 // ProgramDataDir returns the ProgramData folder.
