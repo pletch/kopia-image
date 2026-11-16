@@ -26,15 +26,19 @@ there are no incremental chains to break.
   need driver and boot repairs.
 * BitLocker volumes are imaged as their decrypted contents and come back
   decrypted; the repository's encryption protects them in between. Re-enable
-  BitLocker after restoring.
+  BitLocker after restoring. See [What an image contains](#what-an-image-contains).
 
 ## Creating images
 
-Preview what will be imaged, without writing anything:
+Preview what will be imaged, without saving an image:
 
 ```shell
 kopia image create C: --dry-run
 ```
+
+A dry run still takes shadow copies to measure the volumes and removes them
+again, so it needs an administrator and prepares `C:\ProgramData\kopia` like a
+real run does; see [Scheduling](#scheduling).
 
 Create an image of the disk holding `C:`:
 
@@ -57,6 +61,29 @@ A run that fails, for example when the network drops or the computer sleeps,
 saves no image. Its uploads are recorded periodically (`--flush-interval`,
 default 10 minutes) and once more when it fails, so the next run does not upload
 them again. Shadow copies left behind by a crash are removed by the next run.
+
+Every 45 minutes, and when it fails, a run also saves an incomplete
+"checkpoint" snapshot of what it has uploaded so far. The checkpoint keeps
+maintenance from removing those uploads as unused before a run completes, which
+matters for a first upload that takes days of retries. Checkpoints are not
+images: `kopia image list` hides them, `kopia snapshot list --incomplete` shows
+them, and retention removes them once a newer image exists.
+
+### What an image contains
+
+An image is every allocated block of the disk, so it holds what the running
+system keeps from other users and from someone who takes the disk:
+
+* the contents of BitLocker volumes, decrypted;
+* the Windows account database (the SAM and SECURITY registry hives) and the
+  keys that protect saved credentials (DPAPI master keys);
+* every user's files, whatever their permissions.
+
+Whoever can read the repository can read all of it. The repository password is
+the only protection, so guard it as you would the computer itself, and limit
+who can reach the repository storage. On a computer whose disk encryption is
+required by policy, check that policy before imaging it. `kopia image create`
+prints a reminder of this on every run.
 
 ## Scheduling
 
@@ -82,8 +109,28 @@ start on battery power (`--allow-on-battery`).
 SYSTEM cannot read the password saved in your Windows Credential Manager, so
 `install` copies your current repository connection to
 `C:\ProgramData\kopia\image`, with the password in a file, its own cache and its
-logs. Only SYSTEM and Administrators can open that folder. Images keep your
-`user@host`, so scheduled and interactive images share one source.
+logs. Images keep your `user@host`, so scheduled and interactive images share
+one source.
+
+The tasks run as SYSTEM, so nothing they use may be changeable by an ordinary
+user:
+
+* `install` also copies `kopia.exe` into `C:\ProgramData\kopia\image\bin`, and
+  the tasks run that copy. The kopia you ran may be in a folder your account
+  can write, such as a per-user installation, and whoever replaced it there
+  would run as SYSTEM. **Run `kopia image schedule install` again after
+  upgrading kopia**, or the tasks keep running the old version.
+* `C:\ProgramData\kopia\image` is owned by Administrators and only SYSTEM and
+  Administrators can open it.
+* `C:\ProgramData\kopia`, which holds the run status and the list of shadow
+  copies to clean up, is owned by Administrators; other users can only read it.
+* The password file is encrypted with a key of this computer (Windows DPAPI),
+  so a copy of the file is useless elsewhere. Any administrator of this
+  computer can still decrypt it.
+
+If either folder already holds a file or link that an administrator did not
+create, or was itself created by another user and is not empty, `install` and
+`kopia image create` stop and name it. Remove it and run the command again.
 
 ```shell
 kopia image schedule run      # start an image now
@@ -100,7 +147,8 @@ missing, so a slow first upload completes over several runs.
 ### Monitoring
 
 Every run writes `C:\ProgramData\kopia\image-last-run.json` with its start and
-end time, success or error, and the images it saved. The tasks also exit with a
+end time, success or error, and the images it saved. A run that only finds
+another run in progress leaves the file to that run. The tasks also exit with a
 non-zero code on failure, which Task Scheduler records as the last result.
 Point your monitoring at either.
 
@@ -175,10 +223,15 @@ kopia image restore tim@desktop:image:disk:<GUID> --target /dev/nvme0n1 --dry-ru
 kopia image restore tim@desktop:image:disk:<GUID> --target /dev/nvme0n1
 ```
 
+`--dry-run` opens the target read-only and changes nothing on it.
+
 `image restore` recreates the partition table with the original disk and
 partition GUIDs, so the Windows boot configuration stays valid, then writes
 every volume, fetching `--parallel` chunks at once (default 16) and zeroing free
-space without downloading it. It refuses a target that:
+space without downloading it. Each volume is checked against its partition
+before anything is written, and the unused end of a partition is zeroed, so
+nothing of the disk's previous contents remains inside a partition. It refuses a
+target that:
 
 * has a different logical sector size or is too small (larger is fine),
 * is mounted or in use,
@@ -188,7 +241,8 @@ space without downloading it. It refuses a target that:
 
 `--only p3-C` restores a single volume into a disk that already has the image's
 partition table. `--target disk.img` writes a raw disk image file instead, which
-virtual machines can boot.
+virtual machines can boot. A missing file is created, except under `/dev`, where
+a missing name is a mistyped device.
 
 Each image also contains `restore.sh`, which restores using only stock `kopia`,
 `sgdisk` and `dd`, if the `image restore` command is not available.

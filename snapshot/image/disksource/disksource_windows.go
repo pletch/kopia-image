@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/mxk/go-vss"
@@ -19,6 +21,7 @@ import (
 	"github.com/kopia/kopia/snapshot/image"
 	"github.com/kopia/kopia/snapshot/image/blockdev"
 	"github.com/kopia/kopia/snapshot/image/ntfs"
+	"github.com/kopia/kopia/snapshot/image/securedir"
 )
 
 const (
@@ -46,6 +49,32 @@ func DefaultStatePath() (string, error) {
 	return filepath.Join(dir, "kopia", stateFileName), nil
 }
 
+// PrepareStateDir makes the folder of the state file at statePath ready for a
+// run. The default folder under ProgramData is secured so that only SYSTEM and
+// Administrators can write it and other users can read the run status; it
+// returns an error wrapping securedir.ErrUntrusted if the folder holds files
+// an unprivileged user put there. The lock file is closed to other users
+// altogether, because reading a file is enough to lock it and block every
+// run. Any other folder is the caller's choice and is only created.
+func PrepareStateDir(statePath string) error {
+	dir := filepath.Dir(statePath)
+
+	def, err := DefaultStatePath()
+	if err != nil {
+		return err
+	}
+
+	if !strings.EqualFold(filepath.Clean(dir), filepath.Dir(def)) {
+		return errors.Wrap(os.MkdirAll(dir, 0o700), "unable to create state directory") //nolint:mnd
+	}
+
+	if err := securedir.Secure(dir, securedir.UsersRead); err != nil {
+		return errors.Wrap(err, "unable to secure the image state folder")
+	}
+
+	return errors.Wrap(securedir.SecureFile(LockPath(statePath)), "unable to secure the image state lock")
+}
+
 // Acquire starts a run: it locks the shadow state at statePath, removes shadow
 // copies that a crashed run left behind, and keeps the computer from sleeping
 // until the guard is closed. Closing a laptop lid or choosing Sleep still
@@ -58,17 +87,12 @@ func Acquire(statePath string, logf func(string, ...any)) (*Guard, error) {
 
 	g := &Guard{State: state, closers: []func() error{state.Close}}
 
-	for _, id := range state.IDs() {
-		logf("Removing shadow copy %v left behind by an earlier run", id)
-
-		if err := vss.Remove(id); err != nil {
-			if _, getErr := vss.Get(id); getErr == nil {
-				logf("Unable to remove shadow copy %v: %v", id, err)
-				continue
-			}
+	for _, rec := range state.Records() {
+		if !removeLeftover(rec, findShadowCopy, logf) {
+			continue
 		}
 
-		if err := state.Remove(id); err != nil {
+		if err := state.Remove(rec.ID); err != nil {
 			return nil, stderrors.Join(err, g.Close())
 		}
 	}
@@ -76,6 +100,57 @@ func Acquire(statePath string, logf func(string, ...any)) (*Guard, error) {
 	g.closers = append(g.closers, keepAwake())
 
 	return g, nil
+}
+
+// removeLeftover removes a shadow copy that an earlier run recorded and did
+// not remove, provided it is still the shadow copy that run created. It
+// reports whether the record can be forgotten.
+func removeLeftover(rec ShadowCopyRecord, find func(id string) (*vss.ShadowCopy, error), logf func(string, ...any)) bool {
+	sc, err := find(rec.ID)
+	if err != nil {
+		// Windows may just be busy; forgetting the shadow copy now would
+		// leave it behind for good
+		logf("Unable to look for shadow copy %v left behind by an earlier run, will try again next time: %v", rec.ID, err)
+		return false
+	}
+
+	if sc == nil {
+		// already gone
+		return true
+	}
+
+	if !rec.Matches(sc.VolumeName, sc.InstallDate) {
+		logf("Not removing shadow copy %v: it is not the one an earlier run created", rec.ID)
+		return true
+	}
+
+	logf("Removing shadow copy %v left behind by an earlier run", rec.ID)
+
+	if err := sc.Remove(); err != nil {
+		logf("Unable to remove shadow copy %v: %v", rec.ID, err)
+		return false
+	}
+
+	return true
+}
+
+// findShadowCopy returns the shadow copy with the given ID, or nil if there
+// is none. It lists the shadow copies rather than asking for one, because
+// that is the only way to tell a shadow copy that is gone from a query that
+// failed.
+func findShadowCopy(id string) (*vss.ShadowCopy, error) {
+	all, err := vss.List("")
+	if err != nil {
+		return nil, errors.Wrap(err, "unable to list shadow copies")
+	}
+
+	for _, sc := range all {
+		if strings.EqualFold(strings.Trim(sc.ID, "{}"), strings.Trim(id, "{}")) {
+			return sc, nil
+		}
+	}
+
+	return nil, nil //nolint:nilnil
 }
 
 // keepAwake prevents idle sleep until the returned function is called. The
@@ -291,13 +366,13 @@ func (s *Session) openShadowVolume(ctx context.Context, pp *PartitionPlan, state
 		return state.Remove(id)
 	})
 
-	if err := state.Add(id); err != nil {
-		return image.VolumeSource{}, err
-	}
-
 	sc, err := vss.Get(id)
 	if err != nil {
 		return image.VolumeSource{}, errors.Wrapf(err, "unable to find shadow copy %v", id)
+	}
+
+	if err := state.Add(ShadowCopyRecord{ID: id, Volume: sc.VolumeName, Created: sc.InstallDate}); err != nil {
+		return image.VolumeSource{}, err
 	}
 
 	dev, err := blockdev.Open(sc.DeviceObject)

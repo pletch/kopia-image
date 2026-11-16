@@ -1,7 +1,6 @@
 // Package schedule installs kopia image runs as Windows Task Scheduler tasks:
 // it builds task definitions with the settings an unattended image backup
-// needs, registers them with schtasks, and secures the folder that holds the
-// task's repository configuration and password.
+// needs and registers them with schtasks.
 //
 // Building task definitions is platform independent; registering them is
 // Windows-only and returns ErrNotSupported elsewhere.

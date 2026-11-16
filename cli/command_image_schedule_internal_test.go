@@ -62,6 +62,8 @@ func TestImageScheduleInstall_tasks(t *testing.T) {
 		"--flush-interval", "5m0s",
 		"--state-file", `C:\ProgramData\kopia\image-shadow-copies.json`,
 	}, create.Arguments)
+	require.Equal(t, filepath.Join(`C:\ProgramData\kopia\image`, "bin", "kopia.exe"), create.Command, "the tasks run the copy in the secured folder")
+	require.Equal(t, create.Command, check.Command)
 	require.Equal(t, 2, create.RetryCount)
 	require.True(t, create.WakeToRun)
 

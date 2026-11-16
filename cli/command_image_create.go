@@ -76,10 +76,22 @@ func (c *commandImageCreate) run(ctx context.Context, rep repo.RepositoryWriter)
 		}
 	}
 
+	// Also for a dry run: it takes and removes shadow copies like any other
+	// run, and first removes the leftover ones that the state file lists, so
+	// it must be able to trust that file just the same.
+	if err := disksource.PrepareStateDir(statePath); err != nil {
+		return err //nolint:wrapcheck
+	}
+
 	status := &disksource.RunStatus{Volumes: c.volumes, StartTime: clock.Now()}
 
 	if !c.dryRun {
 		defer func() {
+			// the status file belongs to the run that holds the lock
+			if errors.Is(err, disksource.ErrAlreadyRunning) {
+				return
+			}
+
 			status.EndTime = clock.Now()
 			status.Success = err == nil
 
@@ -115,6 +127,9 @@ func (c *commandImageCreate) imageDisks(ctx context.Context, rep repo.Repository
 		plan.Print(c.out.stdout())
 		plans = append(plans, plan)
 	}
+
+	log(ctx).Warnf("The image holds every file on these disks unencrypted, including volumes that use BitLocker, the Windows account database and saved credentials. " +
+		"Only the repository's encryption protects it: keep the repository password as safe as the computer.")
 
 	guard, err := disksource.Acquire(statePath, logf)
 	if err != nil {

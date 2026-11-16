@@ -148,7 +148,7 @@ func TestImageAndRestoreVHDX(t *testing.T) {
 
 	session, err := disksource.OpenSession(t.Context(), plan, guard.State, t.Logf)
 	require.NoError(t, err)
-	require.Len(t, guard.State.IDs(), 1, "the shadow copy is recorded")
+	require.Len(t, guard.State.Records(), 1, "the shadow copy is recorded")
 
 	// changes after the shadow copy must not reach the image
 	require.NoError(t, os.WriteFile(filepath.Join(mnt, "big.bin"), []byte("changed"), 0o600))
@@ -173,7 +173,7 @@ func TestImageAndRestoreVHDX(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, session.Close())
-	require.Empty(t, guard.State.IDs(), "the shadow copy is removed")
+	require.Empty(t, guard.State.Records(), "the shadow copy is removed")
 	require.NoError(t, guard.Close())
 
 	t.Logf("snapshot %v: %+v, uploaded %v", man.ID, md.Volumes[0].Stats, *md.UploadedBytes)

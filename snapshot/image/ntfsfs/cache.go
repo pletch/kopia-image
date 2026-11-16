@@ -6,6 +6,7 @@ import (
 	"io"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/pkg/errors"
 
@@ -18,6 +19,11 @@ import (
 // memory per open volume (256 MiB), enough to keep $MFT and directory index
 // blocks of a typical browsing session in memory.
 const DefaultCacheChunks = 64
+
+// chunkFetchTimeout bounds one chunk fetch. Reads have no context of their
+// own, and the NTFS parser holds the volume lock while it reads, so a fetch
+// that never returned would block every other request for the volume.
+const chunkFetchTimeout = 2 * time.Minute
 
 // chunkReader is an io.ReaderAt over an image object that fetches only the
 // chunks a read touches and keeps the most recently used ones in memory. It
@@ -170,8 +176,20 @@ func (c *chunkReader) chunk(ch object.IndirectObjectEntry) ([]byte, error) {
 	return f.data, f.err
 }
 
+// purge drops the cached chunks.
+func (c *chunkReader) purge() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.lru.Init()
+	clear(c.byID)
+}
+
 func (c *chunkReader) fetch(ch object.IndirectObjectEntry) ([]byte, error) {
-	r, err := c.rep.OpenObject(c.ctx, ch.Object)
+	ctx, cancel := context.WithTimeout(c.ctx, chunkFetchTimeout)
+	defer cancel()
+
+	r, err := c.rep.OpenObject(ctx, ch.Object)
 	if err != nil {
 		return nil, errors.Wrapf(err, "unable to open image chunk at offset %v", ch.Start)
 	}

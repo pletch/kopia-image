@@ -66,14 +66,12 @@ func (c *commandImageRestore) run(ctx context.Context, rep repo.Repository) erro
 
 	c.printPlan(s, volumes)
 
-	if c.dryRun {
-		if _, err := os.Stat(c.target); errors.Is(err, os.ErrNotExist) {
-			c.out.printStdout("Dry run: %v would be created as a %v-byte disk image file. Nothing was written.\n", c.target, s.Layout.DiskSize)
-			return nil
-		}
+	t, err := c.openTarget(s)
+	if t == nil && err == nil {
+		c.out.printStdout("Dry run: %v would be created as a %v-byte disk image file. Nothing was written.\n", c.target, s.Layout.DiskSize)
+		return nil
 	}
 
-	t, err := imagerestore.OpenTarget(c.target, s.Layout.DiskSize, s.Layout.SectorSize)
 	if err != nil {
 		return errors.Wrap(err, "unable to open the restore target")
 	}
@@ -94,6 +92,21 @@ func (c *commandImageRestore) run(ctx context.Context, rep repo.Repository) erro
 	}
 
 	return c.restore(ctx, rep, s, t, volumes)
+}
+
+// openTarget opens the restore target, read-only for a dry run so that the
+// target is not touched. It returns nil for a dry run to a file that does not
+// exist yet.
+func (c *commandImageRestore) openTarget(s *imagerestore.Snapshot) (imagerestore.Target, error) {
+	if !c.dryRun {
+		return imagerestore.OpenTarget(c.target, s.Layout.DiskSize, s.Layout.SectorSize) //nolint:wrapcheck
+	}
+
+	if _, err := os.Stat(c.target); errors.Is(err, os.ErrNotExist) {
+		return nil, imagerestore.CheckNewTargetPath(c.target) //nolint:wrapcheck
+	}
+
+	return imagerestore.OpenTargetReadOnly(c.target, s.Layout.SectorSize) //nolint:wrapcheck
 }
 
 func (c *commandImageRestore) checkTarget(s *imagerestore.Snapshot, t imagerestore.Target, fullRestore bool) error {

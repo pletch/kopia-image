@@ -3,6 +3,7 @@ package imagerestore
 import (
 	"errors"
 	"os"
+	"strconv"
 	"strings"
 
 	pkgerrors "github.com/pkg/errors"
@@ -34,7 +35,9 @@ type deviceTarget struct {
 	lockedVolumes []windows.Handle
 }
 
-func openDevice(path string) (Target, error) {
+// openDevice opens a physical drive. When readOnly, the drive is only read
+// and its volumes stay mounted.
+func openDevice(path string, readOnly bool) (Target, error) {
 	number, ok := strings.CutPrefix(strings.ToLower(path), `\\.\physicaldrive`)
 	if !ok {
 		return nil, pkgerrors.Errorf("%v is not a physical drive; use \\\\.\\PhysicalDriveN or a file path", path)
@@ -45,7 +48,7 @@ func openDevice(path string) (Target, error) {
 		return nil, pkgerrors.Wrapf(err, "invalid physical drive %v", path)
 	}
 
-	volumes, err := disksource.VolumesOnDisk(uint32(n)) //nolint:gosec
+	volumes, err := disksource.VolumesOnDisk(n)
 	if err != nil {
 		return nil, pkgerrors.Wrapf(err, "unable to list the volumes on %v", path)
 	}
@@ -56,18 +59,24 @@ func openDevice(path string) (Target, error) {
 		}
 	}
 
-	h, err := windows.CreateFile(windows.StringToUTF16Ptr(path),
-		windows.GENERIC_READ|windows.GENERIC_WRITE,
+	access := uint32(windows.GENERIC_READ | windows.GENERIC_WRITE)
+	if readOnly {
+		access = windows.GENERIC_READ
+	}
+
+	h, err := windows.CreateFile(windows.StringToUTF16Ptr(path), access,
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
 		nil, windows.OPEN_EXISTING, windows.FILE_FLAG_WRITE_THROUGH, 0)
 	if err != nil {
-		return nil, pkgerrors.Wrapf(err, "unable to open %v for writing", path)
+		return nil, pkgerrors.Wrapf(err, "unable to open %v", path)
 	}
 
-	d := &deviceTarget{File: os.NewFile(uintptr(h), path), diskNumber: n}
+	d := &deviceTarget{File: os.NewFile(uintptr(h), path), diskNumber: int(n)}
 
-	if err := d.lockVolumes(volumes); err != nil {
-		return nil, errors.Join(err, d.Close())
+	if !readOnly {
+		if err := d.lockVolumes(volumes); err != nil {
+			return nil, errors.Join(err, d.Close())
+		}
 	}
 
 	// reading the size through a separate read-only handle reuses blockdev
@@ -86,22 +95,19 @@ func openDevice(path string) (Target, error) {
 	return d, nil
 }
 
-func parseDiskNumber(s string) (int, error) {
-	n := 0
-
+// parseDiskNumber parses the decimal digits after \\.\PhysicalDrive.
+func parseDiskNumber(s string) (uint32, error) {
 	if s == "" {
 		return 0, pkgerrors.New("missing disk number")
 	}
 
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return 0, pkgerrors.Errorf("invalid disk number %q", s)
-		}
-
-		n = n*10 + int(c-'0') //nolint:mnd
+	// ParseUint accepts only digits and rejects numbers that do not fit
+	n, err := strconv.ParseUint(s, 10, 32)
+	if err != nil {
+		return 0, pkgerrors.Errorf("invalid disk number %q", s)
 	}
 
-	return n, nil
+	return uint32(n), nil
 }
 
 func (d *deviceTarget) Path() string      { return d.Name() }

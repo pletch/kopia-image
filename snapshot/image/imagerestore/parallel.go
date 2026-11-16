@@ -29,6 +29,15 @@ const (
 	defaultParallel    = 8
 )
 
+// MaxChunkLength is the longest chunk accepted in an image object. Images are
+// written in chunks of image.DefaultChunkSize; the limit keeps a damaged or
+// forged chunk list from making readers allocate arbitrarily large buffers.
+const MaxChunkLength = 4 * image.DefaultChunkSize
+
+// ErrUnexpectedLength is returned when an image object is not as long as the
+// image metadata says, before anything is written.
+var ErrUnexpectedLength = errors.New("image object has an unexpected length")
+
 // Chunks returns the chunks of an object and its length. An indirect object's
 // chunks are the entries of its index; a direct object is a single chunk. The
 // chunks tile the object from offset 0 without gaps or overlaps.
@@ -46,6 +55,10 @@ func Chunks(ctx context.Context, rep repo.Repository, oid object.ID) ([]object.I
 			return nil, 0, errors.Wrapf(err, "unable to close %v", oid)
 		}
 
+		if length > MaxChunkLength {
+			return nil, 0, errors.Errorf("%v is a single chunk of %v bytes, longer than %v", oid, length, MaxChunkLength)
+		}
+
 		return []object.IndirectObjectEntry{{Start: 0, Length: length, Object: oid}}, length, nil
 	}
 
@@ -55,24 +68,33 @@ func Chunks(ctx context.Context, rep repo.Repository, oid object.ID) ([]object.I
 	}
 	defer r.Close() //nolint:errcheck
 
+	entries, length, err := decodeIndex(r)
+
+	return entries, length, errors.Wrapf(err, "invalid index of %v", oid)
+}
+
+// decodeIndex reads the chunk list of an indirect object and checks that the
+// chunks tile the object from offset 0 without gaps or overlaps and that none
+// is longer than MaxChunkLength. It returns the chunks and the object length.
+func decodeIndex(r io.Reader) ([]object.IndirectObjectEntry, int64, error) {
 	var index struct {
 		Stream  string                       `json:"stream"`
 		Entries []object.IndirectObjectEntry `json:"entries"`
 	}
 
 	if err := json.NewDecoder(io.LimitReader(r, maxIndexObjectSize)).Decode(&index); err != nil {
-		return nil, 0, errors.Wrapf(err, "unable to decode the index of %v", oid)
+		return nil, 0, errors.Wrap(err, "unable to decode")
 	}
 
 	if index.Stream != indirectStreamType {
-		return nil, 0, errors.Errorf("index of %v has stream type %q", oid, index.Stream)
+		return nil, 0, errors.Errorf("stream type %q", index.Stream)
 	}
 
 	var end int64
 
 	for i, e := range index.Entries {
-		if e.Start != end || e.Length <= 0 {
-			return nil, 0, errors.Errorf("index of %v entry %v covers [%v,%v), expected to start at %v", oid, i, e.Start, e.Start+e.Length, end)
+		if e.Start != end || e.Length <= 0 || e.Length > MaxChunkLength {
+			return nil, 0, errors.Errorf("entry %v starts at %v and is %v bytes long, expected to start at %v and be at most %v bytes", i, e.Start, e.Length, end, MaxChunkLength)
 		}
 
 		end += e.Length
@@ -85,6 +107,12 @@ func Chunks(ctx context.Context, rep repo.Repository, oid object.ID) ([]object.I
 type Options struct {
 	// Parallel is the number of chunks fetched at once. It defaults to 8.
 	Parallel int
+
+	// ExpectedLength, when positive, is the length the object must have.
+	// WriteObject returns ErrUnexpectedLength before writing anything if the
+	// object is longer or shorter, so that a wrong object cannot be written
+	// past the space reserved for it.
+	ExpectedLength int64
 
 	// TargetIsZeroed skips writing zero chunks, for targets known to read as
 	// zeros, such as new files or trimmed disks.
@@ -126,6 +154,10 @@ func WriteObject(ctx context.Context, rep repo.Repository, oid object.ID, w io.W
 	chunks, length, err := Chunks(ctx, rep, oid)
 	if err != nil {
 		return Stats{}, err
+	}
+
+	if opt.ExpectedLength > 0 && length != opt.ExpectedLength {
+		return Stats{}, errors.Wrapf(ErrUnexpectedLength, "%v is %v bytes, expected %v", oid, length, opt.ExpectedLength)
 	}
 
 	groups := groupChunks(chunks)

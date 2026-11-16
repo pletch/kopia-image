@@ -44,7 +44,10 @@ func (c *commandImageList) run(ctx context.Context, rep repo.Repository) error {
 	}
 
 	host := rep.ClientOptions().Hostname
-	mans = slices.DeleteFunc(mans, func(m *snapshot.Manifest) bool { return !c.all && m.Source.Host != host })
+	// checkpoints of runs in progress or failed are not images
+	mans = slices.DeleteFunc(mans, func(m *snapshot.Manifest) bool {
+		return m.IncompleteReason != "" || (!c.all && m.Source.Host != host)
+	})
 
 	slices.SortFunc(mans, func(a, b *snapshot.Manifest) int {
 		if s := strings.Compare(a.Source.String(), b.Source.String()); s != 0 {

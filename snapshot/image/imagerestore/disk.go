@@ -206,7 +206,10 @@ func restoreVolumes(ctx context.Context, rep repo.Repository, t Target, layout *
 		v := opt.Volumes[i]
 		p, _ := layout.Partition(v.PartitionNumber)
 
+		// image.json was validated, so v.Size fits the partition; requiring
+		// the object to be exactly that long keeps it inside the partition
 		stats, err := WriteObject(ctx, rep, v.ObjectID, t, p.Offset, Options{
+			ExpectedLength: v.Size,
 			Parallel:       opt.Parallel,
 			TargetIsZeroed: t.IsZeroed(),
 			Zero:           t.Zero,
@@ -221,8 +224,12 @@ func restoreVolumes(ctx context.Context, rep repo.Repository, t Target, layout *
 			return results, errors.Wrapf(err, "unable to restore %v", v.EntryName)
 		}
 
-		if stats.Bytes != v.Size {
-			return results, errors.Errorf("%v is %v bytes, image.json says %v", v.EntryName, stats.Bytes, v.Size)
+		// a volume can be shorter than its partition; what the target held
+		// there before must not survive the restore
+		if tail := p.Length - v.Size; tail > 0 && !t.IsZeroed() {
+			if err := t.Zero(p.Offset+v.Size, tail); err != nil {
+				return results, errors.Wrapf(err, "unable to zero the end of partition %v", p.Number)
+			}
 		}
 
 		results = append(results, VolumeResult{Volume: v, Stats: stats})

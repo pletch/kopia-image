@@ -56,7 +56,7 @@ kopia image restore <snapshot-id> --target \\.\PhysicalDrive2 --dry-run
 kopia image schedule install C: --at 02:00 --check-day Sun --check-ntfs
 ```
 
-Run `kopia image create` and `kopia image schedule` as administrator. Images use the source `user@host:image:disk:<GUID>`, so retention is set with `kopia policy set` as usual. MBR disks, dynamic disks, Storage Spaces and ReFS volumes are refused. BitLocker volumes are imaged decrypted, and are protected by the repository's encryption. See [Disk Images](site/content/docs/Advanced/Disk%20Images/_index.md) for the details.
+Run `kopia image create` and `kopia image schedule` as administrator. Images use the source `user@host:image:disk:<GUID>`, so retention is set with `kopia policy set` as usual. MBR disks, dynamic disks, Storage Spaces and ReFS volumes are refused. BitLocker volumes are imaged decrypted, like everything else on the disk including the Windows account database, and are protected only by the repository's encryption. Scheduled runs use a copy of kopia in `C:\ProgramData\kopia\image`, so run `kopia image schedule install` again after upgrading. See [Disk Images](site/content/docs/Advanced/Disk%20Images/_index.md) for the details.
 
 > [!WARNING]
 > Disk images are new. Restores have been tested on virtual disks, but a restored system disk has not yet been boot-tested. Test a restore on spare hardware or a virtual machine before relying on images.

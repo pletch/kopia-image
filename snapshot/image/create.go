@@ -15,6 +15,7 @@ import (
 	"github.com/kopia/kopia/fs"
 	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/repo/compression"
+	"github.com/kopia/kopia/repo/manifest"
 	"github.com/kopia/kopia/repo/object"
 	"github.com/kopia/kopia/snapshot"
 	"github.com/kopia/kopia/snapshot/snapshotfs"
@@ -29,9 +30,15 @@ const (
 )
 
 const (
-	imageSplitter            = "FIXED-4M"
-	defaultRawReadAttempts   = 3
-	failureFlushTimeout      = time.Minute
+	imageSplitter             = "FIXED-4M"
+	defaultRawReadAttempts    = 3
+	failureFlushTimeout       = time.Minute
+	defaultCheckpointInterval = 45 * time.Minute
+
+	// incompleteReasonCheckpoint marks checkpoint manifests like the
+	// snapshot uploader does (upload.IncompleteReasonCheckpoint).
+	incompleteReasonCheckpoint = "checkpoint"
+
 	filePermissions          = 0o644
 	executablePermissions    = 0o755
 	directoryPermissions     = 0o755
@@ -85,6 +92,15 @@ type CreateOptions struct {
 	// upload them again. Zero disables periodic flushes.
 	FlushInterval time.Duration
 
+	// CheckpointInterval is how often an incomplete snapshot of what has been
+	// written so far is saved. Until the image snapshot is saved, nothing
+	// else refers to the chunks a run uploads, and maintenance may remove
+	// unreferenced contents that are old enough: those of a run that takes
+	// very long, or of a failed run that a later run reuses. The checkpoint
+	// refers to them. Zero means 45 minutes, like file snapshots; a negative
+	// value disables checkpoints.
+	CheckpointInterval time.Duration
+
 	// RawReadAttempts limits the read-twice attempts for raw volumes.
 	RawReadAttempts int
 
@@ -97,16 +113,27 @@ type CreateOptions struct {
 
 	// Logf, when set, receives progress messages.
 	Logf func(format string, args ...any)
+
+	// progress is what the run has written so far; Create sets it.
+	progress *progress
 }
 
 // Create images the volumes into a new snapshot of opt.Source. The snapshot
-// manifest is saved last, so a failed run leaves no snapshot; contents it
-// wrote are reused by the next run or removed by maintenance. Create flushes
-// the repository before returning; the caller applies retention.
-func Create(ctx context.Context, rep repo.RepositoryWriter, opt *CreateOptions) (*snapshot.Manifest, *Metadata, error) {
-	if err := opt.validate(); err != nil {
+// manifest is saved last, so a failed run leaves no image snapshot. While it
+// runs and when it fails, Create saves an incomplete "checkpoint" snapshot of
+// what it has written, so the contents stay referenced until the next run
+// reuses them; retention removes checkpoints once a newer image exists.
+// Create flushes the repository before returning; the caller applies
+// retention.
+func Create(ctx context.Context, rep repo.RepositoryWriter, options *CreateOptions) (*snapshot.Manifest, *Metadata, error) {
+	if err := options.validate(); err != nil {
 		return nil, nil, err
 	}
+
+	// the caller's options stay untouched
+	withProgress := *options
+	withProgress.progress = &progress{}
+	opt := &withProgress
 
 	md := &Metadata{
 		FormatVersion: FormatVersion,
@@ -118,15 +145,15 @@ func Create(ctx context.Context, rep repo.RepositoryWriter, opt *CreateOptions) 
 	uploaded, uploadedOK := uploadCounter(rep)
 	uploadedBefore := uploaded()
 
-	stopFlush := startPeriodicFlush(ctx, rep, opt.FlushInterval)
+	stopPeriodic := opt.startPeriodic(ctx, rep, md)
 
 	files, err := opt.writeVolumes(ctx, rep, md)
-	if flushErr := stopFlush(); err == nil {
+	if flushErr := stopPeriodic(); err == nil {
 		err = flushErr
 	}
 
 	if err != nil {
-		flushAfterFailure(ctx, rep, opt.logf)
+		opt.saveProgressAfterFailure(ctx, rep, md)
 
 		return nil, nil, err
 	}
@@ -214,6 +241,7 @@ func (opt *CreateOptions) writeVolumes(ctx context.Context, rep repo.RepositoryW
 		})
 
 		files = append(files, opt.fileEntry(name, v.Size, oid, md.StartTime, filePermissions))
+		opt.progress.addFile(files[len(files)-1])
 
 		if v.Bitmap != nil {
 			bitmapName := BitmapEntryName(v.PartitionNumber, v.Label)
@@ -224,6 +252,7 @@ func (opt *CreateOptions) writeVolumes(ctx context.Context, rep repo.RepositoryW
 			}
 
 			files = append(files, opt.fileEntry(bitmapName, int64(len(v.Bitmap)), boid, md.StartTime, filePermissions))
+			opt.progress.addFile(files[len(files)-1])
 		}
 	}
 
@@ -335,6 +364,25 @@ func (opt *CreateOptions) commit(ctx context.Context, rep repo.RepositoryWriter,
 		files = append(files, opt.fileEntry(f.name, int64(len(f.data)), oid, md.StartTime, f.perm))
 	}
 
+	man, err := opt.saveManifest(ctx, rep, md, files, md.EndTime, "")
+	if err != nil {
+		return nil, err
+	}
+
+	// the image now refers to everything the checkpoint did
+	opt.progress.replaceCheckpoint(ctx, rep, "", opt.logf)
+
+	if err := rep.Flush(ctx); err != nil {
+		return nil, errors.Wrap(err, "unable to flush image snapshot")
+	}
+
+	return man, nil
+}
+
+// saveManifest writes the root directory holding files and saves a snapshot
+// manifest for it: the image snapshot, or with an incompleteReason a
+// checkpoint.
+func (opt *CreateOptions) saveManifest(ctx context.Context, rep repo.RepositoryWriter, md *Metadata, files []*snapshot.DirEntry, endTime time.Time, incompleteReason string) (*snapshot.Manifest, error) {
 	var b snapshotfs.DirManifestBuilder
 
 	for _, f := range files {
@@ -342,7 +390,7 @@ func (opt *CreateOptions) commit(ctx context.Context, rep repo.RepositoryWriter,
 	}
 
 	mtime := fs.UTCTimestampFromTime(md.StartTime)
-	dm := b.Build(mtime, "")
+	dm := b.Build(mtime, incompleteReason)
 
 	rootOID, err := snapshotfs.WriteDirManifest(ctx, rep, "", dm, opt.MetadataCompressor)
 	if err != nil {
@@ -353,10 +401,11 @@ func (opt *CreateOptions) commit(ctx context.Context, rep repo.RepositoryWriter,
 	maps.Copy(tags, opt.Tags)
 
 	man := &snapshot.Manifest{
-		Source:      opt.Source,
-		Description: opt.Description,
-		StartTime:   fs.UTCTimestampFromTime(md.StartTime),
-		EndTime:     fs.UTCTimestampFromTime(md.EndTime),
+		Source:           opt.Source,
+		Description:      opt.Description,
+		StartTime:        fs.UTCTimestampFromTime(md.StartTime),
+		EndTime:          fs.UTCTimestampFromTime(endTime),
+		IncompleteReason: incompleteReason,
 		Stats: snapshot.Stats{
 			TotalFileSize:  dm.Summary.TotalFileSize,
 			TotalFileCount: int32(dm.Summary.TotalFileCount), //nolint:gosec
@@ -376,11 +425,131 @@ func (opt *CreateOptions) commit(ctx context.Context, rep repo.RepositoryWriter,
 		return nil, errors.Wrap(err, "unable to save image snapshot")
 	}
 
-	if err := rep.Flush(ctx); err != nil {
-		return nil, errors.Wrap(err, "unable to flush image snapshot")
+	return man, nil
+}
+
+// checkpoint saves an incomplete snapshot of the volumes written so far and
+// the written part of the volume in progress, replacing the run's previous
+// checkpoint. It saves nothing before the first chunk is written.
+func (opt *CreateOptions) checkpoint(ctx context.Context, rep repo.RepositoryWriter, md *Metadata) error {
+	files, name, entries := opt.progress.snapshot()
+
+	if len(entries) > 0 {
+		oid, err := opt.writeChunkList(ctx, rep, entries, name)
+		if err != nil {
+			return err
+		}
+
+		last := entries[len(entries)-1]
+		files = append(files, opt.fileEntry(name, last.Start+last.Length, oid, md.StartTime, filePermissions))
 	}
 
-	return man, nil
+	if len(files) == 0 {
+		return nil
+	}
+
+	man, err := opt.saveManifest(ctx, rep, md, files, rep.Time().UTC(), incompleteReasonCheckpoint)
+	if err != nil {
+		return err
+	}
+
+	opt.progress.replaceCheckpoint(ctx, rep, man.ID, opt.logf)
+
+	return nil
+}
+
+// progress is what a run has written so far. The imaging goroutines update
+// it and checkpoints read it. A nil progress tracks nothing, for writing
+// volumes outside Create.
+type progress struct {
+	mu sync.Mutex
+	// files are the entries of the finished volumes and bitmaps.
+	// +checklocks:mu
+	files []*snapshot.DirEntry
+	// volume names the volume being written and entries is its chunk list,
+	// which fills in any order; a chunk without an object is not written yet.
+	// +checklocks:mu
+	volume string
+	// +checklocks:mu
+	entries []object.IndirectObjectEntry
+	// checkpoint is the run's latest checkpoint manifest.
+	// +checklocks:mu
+	checkpoint manifest.ID
+}
+
+func (p *progress) addFile(e *snapshot.DirEntry) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.files = append(p.files, e)
+}
+
+// beginVolume starts tracking the chunk list of a volume. Until endVolume,
+// the objects of entries may only be set with setChunk.
+func (p *progress) beginVolume(name string, entries []object.IndirectObjectEntry) {
+	if p == nil {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.volume, p.entries = name, entries
+}
+
+func (p *progress) endVolume() {
+	if p == nil {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.volume, p.entries = "", nil
+}
+
+func (p *progress) setChunk(entry *object.IndirectObjectEntry, oid object.ID) {
+	if p == nil {
+		entry.Object = oid
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	entry.Object = oid
+}
+
+// snapshot returns copies of the finished entries and of the chunks written
+// from the start of the volume in progress up to the first gap.
+func (p *progress) snapshot() (files []*snapshot.DirEntry, volume string, entries []object.IndirectObjectEntry) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	n := 0
+	for n < len(p.entries) && p.entries[n].Object != object.EmptyID {
+		n++
+	}
+
+	return slices.Clone(p.files), p.volume, slices.Clone(p.entries[:n])
+}
+
+// replaceCheckpoint records id as the run's checkpoint and deletes the one it
+// replaces. Deleting is best effort: a client that may only add snapshots
+// cannot, and retention removes old checkpoints anyway.
+func (p *progress) replaceCheckpoint(ctx context.Context, rep repo.RepositoryWriter, id manifest.ID, logf func(string, ...any)) {
+	p.mu.Lock()
+	previous := p.checkpoint
+	p.checkpoint = id
+	p.mu.Unlock()
+
+	if previous == "" {
+		return
+	}
+
+	if err := rep.DeleteManifest(ctx, previous); err != nil {
+		logf("Unable to delete the checkpoint %v, which retention will remove: %v", previous, err)
+	}
 }
 
 // uploadCounter returns a function reporting the bytes of pack blobs written
@@ -397,23 +566,50 @@ func uploadCounter(rep repo.RepositoryWriter) (func() int64, bool) {
 	}, true
 }
 
-// flushAfterFailure indexes the chunks a failed run already wrote, so that the
-// next run does not upload them again. It is best effort: when the failure was
-// the connection, the flush fails too and the chunks are uploaded again. It
-// runs even if ctx was canceled, but for at most failureFlushTimeout.
-func flushAfterFailure(ctx context.Context, rep repo.RepositoryWriter, logf func(string, ...any)) {
+// saveProgressAfterFailure saves a checkpoint of what a failed run wrote and
+// indexes its chunks, so that the next run does not upload them again and
+// maintenance does not remove them before then. It is best effort: when the
+// failure was the connection, this fails too and the chunks are uploaded
+// again. It runs even if ctx was canceled, but for at most
+// failureFlushTimeout.
+func (opt *CreateOptions) saveProgressAfterFailure(ctx context.Context, rep repo.RepositoryWriter, md *Metadata) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), failureFlushTimeout)
 	defer cancel()
 
+	if opt.CheckpointInterval >= 0 {
+		if err := opt.checkpoint(ctx, rep, md); err != nil {
+			opt.logf("Unable to save a checkpoint of the failed run: %v", err)
+		}
+	}
+
 	if err := rep.Flush(ctx); err != nil {
-		logf("Unable to save the progress of the failed run: %v", err)
+		opt.logf("Unable to save the progress of the failed run: %v", err)
 	}
 }
 
-// startPeriodicFlush flushes rep every interval until the returned function is
-// called, which reports the first flush error.
-func startPeriodicFlush(ctx context.Context, rep repo.RepositoryWriter, interval time.Duration) func() error {
+// tick returns a ticker's channel and stop function, or a channel that never
+// fires for a non-positive interval.
+func tick(interval time.Duration) (<-chan time.Time, func()) {
 	if interval <= 0 {
+		return nil, func() {}
+	}
+
+	t := time.NewTicker(interval)
+
+	return t.C, t.Stop
+}
+
+// startPeriodic flushes rep every FlushInterval and saves a checkpoint every
+// CheckpointInterval until the returned function is called, which reports the
+// first flush error. A checkpoint that cannot be saved is only logged: the
+// run does not depend on it.
+func (opt *CreateOptions) startPeriodic(ctx context.Context, rep repo.RepositoryWriter, md *Metadata) func() error {
+	checkpointInterval := opt.CheckpointInterval
+	if checkpointInterval == 0 {
+		checkpointInterval = defaultCheckpointInterval
+	}
+
+	if opt.FlushInterval <= 0 && checkpointInterval < 0 {
 		return func() error { return nil }
 	}
 
@@ -425,8 +621,11 @@ func startPeriodicFlush(ctx context.Context, rep repo.RepositoryWriter, interval
 	)
 
 	wg.Go(func() {
-		t := time.NewTicker(interval)
-		defer t.Stop()
+		flushTick, stopFlushTick := tick(opt.FlushInterval)
+		defer stopFlushTick()
+
+		checkpointTick, stopCheckpointTick := tick(checkpointInterval)
+		defer stopCheckpointTick()
 
 		for {
 			select {
@@ -434,11 +633,18 @@ func startPeriodicFlush(ctx context.Context, rep repo.RepositoryWriter, interval
 				return
 			case <-ctx.Done():
 				return
-			case <-t.C:
-				if err := rep.Flush(ctx); err != nil {
-					flushErr = errors.Wrap(err, "periodic flush failed")
-					return
+			case <-checkpointTick:
+				if err := opt.checkpoint(ctx, rep, md); err != nil {
+					opt.logf("Unable to save a checkpoint: %v", err)
+					continue
 				}
+			case <-flushTick:
+			}
+
+			// a checkpoint is flushed at once, so that it is in the repository
+			if err := rep.Flush(ctx); err != nil {
+				flushErr = errors.Wrap(err, "periodic flush failed")
+				return
 			}
 		}
 	})

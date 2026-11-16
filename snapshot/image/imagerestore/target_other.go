@@ -4,7 +4,7 @@ package imagerestore
 
 import "github.com/pkg/errors"
 
-func openDevice(path string) (Target, error) {
+func openDevice(path string, _ bool) (Target, error) {
 	return nil, errors.Errorf("restoring to block devices is supported on Linux and Windows; %v is not a regular file", path)
 }
 

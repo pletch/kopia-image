@@ -5,6 +5,8 @@ import (
 	stderrors "errors"
 	"io"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/pkg/errors"
@@ -43,13 +45,14 @@ type Target interface {
 	Close() error
 }
 
-// OpenTarget opens a restore target. A path that does not exist is created
-// as a sparse file of createSize bytes with the given sector size; an
-// existing regular file is used as is; anything else is opened as a block
-// device, which must be a whole disk.
+// OpenTarget opens a restore target for writing. A path that does not exist
+// is created as a sparse file of createSize bytes with the given sector size;
+// an existing regular file is used as is; anything else is opened as a block
+// device, which must be a whole disk. Opening a Windows disk locks and
+// dismounts its volumes until the target is closed.
 func OpenTarget(path string, createSize, sectorSize int64) (Target, error) {
 	if isWindowsDevicePath(path) {
-		return openDevice(path)
+		return openDevice(path, false)
 	}
 
 	fi, err := os.Stat(path)
@@ -60,11 +63,54 @@ func OpenTarget(path string, createSize, sectorSize int64) (Target, error) {
 	case err != nil:
 		return nil, errors.Wrapf(err, "unable to examine %v", path)
 	case fi.Mode().IsRegular():
-		return openFileTarget(path, fi.Size(), sectorSize)
+		return openFileTarget(path, fi.Size(), sectorSize, false)
 	default:
-		return openDevice(path)
+		return openDevice(path, false)
 	}
 }
+
+// OpenTargetReadOnly opens an existing restore target to examine it, as a
+// dry run does: writes fail and nothing about the target changes. The target
+// is checked like OpenTarget checks it, so a disk that is in use is refused.
+func OpenTargetReadOnly(path string, sectorSize int64) (Target, error) {
+	if isWindowsDevicePath(path) {
+		return openDevice(path, true)
+	}
+
+	fi, err := os.Stat(path)
+
+	switch {
+	case err != nil:
+		return nil, errors.Wrapf(err, "unable to examine %v", path)
+	case fi.Mode().IsRegular():
+		return openFileTarget(path, fi.Size(), sectorSize, true)
+	default:
+		return openDevice(path, true)
+	}
+}
+
+// CheckNewTargetPath checks that a file can be created at path to hold a disk
+// image. It refuses paths under /dev: a mistyped device name there would
+// become a regular file in memory-backed storage and fill the memory with the
+// image instead of writing a disk.
+func CheckNewTargetPath(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return errors.Wrapf(err, "unable to resolve %v", path)
+	}
+
+	if abs == devDir || strings.HasPrefix(abs, devDir+"/") {
+		return errors.Errorf("%v does not exist; check the device name (a file is not created under %v)", path, devDir)
+	}
+
+	return nil
+}
+
+const devDir = "/dev"
 
 func isWindowsDevicePath(path string) bool {
 	return strings.HasPrefix(path, `\\.\`) || strings.HasPrefix(path, `\\?\`)
@@ -100,6 +146,10 @@ type fileTarget struct {
 }
 
 func createFileTarget(path string, size, sectorSize int64) (Target, error) {
+	if err := CheckNewTargetPath(path); err != nil {
+		return nil, err
+	}
+
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec,mnd
 	if err != nil {
 		return nil, errors.Wrapf(err, "unable to create %v", path)
@@ -112,8 +162,13 @@ func createFileTarget(path string, size, sectorSize int64) (Target, error) {
 	return &fileTarget{File: f, size: size, sectorSize: sectorSize, zeroed: true}, nil
 }
 
-func openFileTarget(path string, size, sectorSize int64) (Target, error) {
-	f, err := os.OpenFile(path, os.O_RDWR, 0) //nolint:gosec
+func openFileTarget(path string, size, sectorSize int64, readOnly bool) (Target, error) {
+	flags := os.O_RDWR
+	if readOnly {
+		flags = os.O_RDONLY
+	}
+
+	f, err := os.OpenFile(path, flags, 0) //nolint:gosec
 	if err != nil {
 		return nil, errors.Wrapf(err, "unable to open %v", path)
 	}

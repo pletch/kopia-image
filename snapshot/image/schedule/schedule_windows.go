@@ -16,11 +16,6 @@ import (
 	"github.com/kopia/kopia/internal/clock"
 )
 
-// restrictedDACL grants full control to SYSTEM and Administrators only, is
-// protected from inherited entries, and is inherited by everything created
-// below the folder.
-const restrictedDACL = "D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
-
 // ErrTaskNotFound is returned when a task does not exist.
 var ErrTaskNotFound = errors.New("scheduled task not found")
 
@@ -93,47 +88,21 @@ func Query(ctx context.Context, name string) (map[string]string, error) {
 	return props, nil
 }
 
+// schtasks runs the Task Scheduler tool from the Windows system folder: the
+// caller is an administrator, so a program of that name found elsewhere on
+// PATH must not run.
 func schtasks(ctx context.Context, args ...string) ([]byte, error) {
-	out, err := exec.CommandContext(ctx, "schtasks.exe", args...).CombinedOutput() //nolint:gosec
+	system32, err := windows.GetSystemDirectory()
+	if err != nil {
+		return nil, errors.Wrap(err, "unable to find the Windows system folder")
+	}
+
+	out, err := exec.CommandContext(ctx, filepath.Join(system32, "schtasks.exe"), args...).CombinedOutput() //nolint:gosec
 	if err != nil {
 		return out, errors.Errorf("schtasks %v failed: %v: %s", args[0], err, bytes.TrimSpace(out))
 	}
 
 	return out, nil
-}
-
-// SecureDirectory creates a folder, if needed, that only SYSTEM and
-// Administrators can open, for the scheduled task's repository config and
-// password.
-func SecureDirectory(path string) error {
-	if err := os.MkdirAll(path, 0o700); err != nil { //nolint:mnd
-		return errors.Wrapf(err, "unable to create %v", path)
-	}
-
-	sd, err := windows.SecurityDescriptorFromString(restrictedDACL)
-	if err != nil {
-		return errors.Wrap(err, "invalid security descriptor")
-	}
-
-	dacl, _, err := sd.DACL()
-	if err != nil {
-		return errors.Wrap(err, "invalid security descriptor")
-	}
-
-	err = windows.SetNamedSecurityInfo(filepath.Clean(path), windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
-
-	return errors.Wrapf(err, "unable to restrict access to %v", path)
-}
-
-// DirectoryDACL returns the DACL of a folder in SDDL form.
-func DirectoryDACL(path string) (string, error) {
-	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
-	if err != nil {
-		return "", errors.Wrapf(err, "unable to read the permissions of %v", path)
-	}
-
-	return sd.String(), nil
 }
 
 // ProgramDataDir returns the ProgramData folder.

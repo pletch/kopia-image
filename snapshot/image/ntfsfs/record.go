@@ -43,6 +43,10 @@ type attribute struct {
 // and parses its header and attributes, strictly: any inconsistency is an
 // error.
 func parseRecord(buf []byte, n int64) (*mftRecord, error) {
+	if len(buf) < recordHeaderMinSize || len(buf)%fixupStride != 0 {
+		return nil, errors.Errorf("invalid record size %v", len(buf))
+	}
+
 	switch string(buf[0:4]) {
 	case "FILE":
 	case "BAAD":

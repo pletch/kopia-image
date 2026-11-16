@@ -9,6 +9,11 @@ func DefaultStatePath() (string, error) {
 	return "", ErrNotSupported
 }
 
+// PrepareStateDir is not supported on this platform.
+func PrepareStateDir(string) error {
+	return ErrNotSupported
+}
+
 // Acquire is not supported on this platform.
 func Acquire(string, func(string, ...any)) (*Guard, error) {
 	return nil, ErrNotSupported

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"math/rand/v2"
 	"os"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/kopia/kopia/fs"
 	"github.com/kopia/kopia/internal/repotesting"
+	"github.com/kopia/kopia/repo/object"
 	"github.com/kopia/kopia/snapshot"
 	"github.com/kopia/kopia/snapshot/snapshotfs"
 )
@@ -276,11 +278,150 @@ func TestCreate_failureSavesNoSnapshot(t *testing.T) {
 			_, _, err := Create(ctx, env.RepositoryWriter, opt)
 			require.ErrorIs(t, err, tc.want)
 
+			// at most a checkpoint of what was written, never an image
 			snaps, err := snapshot.ListSnapshots(ctx, env.Repository, testSource(t))
 			require.NoError(t, err)
-			require.Empty(t, snaps)
+
+			for _, s := range snaps {
+				require.Equal(t, incompleteReasonCheckpoint, s.IncompleteReason)
+			}
 		})
 	}
+}
+
+// failAfterFourChunks makes the NTFS volume fail in its last chunk, after the
+// raw volume and four chunks were written.
+func failAfterFourChunks(opt *CreateOptions, ntfsData []byte, err error) {
+	opt.Volumes[0].Open = func() (io.ReadCloser, error) {
+		return &failingReader{r: bytes.NewReader(ntfsData[:4*DefaultChunkSize+100]), err: err}, nil
+	}
+}
+
+func TestCreate_failureLeavesCheckpoint(t *testing.T) {
+	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
+
+	ntfsData := testVolumeData()
+	rawData := randomBytes(2, 1<<20)
+	errNetwork := errors.New("connection reset")
+
+	failing := testCreateOptions(t, ntfsData, rawData)
+	failAfterFourChunks(failing, ntfsData, errNetwork)
+
+	_, _, err := Create(ctx, env.RepositoryWriter, failing)
+	require.ErrorIs(t, err, errNetwork)
+	require.Nil(t, failing.progress, "the caller's options are not modified")
+
+	snaps, err := snapshot.ListSnapshots(ctx, env.Repository, testSource(t))
+	require.NoError(t, err)
+	require.Len(t, snaps, 1)
+
+	// the checkpoint refers to what the run wrote, so maintenance keeps it
+	// for the retry
+	cp := snaps[0]
+	require.Equal(t, incompleteReasonCheckpoint, cp.IncompleteReason)
+	require.Equal(t, TagValue, cp.Tags[TagKey])
+
+	root, err := snapshotfs.SnapshotRoot(env.Repository, cp)
+	require.NoError(t, err)
+
+	dir, ok := root.(fs.Directory)
+	require.True(t, ok)
+
+	entries, err := fs.GetAllEntries(ctx, dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 2, "the finished volume and the written part of the failed one")
+
+	esp, err := dir.Child(ctx, "p1-esp.img")
+	require.NoError(t, err)
+	require.Equal(t, rawData, readObject(ctx, t, esp))
+
+	partial, err := dir.Child(ctx, "p3-C.img")
+	require.NoError(t, err)
+	require.Equal(t, ntfsData[:4*DefaultChunkSize], readObject(ctx, t, partial))
+
+	// the retry saves the image; the failed run's checkpoint is left for retention
+	man, _, err := Create(ctx, env.RepositoryWriter, testCreateOptions(t, ntfsData, rawData))
+	require.NoError(t, err)
+	require.Empty(t, man.IncompleteReason)
+
+	snaps, err = snapshot.ListSnapshots(ctx, env.Repository, testSource(t))
+	require.NoError(t, err)
+	require.Len(t, snaps, 2)
+}
+
+func TestCreate_checkpointsAreReplacedByTheImage(t *testing.T) {
+	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
+
+	// checkpoint and flush as often as possible while the volumes are written
+	opt := testCreateOptions(t, testVolumeData(), randomBytes(2, 1<<20))
+	opt.CheckpointInterval = 1
+	opt.FlushInterval = 1
+
+	var logged []string
+
+	opt.Logf = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+
+	man, _, err := Create(ctx, env.RepositoryWriter, opt)
+	require.NoError(t, err)
+
+	for _, line := range logged {
+		require.NotContains(t, line, "checkpoint", "saving and replacing checkpoints works")
+	}
+
+	snaps, err := snapshot.ListSnapshots(ctx, env.Repository, testSource(t))
+	require.NoError(t, err)
+	require.Len(t, snaps, 1, "the run's own checkpoints are gone")
+	require.Equal(t, man.ID, snaps[0].ID)
+	require.Empty(t, snaps[0].IncompleteReason)
+}
+
+func TestCreate_checkpointsDisabled(t *testing.T) {
+	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
+
+	ntfsData := testVolumeData()
+	errNetwork := errors.New("connection reset")
+
+	opt := testCreateOptions(t, ntfsData, randomBytes(2, 1<<20))
+	opt.CheckpointInterval = -1
+	failAfterFourChunks(opt, ntfsData, errNetwork)
+
+	_, _, err := Create(ctx, env.RepositoryWriter, opt)
+	require.ErrorIs(t, err, errNetwork)
+
+	snaps, err := snapshot.ListSnapshots(ctx, env.Repository, testSource(t))
+	require.NoError(t, err)
+	require.Empty(t, snaps)
+}
+
+func TestProgress_snapshotStopsAtTheFirstGap(t *testing.T) {
+	var p progress
+
+	oid, err := object.ParseID("aabbccdd")
+	require.NoError(t, err)
+
+	entries := make([]object.IndirectObjectEntry, 4)
+
+	p.beginVolume("p3-C.img", entries)
+	p.setChunk(&entries[0], oid)
+	p.setChunk(&entries[1], oid)
+	p.setChunk(&entries[3], oid) // written out of order
+
+	_, name, written := p.snapshot()
+	require.Equal(t, "p3-C.img", name)
+	require.Len(t, written, 2)
+
+	// a checkpoint's copy does not change with the volume
+	p.setChunk(&entries[2], oid)
+	require.Len(t, written, 2)
+
+	_, _, written = p.snapshot()
+	require.Len(t, written, 4)
+
+	p.endVolume()
+
+	_, name, written = p.snapshot()
+	require.Empty(t, name)
+	require.Empty(t, written)
 }
 
 func TestCreate_invalidOptions(t *testing.T) {

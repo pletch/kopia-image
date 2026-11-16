@@ -12,11 +12,18 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/kopia/kopia/fs"
+	"github.com/kopia/kopia/internal/clock"
 	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/snapshot/image"
 )
 
 const maxMetadataSize = 64 << 20
+
+// openRetryInterval is how long a failure to open a volume is remembered. A
+// failure may be a passing network error, so it must not stick; remembering
+// it briefly keeps a client that lists the folder repeatedly from fetching
+// from the repository each time.
+const openRetryInterval = 10 * time.Second
 
 // WithBrowsableVolumes returns dir unchanged unless it is the root of an image
 // snapshot. For an image root it adds, next to each NTFS volume image such as
@@ -79,6 +86,21 @@ func readMetadata(ctx context.Context, dir fs.Directory) (*image.Metadata, error
 	return &md, nil
 }
 
+// ReleaseVolumes closes the NTFS volumes that were opened through a directory
+// returned by WithBrowsableVolumes, releasing their caches. It does nothing
+// for other directories. The directory stays usable: a volume is opened again
+// when it is next accessed.
+func ReleaseVolumes(dir fs.Directory) {
+	b, ok := dir.(*browsableRoot)
+	if !ok {
+		return
+	}
+
+	for _, v := range b.volumes {
+		v.release()
+	}
+}
+
 // browsableRoot is an image snapshot root with a folder for each NTFS volume.
 type browsableRoot struct {
 	fs.Directory
@@ -117,23 +139,49 @@ type lazyVolume struct {
 	name    string
 	modTime time.Time
 
-	once sync.Once
-	root fs.Directory
-	err  error
+	mu sync.Mutex
+	// +checklocks:mu
+	vol *Volume
+	// +checklocks:mu
+	err error
+	// +checklocks:mu
+	failedAt time.Time
 }
 
+// open returns the volume's root, opening the volume on first use and again
+// after a failure or a release.
 func (l *lazyVolume) open() (fs.Directory, error) {
-	l.once.Do(func() {
-		vol, err := Open(l.ctx, l.rep, l.volume.ObjectID, l.name, Options{})
-		if err != nil {
-			l.err = err
-			return
-		}
+	l.mu.Lock()
+	defer l.mu.Unlock()
 
-		l.root = vol.Root()
-	})
+	if l.vol != nil {
+		return l.vol.Root(), nil
+	}
 
-	return l.root, l.err
+	if l.err != nil && clock.Now().Sub(l.failedAt) < openRetryInterval {
+		return nil, l.err
+	}
+
+	vol, err := Open(l.ctx, l.rep, l.volume.ObjectID, l.name, Options{})
+	if err != nil {
+		l.err, l.failedAt = err, clock.Now()
+		return nil, err
+	}
+
+	l.vol, l.err = vol, nil
+
+	return vol.Root(), nil
+}
+
+// release closes the volume if it is open.
+func (l *lazyVolume) release() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.vol != nil {
+		l.vol.Close()
+		l.vol = nil
+	}
 }
 
 func (l *lazyVolume) Name() string                     { return l.name }

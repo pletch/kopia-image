@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
+	"time"
 
 	"github.com/gofrs/flock"
 	"github.com/pkg/errors"
@@ -16,19 +18,47 @@ import (
 // ErrAlreadyRunning is returned when another image run holds the state lock.
 var ErrAlreadyRunning = errors.New("another kopia image create is running")
 
+// ShadowCopyRecord identifies a shadow copy a run created. Besides the ID it
+// holds what the shadow copy must look like, so that a later run removes it
+// only if it is still the same shadow copy.
+type ShadowCopyRecord struct {
+	ID string `json:"id"`
+
+	// Volume is the volume GUID path the shadow copy was taken of.
+	Volume string `json:"volume"`
+
+	// Created is the creation time Windows reports for the shadow copy.
+	Created time.Time `json:"created"`
+}
+
+// Matches reports whether a shadow copy of the given volume and creation
+// time is the recorded one.
+func (r ShadowCopyRecord) Matches(volume string, created time.Time) bool {
+	return r.Volume != "" && strings.EqualFold(r.Volume, volume) && r.Created.Equal(created)
+}
+
 // ShadowState records the shadow copies the current run created, in a file
 // that outlives the process. Shadow copies created through WMI persist across
 // reboots, so a run that crashes or loses power leaves them behind; the next
 // run removes the ones listed here. The state also holds an exclusive lock so
 // two runs never remove each other's shadow copies.
+//
+// Whoever can write the file chooses shadow copies for an administrator to
+// delete, so it belongs in a folder only administrators can write; see
+// PrepareStateDir.
 type ShadowState struct {
-	path string
-	lock *flock.Flock
-	ids  []string
+	path    string
+	lock    *flock.Flock
+	records []ShadowCopyRecord
 }
 
 type shadowStateFile struct {
-	ShadowCopyIDs []string `json:"shadowCopyIds"`
+	ShadowCopies []ShadowCopyRecord `json:"shadowCopies"`
+}
+
+// LockPath returns the path of the lock file of the state file at statePath.
+func LockPath(statePath string) string {
+	return statePath + ".lock"
 }
 
 // OpenShadowState locks and reads the state file at path, creating its
@@ -39,7 +69,7 @@ func OpenShadowState(path string) (*ShadowState, error) {
 		return nil, errors.Wrap(err, "unable to create state directory")
 	}
 
-	lock := flock.New(path + ".lock")
+	lock := flock.New(LockPath(path))
 
 	ok, err := lock.TryLock()
 	if err != nil {
@@ -61,7 +91,7 @@ func OpenShadowState(path string) (*ShadowState, error) {
 		var f shadowStateFile
 
 		err = json.Unmarshal(b, &f)
-		s.ids = f.ShadowCopyIDs
+		s.records = f.ShadowCopies
 	}
 
 	if err != nil {
@@ -71,20 +101,20 @@ func OpenShadowState(path string) (*ShadowState, error) {
 	return s, nil
 }
 
-// IDs returns the recorded shadow copy IDs.
-func (s *ShadowState) IDs() []string {
-	return slices.Clone(s.ids)
+// Records returns the recorded shadow copies.
+func (s *ShadowState) Records() []ShadowCopyRecord {
+	return slices.Clone(s.records)
 }
 
-// Add records a shadow copy ID and saves the state.
-func (s *ShadowState) Add(id string) error {
-	s.ids = append(s.ids, id)
+// Add records a shadow copy and saves the state.
+func (s *ShadowState) Add(r ShadowCopyRecord) error {
+	s.records = append(s.records, r)
 	return s.save()
 }
 
 // Remove forgets a shadow copy ID and saves the state.
 func (s *ShadowState) Remove(id string) error {
-	s.ids = slices.DeleteFunc(s.ids, func(v string) bool { return v == id })
+	s.records = slices.DeleteFunc(s.records, func(r ShadowCopyRecord) bool { return r.ID == id })
 	return s.save()
 }
 
@@ -94,7 +124,7 @@ func (s *ShadowState) Close() error {
 }
 
 func (s *ShadowState) save() error {
-	b, err := json.Marshal(shadowStateFile{ShadowCopyIDs: s.ids})
+	b, err := json.Marshal(shadowStateFile{ShadowCopies: s.records})
 	if err != nil {
 		return errors.Wrap(err, "unable to encode image state")
 	}

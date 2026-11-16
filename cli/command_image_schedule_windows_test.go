@@ -14,6 +14,7 @@ import (
 	"github.com/kopia/kopia/internal/vhdxtest"
 	"github.com/kopia/kopia/snapshot/image/disksource"
 	"github.com/kopia/kopia/snapshot/image/schedule"
+	"github.com/kopia/kopia/snapshot/image/securedir"
 	"github.com/kopia/kopia/tests/testenv"
 )
 
@@ -57,9 +58,18 @@ func TestImageScheduleRunsAsSystem(t *testing.T) {
 	require.FileExists(t, filepath.Join(configDir, "repository.config"))
 	require.FileExists(t, filepath.Join(configDir, "repository.config.kopia-password"))
 
-	dacl, err := schedule.DirectoryDACL(configDir)
+	// the tasks run a copy of kopia that only administrators can replace, and
+	// the password file is encrypted for this computer
+	require.FileExists(t, filepath.Join(configDir, "bin", "kopia.exe"))
+
+	passwordFile, err := os.ReadFile(filepath.Join(configDir, "repository.config.kopia-password"))
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(string(passwordFile), "dpapi:"), "the password is not stored in the clear")
+
+	dacl, err := securedir.Describe(configDir)
 	require.NoError(t, err)
 	t.Logf("config folder permissions: %v", dacl)
+	require.Contains(t, dacl, "O:BA", "owned by Administrators")
 	require.Contains(t, dacl, "D:P")
 	require.Contains(t, dacl, "(A;OICI;FA;;;SY)")
 	require.Contains(t, dacl, "(A;OICI;FA;;;BA)")

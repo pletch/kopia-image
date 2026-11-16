@@ -130,12 +130,16 @@ func (v *Volume) Fetches() int64 {
 	return v.cr.Fetches()
 }
 
-// Close releases the parser's caches.
+// Close releases the parser's caches and the cached image chunks. Entries of
+// the volume that are still in use keep working and fetch what they need
+// again.
 func (v *Volume) Close() {
 	_ = v.call(func(ntfs *parser.NTFSContext) error {
 		ntfs.Close()
 		return nil
 	})
+
+	v.cr.purge()
 }
 
 // list returns the entries of the directory in an MFT entry.

@@ -31,7 +31,9 @@ type deviceTarget struct {
 	sectorSize int64
 }
 
-func openDevice(path string) (Target, error) {
+// openDevice opens a whole disk exclusively, also when readOnly, so that a
+// dry run reports a disk that is in use.
+func openDevice(path string, readOnly bool) (Target, error) {
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return nil, pkgerrors.Wrapf(err, "unable to resolve %v", path)
@@ -41,7 +43,12 @@ func openDevice(path string) (Target, error) {
 		return nil, pkgerrors.Errorf("%v is a partition; the target must be a whole disk", path)
 	}
 
-	f, err := os.OpenFile(resolved, os.O_RDWR|unix.O_EXCL, 0)
+	flags := os.O_RDWR
+	if readOnly {
+		flags = os.O_RDONLY
+	}
+
+	f, err := os.OpenFile(resolved, flags|unix.O_EXCL, 0)
 	if err != nil {
 		return nil, pkgerrors.Wrapf(err, "unable to open %v exclusively (is it mounted or in use?)", path)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"os"
+	"strings"
 
 	"github.com/pkg/errors"
 )
@@ -27,9 +28,22 @@ func (filePasswordStorage) GetPassword(ctx context.Context, configFile string) (
 		return "", errors.Wrap(err, "error reading persisted password")
 	}
 
-	s, err := base64.StdEncoding.DecodeString(string(b))
+	encoded, machineProtected := strings.CutPrefix(string(b), machineProtectedPrefix)
+
+	s, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		return "", errors.Wrap(err, "error invalid persisted password")
+	}
+
+	if machineProtected {
+		payload, err := unprotectForMachine(s)
+		if err != nil {
+			return "", errors.Wrap(err, "error decrypting persisted password")
+		}
+
+		if s, err = machinePayloadPassword(payload); err != nil {
+			return "", errors.Wrap(err, "error invalid persisted password")
+		}
 	}
 
 	log(ctx).Debugf("password for %v retrieved from password file", configFile)

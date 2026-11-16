@@ -47,20 +47,28 @@ func (opt *CreateOptions) writeImageObject(ctx context.Context, rep repo.Reposit
 	masked, isMasked := r.(maskedSource)
 
 	entries := make([]object.IndirectObjectEntry, (size+DefaultChunkSize-1)/DefaultChunkSize)
+	for i := range entries {
+		entries[i].Start = int64(i) * DefaultChunkSize
+		entries[i].Length = min(int64(DefaultChunkSize), size-entries[i].Start)
+	}
+
+	// checkpoints read the chunk list while it fills, so chunk objects are
+	// set through opt.progress from here on. A volume that fails stays in
+	// the progress, for the checkpoint of the failed run.
+	opt.progress.beginVolume(name, entries)
+
 	zeros := &zeroChunkCache{opt: opt, rep: rep, name: name}
 
 	eg, egctx := errgroup.WithContext(ctx)
 	eg.SetLimit(parallel)
 
 	readErr := func() error {
-		for i, total := 0, int64(0); total < size; i++ {
-			n := min(int64(DefaultChunkSize), size-total)
+		for i := range entries {
 			entry := &entries[i]
-			entry.Start, entry.Length = total, n
+			n := entry.Length
 
 			stats.ChunksTotal++
 			stats.BytesRead += n
-			total += n
 
 			if isMasked && masked.IsMasked(entry.Start, n) {
 				if err := zeros.fill(egctx, entry, &stats); err != nil {
@@ -99,9 +107,13 @@ func (opt *CreateOptions) writeImageObject(ctx context.Context, rep repo.Reposit
 				defer func() { buffers <- buf }()
 
 				oid, err := opt.writeChunk(egctx, rep, chunk, name)
-				entry.Object = oid
+				if err != nil {
+					return err
+				}
 
-				return err
+				opt.progress.setChunk(entry, oid)
+
+				return nil
 			})
 		}
 
@@ -113,8 +125,13 @@ func (opt *CreateOptions) writeImageObject(ctx context.Context, rep repo.Reposit
 	}
 
 	oid, err := opt.writeChunkList(ctx, rep, entries, name)
+	if err != nil {
+		return object.EmptyID, stats, err
+	}
 
-	return oid, stats, err
+	opt.progress.endVolume()
+
+	return oid, stats, nil
 }
 
 // chunkBuffers returns a pool of n chunk buffers.
@@ -230,7 +247,7 @@ func (z *zeroChunkCache) fill(ctx context.Context, entry *object.IndirectObjectE
 		return err
 	}
 
-	entry.Object = oid
+	z.opt.progress.setChunk(entry, oid)
 	stats.ZeroChunks++
 
 	return nil

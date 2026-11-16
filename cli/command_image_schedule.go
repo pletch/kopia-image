@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -18,6 +20,7 @@ import (
 	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/snapshot/image/disksource"
 	"github.com/kopia/kopia/snapshot/image/schedule"
+	"github.com/kopia/kopia/snapshot/image/securedir"
 )
 
 const (
@@ -25,6 +28,9 @@ const (
 	imageCreateTaskName     = "Image create"
 	imageCheckTaskName      = "Image check"
 	imageScheduleConfigName = "repository.config"
+
+	// imageScheduleExeDir holds the copy of kopia that the tasks run.
+	imageScheduleExeDir = "bin"
 )
 
 type commandImageSchedule struct {
@@ -48,6 +54,9 @@ type imageScheduleLocation struct {
 	taskFolder string
 	configDir  string
 	statePath  string
+
+	// defaultConfigDir is set when configDir is the folder under ProgramData.
+	defaultConfigDir bool
 }
 
 func (l *imageScheduleLocation) flags(cmd *kingpin.CmdClause) {
@@ -68,6 +77,7 @@ func (l *imageScheduleLocation) resolve() error {
 		}
 
 		l.configDir = filepath.Join(pd, "kopia", "image")
+		l.defaultConfigDir = true
 	}
 
 	if l.statePath == "" {
@@ -84,6 +94,12 @@ func (l *imageScheduleLocation) resolve() error {
 
 func (l *imageScheduleLocation) taskName(name string) string {
 	return strings.TrimSuffix(l.taskFolder, `\`) + `\` + name
+}
+
+// taskExe is the copy of kopia that the tasks run. The tasks run as SYSTEM,
+// so the program must be one that only administrators can replace.
+func (l *imageScheduleLocation) taskExe() string {
+	return filepath.Join(l.configDir, imageScheduleExeDir, "kopia.exe")
 }
 
 func (l *imageScheduleLocation) configFile() string {
@@ -126,7 +142,7 @@ func (c *commandImageScheduleInstall) setup(svc advancedAppServices, parent comm
 	cmd.Flag("check-at", "Time of day of the weekly image check (HH:MM)").Default("12:00").StringVar(&c.checkAt)
 	cmd.Flag("check-sample", "Percentage of chunks the weekly check fetches").Default("1").Float64Var(&c.checkSample)
 	cmd.Flag("check-ntfs", "Make the weekly check also check the NTFS file systems in the images (image check --ntfs)").BoolVar(&c.checkNTFS)
-	cmd.Flag("kopia-exe", "kopia executable the tasks run (default: this one)").Hidden().StringVar(&c.kopiaExe)
+	cmd.Flag("kopia-exe", "kopia executable copied for the tasks to run (default: this one)").Hidden().StringVar(&c.kopiaExe)
 	c.loc.flags(cmd)
 	cmd.Action(svc.repositoryReaderAction(c.run))
 	c.svc = svc
@@ -174,7 +190,8 @@ func (c *commandImageScheduleInstall) run(ctx context.Context, rep repo.Reposito
 		}
 	}
 
-	c.out.printStdout("The tasks run as SYSTEM with the repository connection in %v.\n", c.loc.configDir)
+	c.out.printStdout("The tasks run as SYSTEM, using the copy of kopia and the repository connection in %v.\n", c.loc.configDir)
+	c.out.printStdout("Run 'kopia image schedule install' again after upgrading kopia, so the tasks use the new version.\n")
 	c.out.printStdout("Create the first image now with 'kopia image schedule run', or interactively with 'kopia image create %v'.\n", strings.Join(c.volumes, " "))
 
 	return nil
@@ -192,12 +209,7 @@ func (c *commandImageScheduleInstall) tasks() (createTask, checkTask *schedule.T
 		return nil, nil, err
 	}
 
-	exe := c.kopiaExe
-	if exe == "" {
-		if exe, err = os.Executable(); err != nil {
-			return nil, nil, errors.Wrap(err, "unable to find the kopia executable")
-		}
-	}
+	exe := c.loc.taskExe()
 
 	common := []string{
 		"--config-file", c.loc.configFile(),
@@ -259,10 +271,10 @@ func (c *commandImageScheduleInstall) tasks() (createTask, checkTask *schedule.T
 	return createTask, checkTask, nil
 }
 
-// writeConfig clones the current repository connection into the secured
-// task folder, with its own cache and with the password in a file, because
-// SYSTEM cannot read the user's Windows Credential Manager. Snapshots keep
-// the current user@host.
+// writeConfig secures the task folder and puts into it a copy of kopia and a
+// clone of the current repository connection, with its own cache and with the
+// password in a file encrypted for this computer, because SYSTEM cannot read
+// the user's Windows Credential Manager. Snapshots keep the current user@host.
 func (c *commandImageScheduleInstall) writeConfig(ctx context.Context, rep repo.Repository) error {
 	password, err := c.svc.getPasswordFromFlags(ctx, false, true)
 	if err != nil {
@@ -274,8 +286,12 @@ func (c *commandImageScheduleInstall) writeConfig(ctx context.Context, rep repo.
 		return errors.Wrap(err, "unable to read the current repository connection")
 	}
 
-	if err := schedule.SecureDirectory(c.loc.configDir); err != nil {
-		return err //nolint:wrapcheck
+	if err := c.secureConfigDir(); err != nil {
+		return err
+	}
+
+	if err := c.installExecutable(); err != nil {
+		return err
 	}
 
 	clone := *lc
@@ -294,7 +310,7 @@ func (c *commandImageScheduleInstall) writeConfig(ctx context.Context, rep repo.
 		return errors.Wrap(err, "unable to write the repository connection")
 	}
 
-	if err := passwordpersist.File().PersistPassword(ctx, cfg, password); err != nil {
+	if err := passwordpersist.MachineFile().PersistPassword(ctx, cfg, password); err != nil {
 		return errors.Wrap(err, "unable to save the repository password")
 	}
 
@@ -305,6 +321,83 @@ func (c *commandImageScheduleInstall) writeConfig(ctx context.Context, rep repo.
 	}
 
 	return errors.Wrap(r.Close(ctx), "unable to close the repository")
+}
+
+// secureConfigDir makes the task folder one that only SYSTEM and
+// Administrators can open. The default folder's parent under ProgramData is
+// secured first, because whoever controls a parent can replace the folder.
+func (c *commandImageScheduleInstall) secureConfigDir() error {
+	if c.loc.defaultConfigDir {
+		if err := securedir.Secure(filepath.Dir(c.loc.configDir), securedir.UsersRead); err != nil {
+			return errors.Wrap(err, "unable to secure the image state folder")
+		}
+	}
+
+	return errors.Wrap(securedir.Secure(c.loc.configDir, securedir.AdminsOnly), "unable to secure the task folder")
+}
+
+// installExecutable copies kopia into the secured task folder. The tasks run
+// the copy as SYSTEM: the original may be in a folder its user can write,
+// such as a per-user installation, and replacing it would then run any
+// program as SYSTEM.
+func (c *commandImageScheduleInstall) installExecutable() error {
+	src := c.kopiaExe
+	if src == "" {
+		exe, err := os.Executable()
+		if err != nil {
+			return errors.Wrap(err, "unable to find the kopia executable")
+		}
+
+		src = exe
+	}
+
+	dst := c.loc.taskExe()
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil { //nolint:mnd
+		return errors.Wrapf(err, "unable to create %v", filepath.Dir(dst))
+	}
+
+	// installing again with the tasks' own copy
+	if srcInfo, err := os.Stat(src); err == nil {
+		if dstInfo, err := os.Stat(dst); err == nil && os.SameFile(srcInfo, dstInfo) {
+			return nil
+		}
+	}
+
+	if err := copyFile(src, dst); err != nil {
+		return errors.Wrapf(err, "unable to copy %v to %v; if a scheduled image run is in progress, wait for it to finish", src, dst)
+	}
+
+	return nil
+}
+
+// copyFile replaces dst with a copy of src, without leaving a partial dst.
+func copyFile(src, dst string) (err error) {
+	in, err := os.Open(src) //nolint:gosec
+	if err != nil {
+		return err //nolint:wrapcheck
+	}
+	defer in.Close() //nolint:errcheck
+
+	tmp := dst + ".new"
+
+	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o700) //nolint:gosec,mnd
+	if err != nil {
+		return err //nolint:wrapcheck
+	}
+
+	defer func() {
+		if err != nil {
+			err = stderrors.Join(err, os.Remove(tmp))
+		}
+	}()
+
+	_, copyErr := io.Copy(out, in)
+	if joined := stderrors.Join(copyErr, out.Close()); joined != nil {
+		return joined
+	}
+
+	return os.Rename(tmp, dst) //nolint:wrapcheck
 }
 
 func parseWeekdays(s string) ([]time.Weekday, error) {
