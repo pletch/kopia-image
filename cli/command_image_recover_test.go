@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -99,7 +100,20 @@ func writeJSONFile(t *testing.T, v any) string {
 	return p
 }
 
+// skipUnlessDisksCanBeListed skips tests of image recover on systems where
+// it cannot list the disks, which it does even when restoring to a file
+// (see imagerestore/target_other.go).
+func skipUnlessDisksCanBeListed(t *testing.T) {
+	t.Helper()
+
+	if runtime.GOOS != "linux" && runtime.GOOS != "windows" {
+		t.Skip("image recover lists disks, which kopia supports on Linux and Windows only")
+	}
+}
+
 func TestImageRecoverUnattendedToFile(t *testing.T) {
+	skipUnlessDisksCanBeListed(t)
+
 	env := testenv.NewCLITest(t, testenv.RepoFormatNotImportant, testenv.NewInProcRunner(t))
 	env.RunAndExpectSuccess(t, "repo", "create", "filesystem", "--path", env.RepoDir)
 
@@ -138,6 +152,8 @@ func TestImageRecoverUnattendedToFile(t *testing.T) {
 }
 
 func TestImageRecoverRequiresConfirmation(t *testing.T) {
+	skipUnlessDisksCanBeListed(t)
+
 	env := testenv.NewCLITest(t, testenv.RepoFormatNotImportant, testenv.NewInProcRunner(t))
 	env.RunAndExpectSuccess(t, "repo", "create", "filesystem", "--path", env.RepoDir)
 	createRecoverTestImage(t, env, "desktop")
