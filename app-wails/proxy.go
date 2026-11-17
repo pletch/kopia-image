@@ -207,6 +207,13 @@ func localDirectory(path string) (string, error) {
 	if runtime.GOOS == "windows" {
 		// "C:\..." only: UNC and device paths start with two separators
 		path = filepath.FromSlash(path)
+
+		// a mounted snapshot is reported as a bare drive such as "Z:": show
+		// its root, not the drive's current folder
+		if len(path) == 2 && path[1] == ':' {
+			path += `\`
+		}
+
 		if vol := filepath.VolumeName(path); len(vol) != 2 || vol[1] != ':' || !strings.HasPrefix(path[2:], `\`) {
 			return "", errNotLocalDirectory
 		}

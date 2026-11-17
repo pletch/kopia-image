@@ -135,6 +135,12 @@ func TestLocalDirectory(t *testing.T) {
 		if got, err := localDirectory(filepath.ToSlash(dir)); err != nil || got != filepath.Clean(dir) {
 			t.Fatalf("got %q, %v", got, err)
 		}
+
+		// a mounted snapshot is reported as a bare drive
+		drive := filepath.VolumeName(dir)
+		if got, err := localDirectory(drive); err != nil || got != drive+`\` {
+			t.Fatalf("got %q, %v", got, err)
+		}
 	}
 }
 
@@ -166,8 +172,8 @@ func TestLocalDirectory_refusesEverythingElse(t *testing.T) {
 			`\\?\C:\Windows`,
 			`\\.\C:\Windows`,
 			`\\localhost\C$\Windows`,
-			`C:`,
 			`C:Windows`,
+			`Q:`, // no such drive
 			`\Windows`,
 		)
 	}
