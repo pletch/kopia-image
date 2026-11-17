@@ -125,3 +125,21 @@ func ProgramDataDir() (string, error) {
 	dir, err := windows.KnownFolderPath(windows.FOLDERID_ProgramData, 0)
 	return dir, errors.Wrap(err, "unable to find ProgramData")
 }
+
+// SetEnabled enables or disables a task: a disabled task does not start on
+// its schedule, nor retry a failed run. It returns ErrTaskNotFound if there
+// is no such task.
+func SetEnabled(ctx context.Context, name string, enabled bool) error {
+	if _, err := Query(ctx, name); err != nil {
+		return err
+	}
+
+	flag := "/DISABLE"
+	if enabled {
+		flag = "/ENABLE"
+	}
+
+	_, err := schtasks(ctx, "/Change", "/TN", name, flag)
+
+	return err
+}

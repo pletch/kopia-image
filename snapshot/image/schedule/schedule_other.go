@@ -21,3 +21,6 @@ func Query(context.Context, string) (map[string]string, error) { return nil, Err
 
 // ProgramDataDir is not supported on this platform.
 func ProgramDataDir() (string, error) { return "", ErrNotSupported }
+
+// SetEnabled is not supported on this platform.
+func SetEnabled(context.Context, string, bool) error { return ErrNotSupported }

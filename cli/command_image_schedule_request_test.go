@@ -3,6 +3,7 @@ package cli_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -101,4 +102,24 @@ func TestImageScheduleUpdate(t *testing.T) {
 
 	out = env.RunAndExpectSuccess(t, append([]string{"image", "schedule", "update", "--check"}, loc...)...)
 	require.Equal(t, []string{"up-to-date " + repo.BuildVersion}, out)
+}
+
+// TestImageSchedulePause_notScheduled checks that pause and resume say when
+// there is nothing to pause, and record it for KopiaUI.
+func TestImageSchedulePause_notScheduled(t *testing.T) {
+	env := testenv.NewCLITest(t, testenv.RepoFormatNotImportant, testenv.NewInProcRunner(t))
+
+	stateDir := t.TempDir()
+	loc := []string{"--task-folder", `\KopiaTestNone`, "--config-dir", filepath.Join(t.TempDir(), "image"), "--state-file", filepath.Join(stateDir, "state.json")}
+
+	for _, op := range []string{"pause", "resume"} {
+		_, stderr := env.RunAndExpectFailure(t, append([]string{"image", "schedule", op, "--request-id", op}, loc...)...)
+		require.Contains(t, strings.Join(stderr, "\n"), "not scheduled")
+
+		req, err := schedule.ReadRequest(schedule.RequestPath(stateDir))
+		require.NoError(t, err)
+		require.Equal(t, op, req.ID)
+		require.Equal(t, op, req.Operation)
+		require.False(t, req.Success)
+	}
 }

@@ -38,6 +38,10 @@ type Settings struct {
 	CheckSample float64 `json:"checkSample"`
 	CheckNTFS   bool    `json:"checkNtfs"`
 
+	// Paused is set while "kopia image schedule pause" keeps the tasks from
+	// starting.
+	Paused bool `json:"paused,omitempty"`
+
 	// KopiaVersion is the version of the copy of kopia the tasks run.
 	KopiaVersion string    `json:"kopiaVersion"`
 	InstalledAt  time.Time `json:"installedAt"`

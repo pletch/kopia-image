@@ -96,6 +96,28 @@ func TestImageScheduleRunsAsSystem(t *testing.T) {
 	require.Contains(t, props["Next Run Time"], "3:17")
 	require.Equal(t, "SYSTEM", props["Run As User"])
 
+	// pause and resume keep the settings and tell the web UI
+	env.RunAndExpectSuccess(t, append([]string{"image", "schedule", "pause"}, loc...)...)
+
+	props, err = schedule.Query(t.Context(), testTaskFolder+`\Image create`)
+	require.NoError(t, err)
+	require.Equal(t, "Disabled", props["Scheduled Task State"])
+
+	settings, err = schedule.ReadSettings(schedule.SettingsPath(stateDir))
+	require.NoError(t, err)
+	require.True(t, settings.Paused)
+	require.Equal(t, "03:17", settings.At)
+
+	env.RunAndExpectSuccess(t, append([]string{"image", "schedule", "resume"}, loc...)...)
+
+	props, err = schedule.Query(t.Context(), testTaskFolder+`\Image create`)
+	require.NoError(t, err)
+	require.Equal(t, "Enabled", props["Scheduled Task State"])
+
+	settings, err = schedule.ReadSettings(schedule.SettingsPath(stateDir))
+	require.NoError(t, err)
+	require.False(t, settings.Paused)
+
 	// run the task now: Task Scheduler runs kopia as SYSTEM
 	env.RunAndExpectSuccess(t, append([]string{"image", "schedule", "run"}, loc...)...)
 

@@ -38,6 +38,8 @@ type commandImageSchedule struct {
 	run     commandImageScheduleRun
 	remove  commandImageScheduleRemove
 	update  commandImageScheduleUpdate
+	pause   commandImageSchedulePause
+	resume  commandImageSchedulePause
 }
 
 func (c *commandImageSchedule) setup(svc advancedAppServices, parent commandParent) {
@@ -47,6 +49,8 @@ func (c *commandImageSchedule) setup(svc advancedAppServices, parent commandPare
 	c.run.setup(svc, cmd)
 	c.remove.setup(svc, cmd)
 	c.update.setup(svc, cmd)
+	c.pause.setup(svc, cmd, false)
+	c.resume.setup(svc, cmd, true)
 }
 
 // imageScheduleLocation names the scheduled tasks and the folder holding
