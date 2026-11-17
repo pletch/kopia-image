@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -40,15 +41,17 @@ const (
 )
 
 type commandImageRecoveryMedia struct {
-	create commandImageRecoveryMediaCreate
-	status commandImageRecoveryMediaStatus
-	kit    commandImageRecoveryMediaKit
+	create   commandImageRecoveryMediaCreate
+	status   commandImageRecoveryMediaStatus
+	register commandImageRecoveryMediaRegister
+	kit      commandImageRecoveryMediaKit
 }
 
 func (c *commandImageRecoveryMedia) setup(svc advancedAppServices, parent commandParent) {
 	cmd := parent.Command("recovery-media", "Build bootable media that restores this computer's images.")
 	c.create.setup(svc, cmd)
 	c.status.setup(svc, cmd)
+	c.register.setup(svc, cmd)
 	c.kit.setup(svc, cmd)
 }
 
@@ -151,13 +154,20 @@ func (c *commandImageRecoveryMediaCreate) run(ctx context.Context, rep repo.Repo
 		return err
 	}
 
+	rec := m.record(built, target.String(), c.connectFrom, c.embedPassword)
+
+	// other computers register the media from this copy
+	if err := recoverymedia.WriteRecord(filepath.Join(built.MediaDir, recoverymedia.MediaRecordFile), rec.ForMedia(m.computer)); err != nil {
+		return err //nolint:wrapcheck
+	}
+
 	c.out.printStdout("Writing the media to %v\n", target)
 
 	if err := c.write(ctx, built, target); err != nil {
 		return err
 	}
 
-	if err := recoverymedia.WriteRecord(c.recordFile, m.record(built, target.String(), c.connectFrom, c.embedPassword)); err != nil {
+	if err := recoverymedia.WriteRecord(c.recordFile, rec); err != nil {
 		return err //nolint:wrapcheck
 	}
 
@@ -634,6 +644,7 @@ func (m *recoveryMedia) record(built *recoverymedia.BuildResult, target, connect
 		CACerts:          m.caCerts,
 		Disks:            map[string]string{},
 		PasswordEmbedded: passwordEmbedded,
+		Repository:       recoverymedia.DescribeRepository(m.conn),
 	}
 
 	for _, d := range m.disks {
@@ -646,12 +657,153 @@ func (m *recoveryMedia) record(built *recoverymedia.BuildResult, target, connect
 }
 
 type commandImageRecoveryMediaStatus struct {
+	recordFile string
+
 	svc advancedAppServices
 	out textOutput
 }
 
+// recoveryMediaAdvice says what to do about media that no longer matches.
+func recoveryMediaAdvice(r *recoverymedia.Record) string {
+	if r.Shared() {
+		return fmt.Sprintf("Build new media on %v and register it with 'kopia image recovery-media register', or build media here with 'kopia image recovery-media create'", r.BuiltOn)
+	}
+
+	return "Build new media with 'kopia image recovery-media create'"
+}
+
+// commandImageRecoveryMediaRegister records media built on another computer
+// as this computer's recovery media, so that status and the Images page check
+// it instead of reporting that this computer has none.
+type commandImageRecoveryMediaRegister struct {
+	media      string
+	force      bool
+	recordFile string
+
+	svc advancedAppServices
+	out textOutput
+}
+
+func (c *commandImageRecoveryMediaRegister) setup(svc advancedAppServices, parent commandParent) {
+	cmd := parent.Command("register", "Use recovery media built on another computer for this one, so that status and the Images page check it. Run as administrator.")
+	cmd.Arg("media", `The media's drive or folder, such as E:\, or its `+recoverymedia.MediaRecordFile).Required().StringVar(&c.media)
+	cmd.Flag("force", "Register even though this computer reaches the repository differently than the media").BoolVar(&c.force)
+	cmd.Flag("record-file", "File recording the media (default: ProgramData\\kopia\\recovery-media.json)").Hidden().StringVar(&c.recordFile)
+	cmd.Action(svc.repositoryReaderAction(c.run))
+
+	c.svc = svc
+	c.out.setup(svc)
+}
+
+func (c *commandImageRecoveryMediaRegister) run(ctx context.Context, rep repo.Repository) error {
+	if !isWindows() {
+		return recoverymedia.ErrNotSupported
+	}
+
+	recordFile, replacesLegacy, err := c.recordPath()
+	if err != nil {
+		return err
+	}
+
+	r, err := readMediaRecord(c.media)
+	if err != nil {
+		return err
+	}
+
+	if host, _ := os.Hostname(); strings.EqualFold(r.BuiltOn, host) {
+		return errors.New("this media was built on this computer, which recorded it when building it")
+	}
+
+	lc, err := repo.LoadConfigFromFile(c.svc.repositoryConfigFileName())
+	if err != nil {
+		return errors.Wrap(err, "unable to read this computer's repository connection")
+	}
+
+	local := recoverymedia.DescribeRepository(lc)
+	if r.Repository != local {
+		if !c.force {
+			return errors.Errorf("the media leads to %v, but this computer uses %v; if both are the same repository, register with --force", r.Repository, local)
+		}
+
+		c.out.printStderr("The media leads to %v; this computer uses %v.\n", r.Repository, local)
+	}
+
+	// later checks compare with how this computer reaches the repository now
+	r.Repository = local
+	r.Target = c.media
+
+	if err := recoverymedia.WriteRecord(recordFile, r); err != nil {
+		return err //nolint:wrapcheck
+	}
+
+	if replacesLegacy {
+		if err := recoverymedia.RemoveLegacyRecord(); err != nil {
+			log(ctx).Warnf("%v", err)
+		}
+	}
+
+	c.out.printStdout("Registered the recovery media built on %v %v with kopia %v as this computer's.\n", r.BuiltOn, formatTimestamp(r.BuiltAt), r.KopiaVersion)
+	c.out.printStdout("It has the storage and network drivers of %v. Check that it works here: boot this computer from it, or restore one of its images to a file with 'kopia image recover --target <file>'.\n", r.BuiltOn)
+
+	for _, f := range recoveryMediaFindings(ctx, rep, r, c.svc.repositoryConfigFileName(), nil) {
+		c.out.printStdout("  - %v\n", f)
+	}
+
+	return nil
+}
+
+// recordPath returns where to record the media, and whether that is the
+// default place, which needs an administrator.
+func (c *commandImageRecoveryMediaRegister) recordPath() (path string, isDefault bool, err error) {
+	if c.recordFile != "" {
+		return c.recordFile, false, nil
+	}
+
+	if !recoverymedia.IsElevated() {
+		return "", false, errors.New("registering recovery media needs an administrator: run kopia from an elevated prompt")
+	}
+
+	stateDir, err := schedule.StateDir()
+	if err != nil {
+		return "", false, err //nolint:wrapcheck
+	}
+
+	if err := securedir.Secure(stateDir, securedir.UsersRead); err != nil {
+		return "", false, errors.Wrap(err, "unable to secure the image state folder")
+	}
+
+	p, err := recoverymedia.DefaultRecordPath()
+
+	return p, true, err //nolint:wrapcheck
+}
+
+// readMediaRecord reads the record that "kopia image recovery-media create"
+// put on media: from the media's root when given a drive or folder.
+func readMediaRecord(media string) (*recoverymedia.Record, error) {
+	p := media
+	if fi, err := os.Stat(media); err == nil && fi.IsDir() {
+		p = filepath.Join(media, recoverymedia.MediaRecordFile)
+	}
+
+	r, err := recoverymedia.ReadRecord(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, errors.Errorf("%v has no %v: build the media again with this version of kopia, which puts it there", media, recoverymedia.MediaRecordFile)
+	}
+
+	if err != nil {
+		return nil, err //nolint:wrapcheck
+	}
+
+	if !r.Shared() {
+		return nil, errors.Errorf("%v does not name the computer that built the media", p)
+	}
+
+	return r, nil
+}
+
 func (c *commandImageRecoveryMediaStatus) setup(svc advancedAppServices, parent commandParent) {
 	cmd := parent.Command("status", "Say whether the last recovery media built still matches this computer.")
+	cmd.Flag("record-file", "File recording the media (default: ProgramData\\kopia\\recovery-media.json)").Hidden().StringVar(&c.recordFile)
 	cmd.Action(svc.repositoryReaderAction(c.run))
 
 	c.svc = svc
@@ -663,9 +815,19 @@ func (c *commandImageRecoveryMediaStatus) run(ctx context.Context, rep repo.Repo
 		return recoverymedia.ErrNotSupported
 	}
 
-	r, err := recoverymedia.ReadDefaultRecord()
+	var (
+		r   *recoverymedia.Record
+		err error
+	)
+
+	if c.recordFile != "" {
+		r, err = recoverymedia.ReadRecord(c.recordFile)
+	} else {
+		r, err = recoverymedia.ReadDefaultRecord()
+	}
+
 	if errors.Is(err, os.ErrNotExist) {
-		c.out.printStdout("No recovery media was built on this computer. Build it with 'kopia image recovery-media create'.\n")
+		c.out.printStdout("No recovery media was built on this computer. Build it with 'kopia image recovery-media create', or register media built on another computer with 'kopia image recovery-media register'.\n")
 		return nil
 	}
 
@@ -673,7 +835,11 @@ func (c *commandImageRecoveryMediaStatus) run(ctx context.Context, rep repo.Repo
 		return err //nolint:wrapcheck
 	}
 
-	c.out.printStdout("Recovery media built %v with kopia %v, written to %v.\n", formatTimestamp(r.BuiltAt), r.KopiaVersion, r.Target)
+	if r.Shared() {
+		c.out.printStdout("Recovery media built on %v %v with kopia %v, registered from %v.\n", r.BuiltOn, formatTimestamp(r.BuiltAt), r.KopiaVersion, r.Target)
+	} else {
+		c.out.printStdout("Recovery media built %v with kopia %v, written to %v.\n", formatTimestamp(r.BuiltAt), r.KopiaVersion, r.Target)
+	}
 
 	findings := recoveryMediaFindings(ctx, rep, r, c.svc.repositoryConfigFileName(), nil)
 	if len(findings) == 0 {
@@ -681,7 +847,7 @@ func (c *commandImageRecoveryMediaStatus) run(ctx context.Context, rep repo.Repo
 		return nil
 	}
 
-	c.out.printStdout("Build new media with 'kopia image recovery-media create':\n")
+	c.out.printStdout("%v:\n", recoveryMediaAdvice(r))
 
 	for _, f := range findings {
 		c.out.printStdout("  - %v\n", f)

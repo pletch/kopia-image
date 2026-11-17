@@ -267,6 +267,7 @@ func readRecoveryMedia(path string) (*serverapi.ImageRecoveryMedia, error) {
 		KopiaVersion:     r.KopiaVersion,
 		Target:           r.Target,
 		PasswordEmbedded: r.PasswordEmbedded,
+		BuiltOn:          r.BuiltOn,
 	}, nil
 }
 

@@ -240,6 +240,17 @@ func TestImagesStatus(t *testing.T) {
 	require.NotNil(t, st.RecoveryMedia)
 	require.Equal(t, "usb", st.RecoveryMedia.Target)
 	require.True(t, start.Equal(st.RecoveryMedia.BuiltAt))
+	require.Empty(t, st.RecoveryMedia.BuiltOn)
+
+	// media built on another computer and registered for this one
+	require.NoError(t, recoverymedia.WriteRecord(filepath.Join(host.dir, recoverymedia.RecordFileName), &recoverymedia.Record{
+		BuiltAt: start, KopiaVersion: "v1", Target: `E:\`, BuiltOn: "DESKTOP",
+	}))
+
+	st, err = serverapi.ImageStatus(ctx, cli)
+	require.NoError(t, err)
+	require.Equal(t, "DESKTOP", st.RecoveryMedia.BuiltOn)
+	require.Equal(t, `E:\`, st.RecoveryMedia.Target)
 
 	// a damaged status file is reported, the rest still shows
 	require.NoError(t, os.WriteFile(filepath.Join(host.dir, "image-last-run.json"), []byte("{"), 0o600))

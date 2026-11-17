@@ -132,6 +132,9 @@ type ImageRecoveryMedia struct {
 	KopiaVersion     string    `json:"kopiaVersion"`
 	Target           string    `json:"target"`
 	PasswordEmbedded bool      `json:"passwordEmbedded,omitempty"`
+
+	// BuiltOn is the computer that built media registered for this one.
+	BuiltOn string `json:"builtOn,omitempty"`
 }
 
 // RunImageTaskResponse is the response of starting the scheduled image task.

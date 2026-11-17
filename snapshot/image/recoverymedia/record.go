@@ -28,6 +28,11 @@ const (
 	// kept in the image state folder.
 	RecordFileName = "recovery-media.json"
 
+	// MediaRecordFile is the copy of the record at the root of the media,
+	// which "kopia image recovery-media register" reads to use the media for
+	// other computers. It holds no secrets.
+	MediaRecordFile = "kopia-recovery-media.json"
+
 	// MaxMediaAge is the age after which media is reported as old.
 	MaxMediaAge = 180 * 24 * time.Hour
 )
@@ -57,6 +62,34 @@ type Record struct {
 	Disks map[string]string `json:"disks"`
 
 	PasswordEmbedded bool `json:"passwordEmbedded,omitempty"`
+
+	// BuiltOn is the computer that built the media. It is set in the copy on
+	// the media and when a computer registers media built on another one;
+	// the builder's own record leaves it empty.
+	BuiltOn string `json:"builtOn,omitempty"`
+
+	// Repository describes the repository the media leads to (see
+	// DescribeRepository); for registered media, as this computer reached it
+	// when registering.
+	Repository string `json:"repository,omitempty"`
+}
+
+// Shared tells whether the record is of media built on another computer.
+func (r *Record) Shared() bool {
+	return r.BuiltOn != ""
+}
+
+// ForMedia returns the copy of the record to put on the media built on
+// computer: without the builder's local paths and disks.
+func (r *Record) ForMedia(computer string) *Record {
+	c := *r
+	c.BuiltOn = computer
+	c.Target = ""
+	c.WinRE = ""
+	c.ConnectFrom = ""
+	c.Disks = nil
+
+	return &c
 }
 
 // DefaultRecordPath returns where "kopia image recovery-media create"
@@ -194,6 +227,12 @@ type Current struct {
 
 // Stale returns why media built as recorded no longer matches the
 // computer, or nothing when it does. Server checks need the network.
+//
+// Media built on another computer is not checked against this computer's
+// recovery environment, which it is not built from, nor against its disks,
+// which its recovery kit does not describe; its repository is compared by
+// where it leads rather than by the exact connection, which differs from
+// computer to computer.
 func (r *Record) Stale(ctx context.Context, cur *Current) []string {
 	var out []string
 
@@ -201,18 +240,26 @@ func (r *Record) Stale(ctx context.Context, cur *Current) []string {
 		out = append(out, fmt.Sprintf("kopia is now %v; the media has %v", cur.KopiaVersion, r.KopiaVersion))
 	}
 
-	if cur.WinREDigest != "" && cur.WinREDigest != r.WinREDigest {
+	if !r.Shared() && cur.WinREDigest != "" && cur.WinREDigest != r.WinREDigest {
 		out = append(out, "Windows updated its recovery environment, which the media is built from; old media may stop booting with Secure Boot on")
 	}
 
 	if cur.Connection != nil {
-		if ConnectionDigest(cur.Connection) != r.ConnectionDigest {
+		if r.Shared() {
+			if r.Repository != "" && DescribeRepository(cur.Connection) != r.Repository {
+				out = append(out, "the repository connection changed")
+			}
+		} else if ConnectionDigest(cur.Connection) != r.ConnectionDigest {
 			out = append(out, "the repository connection changed")
 		}
 
 		if err := CheckServerTrust(ctx, cur.Connection, r.CACerts); err != nil {
 			out = append(out, err.Error())
 		}
+	}
+
+	if r.Shared() {
+		return append(out, r.ageFinding(cur.Now)...)
 	}
 
 	sources := make([]string, 0, len(cur.Layouts))
@@ -231,11 +278,15 @@ func (r *Record) Stale(ctx context.Context, cur *Current) []string {
 		}
 	}
 
-	if age := cur.Now.Sub(r.BuiltAt); age > MaxMediaAge {
-		out = append(out, fmt.Sprintf("the media is %v days old", int(age.Hours()/24))) //nolint:mnd
+	return append(out, r.ageFinding(cur.Now)...)
+}
+
+func (r *Record) ageFinding(now time.Time) []string {
+	if age := now.Sub(r.BuiltAt); age > MaxMediaAge {
+		return []string{fmt.Sprintf("the media is %v days old", int(age.Hours()/24))} //nolint:mnd
 	}
 
-	return out
+	return nil
 }
 
 // CheckServerTrust checks that a connection's server is still trusted the

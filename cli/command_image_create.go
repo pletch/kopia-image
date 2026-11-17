@@ -272,7 +272,7 @@ func (c *commandImageCreate) checkRecoveryMedia(ctx context.Context, rep repo.Re
 	findings := recoveryMediaFindings(ctx, rep, r, c.svc.repositoryConfigFileName(), layouts)
 
 	for _, f := range findings {
-		log(ctx).Warnf("Recovery media: %v. Build new media with 'kopia image recovery-media create'.", f)
+		log(ctx).Warnf("Recovery media: %v. %v.", f, recoveryMediaAdvice(r))
 	}
 
 	return findings
