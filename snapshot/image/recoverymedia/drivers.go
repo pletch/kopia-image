@@ -99,6 +99,68 @@ func ParseDriverList(out string) []Driver {
 	return drivers
 }
 
+// softwareDevicePrefixes start the instance IDs of devices that software
+// creates, such as virtual network adapters, rather than hardware.
+var (
+	softwareDevicePrefixes = []string{`ROOT\`, `SWD\`, `SW\`, `HTREE\`}
+	instanceIDRE           = regexp.MustCompile(`^[A-Za-z0-9_]+\\\S`)
+)
+
+// ParseDeviceDrivers parses the output of "pnputil /enum-devices /connected"
+// and returns the published names, in lower case, of the third-party drivers
+// that hardware devices use. Like ParseDriverList, it recognizes fields by
+// their values: a device's instance ID comes first, its driver is oemN.inf.
+// It returns nil when the output lists no device, as when pnputil does not
+// know the command.
+func ParseDeviceDrivers(out string) map[string]bool {
+	var used map[string]bool
+
+	var instanceID, driver string
+
+	flush := func() {
+		if instanceIDRE.MatchString(instanceID) && used == nil {
+			used = map[string]bool{}
+		}
+
+		if driver != "" && instanceIDRE.MatchString(instanceID) && !slices.ContainsFunc(softwareDevicePrefixes, func(p string) bool {
+			return strings.HasPrefix(strings.ToUpper(instanceID), p)
+		}) {
+			used[strings.ToLower(driver)] = true
+		}
+
+		instanceID, driver = "", ""
+	}
+
+	for line := range strings.SplitSeq(strings.ReplaceAll(out, "\r", ""), "\n") {
+		_, value, ok := strings.Cut(line, ":")
+		if !ok {
+			if strings.TrimSpace(line) == "" {
+				flush()
+			}
+
+			continue
+		}
+
+		value = strings.TrimSpace(value)
+
+		switch {
+		case instanceID == "":
+			instanceID = value
+		case publishedNameRE.MatchString(value):
+			driver = value
+		}
+	}
+
+	flush()
+
+	return used
+}
+
+// DriversInUse returns the drivers that used lists by published name.
+func DriversInUse(all []Driver, used map[string]bool) []Driver {
+	return slices.DeleteFunc(slices.Clone(all), func(d Driver) bool { return !used[strings.ToLower(d.Published)] })
+}
+
 // SelectDrivers returns the storage, network and USB drivers, the newest
 // version of each original INF only, ordered by class and name.
 func SelectDrivers(all []Driver) []Driver {

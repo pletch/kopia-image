@@ -103,3 +103,46 @@ func TestStartScript(t *testing.T) {
 	require.Contains(t, s, `X:\kopia\kopia.exe --config-file X:\kopia\repository.config --no-use-credential-manager --log-dir X:\kopia\logs image recover --recovery-file X:\kopia\kopia-recovery.json`)
 	require.Equal(t, "[LaunchApps]\r\n%SYSTEMROOT%\\System32\\cmd.exe, /c X:\\kopia\\start.cmd\r\n", WinpeshlINI())
 }
+
+const pnputilDevices = "Microsoft PnP Utility\r\n" +
+	"\r\n" +
+	"Instance ID:                PCI\\VEN_10EC&DEV_8125&SUBSYS_87D71043&REV_05\\01000000684CE00000\r\n" +
+	"Device Description:         Realtek Gaming 2.5GbE Family Controller\r\n" +
+	"Class Name:                 Net\r\n" +
+	"Class GUID:                 {4d36e972-e325-11ce-bfc1-08002be10318}\r\n" +
+	"Manufacturer Name:          Realtek\r\n" +
+	"Status:                     Started\r\n" +
+	"Driver Name:                OEM40.inf\r\n" +
+	"\r\n" +
+	// a virtual network adapter
+	"Instance ID:                ROOT\\NET\\0000\r\n" +
+	"Device Description:         VirtualBox Host-Only Ethernet Adapter\r\n" +
+	"Driver Name:                oem77.inf\r\n" +
+	"\r\n" +
+	"Instance ID:                SWD\\XvddEnum\\XvddRootDevice_Instance\r\n" +
+	"Driver Name:                oem78.inf\r\n" +
+	"\r\n" +
+	// a driver that comes with Windows, with German labels
+	"Instanz-ID:                 USB\\ROOT_HUB30\\4&1d2f3e4&0&0\r\n" +
+	"Gerätebeschreibung:         USB-Root-Hub (USB 3.0)\r\n" +
+	"Treibername:                usbhub3.inf\r\n" +
+	"\r\n" +
+	"Instanz-ID:                 PCI\\VEN_8086&DEV_09AB\\3&11583659&0&B8\r\n" +
+	"Treibername:                oem3.inf\r\n"
+
+func TestParseDeviceDrivers(t *testing.T) {
+	require.Equal(t, map[string]bool{"oem40.inf": true, "oem3.inf": true}, ParseDeviceDrivers(pnputilDevices))
+
+	// a computer whose hardware uses no third-party driver
+	require.Equal(t, map[string]bool{}, ParseDeviceDrivers("Microsoft PnP Utility\r\n\r\nInstance ID: USB\\ROOT_HUB30\\4&1\r\nDriver Name: usbhub3.inf\r\n"))
+
+	// pnputil without /enum-devices prints its usage
+	require.Nil(t, ParseDeviceDrivers("PNPUTIL [/add-driver <...>]\r\n\r\nCommands:\r\n  Add driver package:\r\n    pnputil /add-driver x:\\driver.inf\r\n"))
+}
+
+func TestDriversInUse(t *testing.T) {
+	// the Realtek driver in use is the older version of the two in the store
+	got := SelectDrivers(DriversInUse(ParseDriverList(pnputilOutput), map[string]bool{"oem41.inf": true}))
+	require.Len(t, got, 1)
+	require.Equal(t, "oem41.inf", got[0].Published)
+}
