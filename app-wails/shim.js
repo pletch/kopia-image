@@ -92,7 +92,42 @@
     createRecoveryMediaElevated: function (driverHosts) {
       return postElevated("create-recovery-media", { driverHosts: driverHosts || [] });
     },
+    // Lists the connected repositories as {id, description, active}, active
+    // marking the one this window shows.
+    listRepositories: function () {
+      return postJSON("repositories", {});
+    },
+    // Makes this window show another repository: the page then loads it.
+    switchRepository: function (id) {
+      return postOK("switch-repository", { id: id }).then(function () {
+        window.location.assign("/");
+      });
+    },
+    // Adds a repository to connect to and shows its setup page.
+    addRepository: function () {
+      return postOK("add-repository", {}).then(function () {
+        window.location.assign("/");
+      });
+    },
   };
+
+  function postOK(action, body) {
+    return post(action, body).then(function (r) {
+      if (!r.ok) {
+        return r.text().then(function (t) {
+          throw new Error(t.trim() || "HTTP " + r.status);
+        });
+      }
+
+      return r;
+    });
+  }
+
+  function postJSON(action, body) {
+    return postOK(action, body).then(function (r) {
+      return r.json();
+    });
+  }
 
   function postElevated(action, body) {
     return post(action, body).then(function (r) {

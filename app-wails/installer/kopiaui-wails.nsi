@@ -218,6 +218,7 @@ Section "Uninstall"
   Delete "$APPDATA\kopia\kopiaui-wails.log"
   Delete "$APPDATA\kopia\kopiaui-wails.log.1"
   Delete "$APPDATA\kopia\kopiaui-wails-windows.json"
+  Delete "$APPDATA\kopia\kopiaui-wails-state.json"
 
   DeleteRegKey HKCU "${UNINSTKEY}"
 SectionEnd

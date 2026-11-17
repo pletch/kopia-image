@@ -357,12 +357,112 @@ func (s *shell) stopAllServers() {
 	wg.Wait()
 }
 
+// windowName names a window that shows one repository whatever is chosen;
+// requests naming it are routed to that repository's server. The single
+// window is named mainWindowName and shows the chosen repository.
 func windowName(repoID string) string {
 	return windowNamePrefix + repoID
 }
 
+// mainWindowName is the name of the window, which shows the repository chosen
+// with the selector in the web UI or the tray menu.
+const mainWindowName = "main"
+
+// startingUpLabel describes a repository whose server has not said what it is.
+const startingUpLabel = "<starting up>"
+
+// switchRepository makes the window show another repository. A repository
+// added with "Connect To Another Repository..." and left without connecting
+// is forgotten, as when its window closed before.
+func (s *shell) switchRepository(repoID string) {
+	prev := s.configs.activeRepository()
+	if prev == repoID {
+		return
+	}
+
+	s.configs.setActiveRepository(repoID)
+	s.forgetIfDisconnected(prev)
+	s.statusChanged()
+}
+
+// forgetIfDisconnected forgets a repository added with "Connect To Another
+// Repository..." that was never connected, and stops its server.
+func (s *shell) forgetIfDisconnected(repoID string) {
+	if !s.configs.removeIfDisconnected(repoID) {
+		return
+	}
+
+	s.mu.Lock()
+	srv := s.servers[repoID]
+	delete(s.servers, repoID)
+	s.mu.Unlock()
+
+	if srv != nil {
+		go srv.stop()
+	}
+
+	s.statusChanged()
+}
+
+// windowTitleFor names the window after the repository it shows.
+func (s *shell) windowTitleFor(repoID string) string {
+	if srv := s.server(repoID); srv != nil {
+		if d := srv.describe(); d != "" && !strings.HasPrefix(d, "<") {
+			return d + " - " + windowTitle
+		}
+	}
+
+	return windowTitle
+}
+
+// repositoryInfo describes a repository for the selector in the web UI.
+type repositoryInfo struct {
+	ID          string `json:"id"`
+	Description string `json:"description"`
+	Active      bool   `json:"active"`
+}
+
+// repositories lists the repositories for the selector, marking the one the
+// requesting page shows.
+func (s *shell) repositories(current string) []repositoryInfo {
+	ids := s.configs.list()
+	result := make([]repositoryInfo, 0, len(ids))
+
+	for _, id := range ids {
+		d := startingUpLabel
+		if srv := s.server(id); srv != nil {
+			d = srv.describe()
+		}
+
+		result = append(result, repositoryInfo{ID: id, Description: d, Active: id == current})
+	}
+
+	return result
+}
+
+// updateWindowTitle names the window after the repository it shows.
+func (s *shell) updateWindowTitle() {
+	if s.app == nil {
+		return
+	}
+
+	if w, ok := s.app.Window.GetByName(mainWindowName); ok {
+		w.SetTitle(s.windowTitleFor(s.configs.activeRepository()))
+	}
+}
+
+// showRepoWindow shows the window with the given repository, reloading it
+// when it showed another one.
 func (s *shell) showRepoWindow(repoID string) {
-	if w, ok := s.app.Window.GetByName(windowName(repoID)); ok {
+	switched := s.configs.activeRepository() != repoID
+	s.switchRepository(repoID)
+
+	if w, ok := s.app.Window.GetByName(mainWindowName); ok {
+		if switched {
+			w.SetTitle(s.windowTitleFor(repoID))
+			w.SetURL("/")
+		}
+
 		if w.IsMinimised() {
 			w.Restore()
 		}
@@ -376,8 +476,8 @@ func (s *shell) showRepoWindow(repoID string) {
 
 	// Created hidden so the remembered geometry is applied before it appears.
 	w := s.app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name:            windowName(repoID),
-		Title:           windowTitle,
+		Name:            mainWindowName,
+		Title:           s.windowTitleFor(repoID),
 		Width:           1000,
 		Height:          700,
 		MinWidth:        600,
@@ -422,19 +522,8 @@ func (s *shell) showRepoWindow(repoID string) {
 
 	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
 		// A repository added with "Connect To Another Repository..." that was never
-		// connected is forgotten when its window closes, like in Electron KopiaUI.
-		if s.configs.removeIfDisconnected(repoID) {
-			s.mu.Lock()
-			srv := s.servers[repoID]
-			delete(s.servers, repoID)
-			s.mu.Unlock()
-
-			if srv != nil {
-				go srv.stop()
-			}
-
-			s.statusChanged()
-		}
+		// connected is forgotten when the window closes, like in Electron KopiaUI.
+		s.forgetIfDisconnected(s.configs.activeRepository())
 	})
 
 	w.Show()
@@ -462,10 +551,9 @@ func (s *shell) screens() []screenInfo {
 	return result
 }
 
+// showAllWindows shows the window with the repository it showed last.
 func (s *shell) showAllWindows() {
-	for _, id := range s.configs.list() {
-		s.showRepoWindow(id)
-	}
+	s.showRepoWindow(s.configs.activeRepository())
 }
 
 func (s *shell) addRepository() {
@@ -479,13 +567,9 @@ func (s *shell) anyWindowVisible() bool {
 		return false
 	}
 
-	for _, w := range s.app.Window.GetAll() {
-		if strings.HasPrefix(w.Name(), windowNamePrefix) && w.IsVisible() && !w.IsMinimised() {
-			return true
-		}
-	}
+	w, ok := s.app.Window.GetByName(mainWindowName)
 
-	return false
+	return ok && w.IsVisible() && !w.IsMinimised()
 }
 
 func (s *shell) pollAll() {
@@ -497,14 +581,14 @@ func (s *shell) pollAll() {
 	}
 }
 
-func (s *shell) selectDirectory(repoID string) (string, error) {
+func (s *shell) selectDirectory() (string, error) {
 	dlg := s.app.Dialog.OpenFile().
 		CanChooseFiles(false).
 		CanChooseDirectories(true).
 		CanCreateDirectories(true).
 		SetTitle("Select Directory")
 
-	if w, ok := s.app.Window.GetByName(windowName(repoID)); ok {
+	if w, ok := s.app.Window.GetByName(mainWindowName); ok {
 		dlg = dlg.AttachToWindow(w)
 	}
 
@@ -648,15 +732,18 @@ func (s *shell) rebuildTrayMenu() {
 	menu.Add("KopiaUI-Wails " + buildVersion).SetEnabled(false)
 	menu.AddSeparator()
 
+	active := s.configs.activeRepository()
+
 	for _, id := range s.configs.list() {
-		label := "<starting up>"
+		label := startingUpLabel
 		if srv := s.server(id); srv != nil {
 			label = srv.describe()
 		}
 
 		repoID := id
 
-		menu.Add(label).
+		// the repository the window shows is checked
+		menu.AddRadio(label, id == active).
 			SetTooltip(label + " (" + repoID + ")").
 			OnClick(func(*application.Context) { s.showRepoWindow(repoID) })
 	}

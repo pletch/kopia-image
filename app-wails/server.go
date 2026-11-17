@@ -546,7 +546,7 @@ func (s *repoServer) describe() string {
 	case !running:
 		return "<server stopped>"
 	case st.StartingUp:
-		return "<starting up>"
+		return startingUpLabel
 	case !st.Connected && st.InitTaskID != "":
 		return "<initializing>"
 	case !st.Connected:

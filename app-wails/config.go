@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,7 +18,17 @@ const (
 
 	// notificationsFileName is shared with Electron KopiaUI (app/public/notifications.js).
 	notificationsFileName = "notifications.json"
+
+	// stateFileName holds which repository the window shows; it is this
+	// program's own.
+	stateFileName = "kopiaui-wails-state.json"
+
+	stateFilePermissions = 0o600
 )
+
+type shellState struct {
+	ActiveRepository string `json:"activeRepository"`
+}
 
 // configStore mirrors app/public/config.js: it discovers repository configs
 // (<id>.config) in the same directory KopiaUI and the Kopia CLI use, so this
@@ -29,6 +40,7 @@ type configStore struct {
 	firstRun bool
 	repos    map[string]bool
 	level    int
+	active   string
 }
 
 type notificationSettings struct {
@@ -98,6 +110,7 @@ func newConfigStore() (*configStore, error) {
 	}
 
 	c.loadNotificationLevel()
+	c.loadState()
 
 	return c, nil
 }
@@ -107,6 +120,10 @@ func (c *configStore) list() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	return c.listLocked()
+}
+
+func (c *configStore) listLocked() []string {
 	ids := make([]string, 0, len(c.repos))
 	for id := range c.repos {
 		ids = append(ids, id)
@@ -154,6 +171,69 @@ func (c *configStore) removeIfDisconnected(id string) bool {
 	c.mu.Unlock()
 
 	return true
+}
+
+// has reports whether id is a known repository.
+func (c *configStore) has(id string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.repos[id]
+}
+
+// activeRepository returns the repository the window shows: the one chosen
+// last, or the first one when that is gone.
+func (c *configStore) activeRepository() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.repos[c.active] {
+		return c.active
+	}
+
+	if ids := c.listLocked(); len(ids) > 0 {
+		return ids[0]
+	}
+
+	return defaultRepoID
+}
+
+// setActiveRepository chooses the repository the window shows and remembers
+// it for the next start.
+func (c *configStore) setActiveRepository(id string) {
+	c.mu.Lock()
+	changed := c.active != id
+	c.active = id
+	c.mu.Unlock()
+
+	if !changed {
+		return
+	}
+
+	b, err := json.Marshal(shellState{ActiveRepository: id})
+	if err != nil {
+		return
+	}
+
+	if err := os.WriteFile(c.stateFile(), b, stateFilePermissions); err != nil {
+		slog.Warn("unable to remember the repository the window shows", "err", err)
+	}
+}
+
+func (c *configStore) stateFile() string {
+	return filepath.Join(c.dir, stateFileName)
+}
+
+func (c *configStore) loadState() {
+	b, err := os.ReadFile(c.stateFile())
+	if err != nil {
+		return
+	}
+
+	var st shellState
+	if json.Unmarshal(b, &st) == nil {
+		c.active = st.ActiveRepository
+	}
 }
 
 func (c *configStore) configFile(id string) string {

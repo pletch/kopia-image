@@ -69,11 +69,27 @@ func TestInjectShim_leavesOtherContentAlone(t *testing.T) {
 }
 
 func TestRepoIDFromRequest(t *testing.T) {
+	sh := &shell{configs: &configStore{dir: t.TempDir(), repos: map[string]bool{"repository": true, "repository-2": true}}}
+	h := &proxyHandler{host: sh}
+
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.Header.Set(windowNameHeader, windowName("repository-2"))
 
-	if got := repoIDFromRequest(r); got != "repository-2" {
+	if got := h.repoIDFromRequest(r); got != "repository-2" {
 		t.Fatalf("got %q", got)
+	}
+
+	// the window shows the chosen repository, the first one at first
+	r.Header.Set(windowNameHeader, mainWindowName)
+
+	if got := h.repoIDFromRequest(r); got != "repository" {
+		t.Fatalf("got %q", got)
+	}
+
+	sh.configs.setActiveRepository("repository-2")
+
+	if got := h.repoIDFromRequest(r); got != "repository-2" {
+		t.Fatalf("got %q after switching", got)
 	}
 }
 

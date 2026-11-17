@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	windowNameHeader = "x-wails-window-name"
+	windowNameHeader = "X-Wails-Window-Name"
 	windowNamePrefix = "repo:"
 	shimPrefix       = "/__kopiaui/"
 )
@@ -97,12 +97,20 @@ type proxyHandler struct {
 	host *shell
 }
 
-func repoIDFromRequest(r *http.Request) string {
-	return strings.TrimPrefix(r.Header.Get(windowNameHeader), windowNamePrefix)
+// repoIDFromRequest returns the repository a request is for: the one the
+// window shows, or for a window named after a repository, that one.
+func (h *proxyHandler) repoIDFromRequest(r *http.Request) string {
+	name := r.Header.Get(windowNameHeader)
+
+	if name == mainWindowName {
+		return h.host.configs.activeRepository()
+	}
+
+	return strings.TrimPrefix(name, windowNamePrefix)
 }
 
 func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	repoID := repoIDFromRequest(r)
+	repoID := h.repoIDFromRequest(r)
 
 	if strings.HasPrefix(r.URL.Path, shimPrefix) {
 		h.serveShim(w, r, repoID)
@@ -330,8 +338,57 @@ func (h *proxyHandler) serveShim(w http.ResponseWriter, r *http.Request, repoID 
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 		_, _ = w.Write(shimJS)
 
+	case "repositories":
+		var req struct{}
+
+		if !decodeJSONRequest(w, r, &req) {
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+
+		if err := json.NewEncoder(w).Encode(h.host.repositories(repoID)); err != nil {
+			slog.Warn("unable to list repositories", "err", err)
+		}
+
+	case "switch-repository":
+		var req struct {
+			ID string `json:"id"`
+		}
+
+		if !decodeJSONRequest(w, r, &req) {
+			return
+		}
+
+		if !h.host.configs.has(req.ID) {
+			http.Error(w, "unknown repository", http.StatusNotFound)
+			return
+		}
+
+		// the page reloads itself once this answers
+		h.host.switchRepository(req.ID)
+		go h.host.updateWindowTitle()
+
+		w.WriteHeader(http.StatusNoContent)
+
+	case "add-repository":
+		var req struct{}
+
+		if !decodeJSONRequest(w, r, &req) {
+			return
+		}
+
+		id := h.host.configs.addNew()
+
+		h.host.startServer(id)
+		h.host.switchRepository(id)
+
+		go h.host.updateWindowTitle()
+
+		w.WriteHeader(http.StatusNoContent)
+
 	case "select-dir":
-		path, err := h.host.selectDirectory(repoID)
+		path, err := h.host.selectDirectory()
 		if err != nil {
 			slog.Warn("select directory failed", "err", err)
 		}
