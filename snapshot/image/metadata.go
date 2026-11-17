@@ -67,6 +67,11 @@ type Metadata struct {
 	// report it. Images of kopia v0.23.1-wails.15 recorded what was sent to a
 	// repository server here, before compression.
 	UploadedBytes *int64 `json:"uploadedBytes,omitempty"`
+
+	// Drivers are the storage, network and USB driver packages of the imaged
+	// computer stored in the image's drivers folder, for recovery media built
+	// on other computers. Empty for images taken without them.
+	Drivers []Driver `json:"drivers,omitempty"`
 }
 
 // Volume describes the image of one partition.

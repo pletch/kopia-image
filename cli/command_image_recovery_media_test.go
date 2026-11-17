@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/kopia/kopia/internal/clock"
 	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/snapshot/image/recoverymedia"
 	"github.com/kopia/kopia/tests/testenv"
@@ -34,7 +35,7 @@ func newSharedMediaTest(t *testing.T, builtOn, repository string) (env *testenv.
 
 	media = t.TempDir()
 	require.NoError(t, recoverymedia.WriteRecord(filepath.Join(media, recoverymedia.MediaRecordFile), &recoverymedia.Record{
-		BuiltAt:          time.Now().UTC().Add(-time.Hour),
+		BuiltAt:          clock.Now().UTC().Add(-time.Hour),
 		KopiaVersion:     repo.BuildVersion,
 		WinREDigest:      "builder's",
 		ConnectionDigest: "builder's",
@@ -128,4 +129,15 @@ func TestImageRecoveryMediaStatus_none(t *testing.T) {
 	out := strings.Join(env.RunAndExpectSuccess(t, "image", "recovery-media", "status", "--record-file", filepath.Join(t.TempDir(), "none.json")), "\n")
 	require.Contains(t, out, "No recovery media was built on this computer")
 	require.Contains(t, out, "kopia image recovery-media register")
+}
+
+func TestImageDrivers_none(t *testing.T) {
+	env := testenv.NewCLITest(t, testenv.RepoFormatNotImportant, testenv.NewInProcRunner(t))
+	env.RunAndExpectSuccess(t, "repo", "create", "filesystem", "--path", env.RepoDir)
+
+	_, stderr := env.RunAndExpectSuccessWithErrOut(t, "image", "drivers")
+	require.Contains(t, strings.Join(stderr, "\n"), "No image stores drivers yet")
+
+	out := env.RunAndExpectSuccess(t, "image", "drivers", "--json")
+	require.JSONEq(t, "[]", strings.Join(out, "\n"))
 }

@@ -64,6 +64,7 @@ type commandImageRecoveryMediaCreate struct {
 	caCertFiles   []string
 	drivers       string
 	addDrivers    []string
+	driversFrom   []string
 	winre         string
 	timeZone      string
 	force         bool
@@ -90,6 +91,7 @@ func (c *commandImageRecoveryMediaCreate) setup(svc advancedAppServices, parent 
 	cmd.Flag("ca-cert", "PEM file of a certificate authority for the recovery system to trust; repeatable").StringsVar(&c.caCertFiles)
 	cmd.Flag("drivers", "host adds this computer's storage, network and USB drivers; none adds none").Default(recoveryDriversHost).EnumVar(&c.drivers, recoveryDriversHost, recoveryDriversNone)
 	cmd.Flag("add-driver", "Driver .inf file or folder to add, for other hardware; repeatable").StringsVar(&c.addDrivers)
+	cmd.Flag("drivers-from", "Also add the drivers stored with the newest image of this computer, so that the media restores it too, or of every computer with 'all'; repeatable").StringsVar(&c.driversFrom)
 	cmd.Flag("winre", "Winre.wim to build from (default: this computer's)").StringVar(&c.winre)
 	cmd.Flag("time-zone", "Windows time zone of the recovery system (default: this computer's)").StringVar(&c.timeZone)
 	cmd.Flag("force", "Allow a --usb disk that is not attached through USB").BoolVar(&c.force)
@@ -149,12 +151,20 @@ func (c *commandImageRecoveryMediaCreate) run(ctx context.Context, rep repo.Repo
 
 	start := clock.Now()
 
-	built, err := c.build(ctx, m)
+	repoDrivers, removeDrivers, err := c.repositoryDrivers(ctx, rep)
+	defer removeDrivers()
+
+	if err != nil {
+		return err
+	}
+
+	built, err := c.build(ctx, m, repoDrivers)
 	if err != nil {
 		return err
 	}
 
 	rec := m.record(built, target.String(), c.connectFrom, c.embedPassword)
+	rec.Drivers = append(rec.Drivers, addedDriverINFs(c.addDrivers, built.Drivers)...)
 
 	// other computers register the media from this copy
 	if err := recoverymedia.WriteRecord(filepath.Join(built.MediaDir, recoverymedia.MediaRecordFile), rec.ForMedia(m.computer)); err != nil {
@@ -402,7 +412,126 @@ func (c *commandImageRecoveryMediaCreate) connection(rep repo.Repository) (*repo
 	return &clone, nil
 }
 
-func (c *commandImageRecoveryMediaCreate) build(ctx context.Context, m *recoveryMedia) (*recoverymedia.BuildResult, error) {
+// repositoryDrivers extracts the drivers that --drivers-from asks for from
+// the images storing them, the newest version of each driver only, and
+// returns them with a function that removes them.
+func (c *commandImageRecoveryMediaCreate) repositoryDrivers(ctx context.Context, rep repo.Repository) ([]image.DriverSource, func(), error) {
+	if len(c.driversFrom) == 0 {
+		return nil, func() {}, nil
+	}
+
+	inv, err := image.DriverInventory(ctx, rep)
+	if err != nil {
+		return nil, func() {}, err //nolint:wrapcheck
+	}
+
+	hosts, err := selectDriverHosts(inv, c.driversFrom, rep.ClientOptions().Hostname, c.drivers == recoveryDriversHost)
+	if err != nil {
+		return nil, func() {}, err
+	}
+
+	type candidate struct {
+		driver image.Driver
+		host   string
+		man    *snapshot.Manifest
+	}
+
+	var (
+		pkgs  []image.DriverSource
+		cands []candidate
+	)
+
+	for _, h := range hosts {
+		c.out.printStderr("Adding the drivers of %v, stored with its image of %v.\n", h.Host, formatTimestamp(h.Image.StartTime.ToTime()))
+
+		for _, d := range h.Drivers {
+			// Dir is only an index into cands until extracted
+			pkgs = append(pkgs, image.DriverSource{Driver: d, Dir: strconv.Itoa(len(cands))})
+			cands = append(cands, candidate{d, h.Host, h.Image})
+		}
+	}
+
+	dir := c.workDir + "-drivers"
+	remove := func() { os.RemoveAll(dir) } //nolint:errcheck
+
+	remove()
+
+	if err := os.MkdirAll(dir, 0o700); err != nil { //nolint:mnd
+		return nil, remove, errors.Wrap(err, "unable to create a folder for the drivers")
+	}
+
+	var out []image.DriverSource
+
+	for _, p := range recoverymedia.NewestPackages(pkgs) {
+		i, _ := strconv.Atoi(p.Dir)
+		cand := cands[i]
+		dest := filepath.Join(dir, strconv.Itoa(i)+"-"+cand.driver.Entry)
+
+		if err := image.ExtractDriver(ctx, rep, cand.man, cand.driver, dest); err != nil {
+			c.out.printStderr("Unable to read the driver %v of %v: %v\n", cand.driver, cand.host, err)
+			continue
+		}
+
+		out = append(out, image.DriverSource{Driver: cand.driver, Dir: dest})
+	}
+
+	return out, remove, nil
+}
+
+// selectDriverHosts returns the computers of the inventory that names lists,
+// or all of them for "all". This computer is left out when its own drivers
+// are added from its driver store, unless it is named.
+func selectDriverHosts(inv []image.HostDrivers, names []string, thisHost string, hostDrivers bool) ([]image.HostDrivers, error) {
+	if slices.ContainsFunc(names, func(n string) bool { return strings.EqualFold(n, "all") }) {
+		if len(inv) == 0 {
+			return nil, errors.New("no image stores drivers yet: create images with this version of kopia first")
+		}
+
+		return slices.DeleteFunc(slices.Clone(inv), func(h image.HostDrivers) bool {
+			return hostDrivers && strings.EqualFold(h.Host, thisHost)
+		}), nil
+	}
+
+	var out []image.HostDrivers
+
+	for _, n := range names {
+		i := slices.IndexFunc(inv, func(h image.HostDrivers) bool { return strings.EqualFold(h.Host, n) })
+		if i < 0 {
+			return nil, errors.Errorf("no image of %v stores drivers: create an image on %v with this version of kopia first", n, n)
+		}
+
+		if !slices.ContainsFunc(out, func(h image.HostDrivers) bool { return strings.EqualFold(h.Host, n) }) {
+			out = append(out, inv[i])
+		}
+	}
+
+	return out, nil
+}
+
+// addedDriverINFs identifies the drivers added from --add-driver files and
+// folders that were added, by their INF names, so that the record tells the
+// media has them.
+func addedDriverINFs(paths, added []string) []image.Driver {
+	var out []image.Driver
+
+	for _, p := range paths {
+		if !slices.Contains(added, p) {
+			continue
+		}
+
+		filepath.WalkDir(p, func(path string, d os.DirEntry, err error) error { //nolint:errcheck
+			if err == nil && !d.IsDir() && strings.EqualFold(filepath.Ext(path), ".inf") {
+				out = append(out, image.Driver{INF: filepath.Base(path)})
+			}
+
+			return nil
+		})
+	}
+
+	return out
+}
+
+func (c *commandImageRecoveryMediaCreate) build(ctx context.Context, m *recoveryMedia, repoDrivers []image.DriverSource) (*recoverymedia.BuildResult, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, errors.Wrap(err, "unable to find the kopia executable")
@@ -443,6 +572,8 @@ func (c *commandImageRecoveryMediaCreate) build(ctx context.Context, m *recovery
 		TimeZone:     c.timeZone,
 		Logf:         c.out.printStderr,
 	}
+
+	opt.RepositoryDrivers = repoDrivers
 
 	built, err := recoverymedia.Build(ctx, opt)
 	if err != nil {
@@ -645,6 +776,7 @@ func (m *recoveryMedia) record(built *recoverymedia.BuildResult, target, connect
 		Disks:            map[string]string{},
 		PasswordEmbedded: passwordEmbedded,
 		Repository:       recoverymedia.DescribeRepository(m.conn),
+		Drivers:          built.DriverPackages,
 	}
 
 	for _, d := range m.disks {
@@ -743,7 +875,14 @@ func (c *commandImageRecoveryMediaRegister) run(ctx context.Context, rep repo.Re
 	}
 
 	c.out.printStdout("Registered the recovery media built on %v %v with kopia %v as this computer's.\n", r.BuiltOn, formatTimestamp(r.BuiltAt), r.KopiaVersion)
-	c.out.printStdout("It has the storage and network drivers of %v. Check that it works here: boot this computer from it, or restore one of its images to a file with 'kopia image recover --target <file>'.\n", r.BuiltOn)
+
+	if r.Drivers == nil {
+		c.out.printStdout("It has the storage and network drivers of %v. ", r.BuiltOn)
+	} else {
+		c.out.printStdout("It has %v storage, network and USB drivers, added on %v. ", len(r.Drivers), r.BuiltOn)
+	}
+
+	c.out.printStdout("Check that it works here: boot this computer from it, or restore one of its images to a file with 'kopia image recover --target <file>'.\n")
 
 	for _, f := range recoveryMediaFindings(ctx, rep, r, c.svc.repositoryConfigFileName(), nil) {
 		c.out.printStdout("  - %v\n", f)
@@ -883,6 +1022,8 @@ func recoveryMediaFindings(ctx context.Context, rep repo.Repository, r *recovery
 		}
 	}
 
+	cur.Drivers = thisComputersDrivers(ctx)
+
 	if cur.Layouts == nil {
 		cur.Layouts = map[string]*image.Layout{}
 
@@ -896,6 +1037,26 @@ func recoveryMediaFindings(ctx context.Context, rep repo.Repository, r *recovery
 	}
 
 	return append(findings, r.Stale(ctx, cur)...)
+}
+
+// thisComputersDrivers returns this computer's storage, network and USB
+// drivers, or nil when they cannot be listed.
+func thisComputersDrivers(ctx context.Context) []image.Driver {
+	ds, err := recoverymedia.HostDrivers(ctx)
+	if err != nil {
+		if !errors.Is(err, recoverymedia.ErrNotSupported) {
+			log(ctx).Debugf("%v", err)
+		}
+
+		return nil
+	}
+
+	out := make([]image.Driver, 0, len(ds))
+	for i := range ds {
+		out = append(out, ds[i].Image())
+	}
+
+	return out
 }
 
 type commandImageRecoveryMediaKit struct {

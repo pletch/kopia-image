@@ -75,6 +75,7 @@ func TestRecordForMedia(t *testing.T) {
 		ConnectionDigest: "cc",
 		Disks:            map[string]string{"tim@desktop:image:disk:a": "dd"},
 		Repository:       "S3 bucket backups at s3.example.com",
+		Drivers:          []image.Driver{{Class: "Net", INF: "rt640x64.inf", Version: "10.65"}},
 	}
 	require.False(t, r.Shared())
 
@@ -83,6 +84,7 @@ func TestRecordForMedia(t *testing.T) {
 	require.Equal(t, "DESKTOP", m.BuiltOn)
 	require.Equal(t, "S3 bucket backups at s3.example.com", m.Repository)
 	require.Equal(t, r.BuiltAt, m.BuiltAt)
+	require.Equal(t, r.Drivers, m.Drivers)
 
 	// the builder's local paths and disks stay off the media
 	require.Empty(t, m.Target)
@@ -132,6 +134,40 @@ func TestRecordStale_shared(t *testing.T) {
 		"the repository connection changed",
 		"the media is 200 days old",
 	}, r.Stale(ctx, stale))
+}
+
+func TestRecordStale_drivers(t *testing.T) {
+	ctx := testlogging.Context(t)
+	built := time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)
+	cur := &Current{
+		Now:          built,
+		KopiaVersion: "0.23.1",
+		Drivers: []image.Driver{
+			{Class: "Net", INF: "rt640x64.inf", Version: "10.70"},
+			{Class: "SCSIAdapter", INF: "iastorvd.inf", Version: "19.5"},
+			{Class: "USB", INF: "asmtxhci.inf", Version: "1.16"},
+		},
+	}
+
+	r := &Record{
+		BuiltAt:      built,
+		KopiaVersion: "0.23.1",
+		BuiltOn:      "DESKTOP",
+		// an older version of a driver is enough
+		Drivers: []image.Driver{{Class: "Net", INF: "RT640x64.inf", Version: "10.65"}},
+	}
+	require.Equal(t, []string{
+		"the media lacks drivers of this computer, which it may need to reach the disks or the network: SCSIAdapter iastorvd.inf 19.5, USB asmtxhci.inf 1.16",
+	}, r.Stale(ctx, cur))
+
+	// media built before kopia recorded its drivers, or a computer whose
+	// drivers are not known, is not checked
+	r.Drivers = nil
+	require.Empty(t, r.Stale(ctx, cur))
+
+	r.Drivers = []image.Driver{}
+	cur.Drivers = nil
+	require.Empty(t, r.Stale(ctx, cur))
 }
 
 func TestRecordRoundTrip(t *testing.T) {

@@ -15,6 +15,8 @@ import (
 	pkgerrors "github.com/pkg/errors"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
+
+	"github.com/kopia/kopia/snapshot/image"
 )
 
 // IsElevated reports whether the process runs as an administrator.
@@ -175,45 +177,47 @@ func (w *workspace) customize(ctx context.Context, opt *BuildOptions, res *Build
 }
 
 func (w *workspace) addDrivers(ctx context.Context, opt *BuildOptions, res *BuildResult) error {
-	type pkg struct{ name, path string }
-
-	var pkgs []pkg
+	var pkgs []image.DriverSource
 
 	if opt.HostDrivers {
-		out, err := systemTool(ctx, "pnputil.exe", "/enum-drivers")
+		exported, failures, err := ExportHostDrivers(ctx, filepath.Join(w.dir, "drivers"))
 		if err != nil {
-			return pkgerrors.Wrap(err, "unable to list this computer's drivers")
+			return err
 		}
 
-		for _, d := range SelectDrivers(ParseDriverList(string(out))) {
-			dir := filepath.Join(w.dir, "drivers", strings.TrimSuffix(d.Published, ".inf"))
+		pkgs = exported
 
-			if err := os.MkdirAll(dir, 0o700); err != nil { //nolint:mnd
-				return pkgerrors.Wrapf(err, "unable to create %v", dir)
-			}
+		res.DriverFailures = append(res.DriverFailures, failures...)
+	}
 
-			if _, err := systemTool(ctx, "pnputil.exe", "/export-driver", d.Published, dir); err != nil {
-				res.DriverFailures = append(res.DriverFailures, d.Class()+" "+d.Original+": "+err.Error())
-				continue
-			}
+	pkgs = NewestPackages(append(pkgs, opt.RepositoryDrivers...))
+	total := len(pkgs) + len(opt.ExtraDrivers)
 
-			pkgs = append(pkgs, pkg{d.Class() + " " + d.Original + " " + d.Version, dir})
+	add := func(i int, name, path string) bool {
+		w.logf("Adding driver %v/%v: %v\n", i+1, total, name)
+
+		if err := dism(ctx, "/Image:"+w.mountDir(), "/Add-Driver", "/Driver:"+path, "/Recurse"); err != nil {
+			res.DriverFailures = append(res.DriverFailures, name+": "+err.Error())
+			return false
 		}
+
+		res.Drivers = append(res.Drivers, name)
+
+		return true
 	}
 
-	for _, p := range opt.ExtraDrivers {
-		pkgs = append(pkgs, pkg{p, p})
-	}
+	res.DriverPackages = []image.Driver{}
 
 	for i, p := range pkgs {
-		w.logf("Adding driver %v/%v: %v\n", i+1, len(pkgs), p.name)
-
-		if err := dism(ctx, "/Image:"+w.mountDir(), "/Add-Driver", "/Driver:"+p.path, "/Recurse"); err != nil {
-			res.DriverFailures = append(res.DriverFailures, p.name+": "+err.Error())
-			continue
+		if add(i, p.String(), p.Dir) {
+			d := p.Driver
+			d.Entry = ""
+			res.DriverPackages = append(res.DriverPackages, d)
 		}
+	}
 
-		res.Drivers = append(res.Drivers, p.name)
+	for i, p := range opt.ExtraDrivers {
+		add(len(pkgs)+i, p, p)
 	}
 
 	return nil

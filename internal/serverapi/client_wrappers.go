@@ -290,3 +290,13 @@ func ImageDisks(ctx context.Context, c *apiclient.KopiaAPIClient) (*ImageDisksRe
 
 	return resp, nil
 }
+
+// ImageDrivers returns the drivers that the images of each computer store.
+func ImageDrivers(ctx context.Context, c *apiclient.KopiaAPIClient) (*ImageDriversResponse, error) {
+	resp := &ImageDriversResponse{}
+	if err := c.Get(ctx, "images/drivers", nil, resp); err != nil {
+		return nil, errors.Wrap(err, "ImageDrivers")
+	}
+
+	return resp, nil
+}

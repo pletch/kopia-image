@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/kopia/kopia/snapshot/image"
 )
 
 // DriverClasses are the device setup classes whose drivers the recovery
@@ -31,6 +33,12 @@ type Driver struct {
 // Class returns the short name of the driver's class, or "".
 func (d *Driver) Class() string {
 	return DriverClasses[strings.ToLower(d.ClassGUID)]
+}
+
+// Image returns how images and media records identify the driver: its
+// folder in an image is named after its published name.
+func (d *Driver) Image() image.Driver {
+	return image.Driver{Class: d.Class(), INF: d.Original, Version: d.Version, Entry: strings.TrimSuffix(strings.ToLower(d.Published), ".inf")}
 }
 
 var (
@@ -144,4 +152,38 @@ func compareVersions(a, b string) int {
 	}
 
 	return 0
+}
+
+// NewestPackages keeps the newest version of each driver, the first one
+// given among equal versions, in the order given.
+func NewestPackages(pkgs []image.DriverSource) []image.DriverSource {
+	var out []image.DriverSource
+
+	for _, p := range pkgs {
+		i := slices.IndexFunc(out, func(o image.DriverSource) bool { return image.SameDriver(o.Driver, p.Driver) })
+
+		switch {
+		case i < 0:
+			out = append(out, p)
+		case compareVersions(p.Version, out[i].Version) > 0:
+			out[i] = p
+		}
+	}
+
+	return out
+}
+
+// MissingDrivers returns the drivers of need of which media holds no version.
+// Any version of a driver usually supports the devices of the computer.
+func MissingDrivers(media, need []image.Driver) []image.Driver {
+	var out []image.Driver
+
+	for _, d := range need {
+		if !slices.ContainsFunc(media, func(m image.Driver) bool { return image.SameDriver(m, d) }) {
+			d.Entry = ""
+			out = append(out, d)
+		}
+	}
+
+	return out
 }

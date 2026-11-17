@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/kopia/kopia/snapshot/image"
 )
 
 const pnputilOutput = "Microsoft PnP Utility\r\n" +
@@ -57,6 +59,35 @@ func TestSelectDrivers(t *testing.T) {
 	require.Equal(t, "Net", got[0].Class())
 	require.Equal(t, "oem3.inf", got[1].Published)
 	require.Equal(t, "SCSIAdapter", got[1].Class())
+}
+
+func TestDriverImage(t *testing.T) {
+	d := SelectDrivers(ParseDriverList(pnputilOutput))[0]
+	require.Equal(t, image.Driver{Class: "Net", INF: "rt640x64.inf", Version: "10.65.512.2023", Entry: "oem40"}, d.Image())
+}
+
+func TestNewestPackages(t *testing.T) {
+	host := image.DriverSource{Class: "Net", INF: "rt640x64.inf", Version: "10.65", Dir: "host"}
+	got := NewestPackages([]image.DriverSource{
+		host,
+		{Class: "Net", INF: "RT640X64.INF", Version: "10.65", Dir: "laptop"},
+		{Class: "SCSIAdapter", INF: "iastorvd.inf", Version: "18.0", Dir: "nas"},
+		{Class: "SCSIAdapter", INF: "iastorvd.inf", Version: "19.5", Dir: "laptop"},
+	})
+	require.Equal(t, []image.DriverSource{
+		host,
+		{Class: "SCSIAdapter", INF: "iastorvd.inf", Version: "19.5", Dir: "laptop"},
+	}, got)
+}
+
+func TestMissingDrivers(t *testing.T) {
+	media := []image.Driver{{Class: "Net", INF: "rt640x64.inf", Version: "10.1"}}
+	need := []image.Driver{
+		{Class: "Net", INF: "rt640x64.inf", Version: "10.65", Entry: "oem40"},
+		{Class: "USB", INF: "asmtxhci.inf", Version: "1.16", Entry: "oem7"},
+	}
+	require.Equal(t, []image.Driver{{Class: "USB", INF: "asmtxhci.inf", Version: "1.16"}}, MissingDrivers(media, need))
+	require.Empty(t, MissingDrivers(need, media))
 }
 
 func TestCompareVersions(t *testing.T) {

@@ -72,6 +72,11 @@ type Record struct {
 	// DescribeRepository); for registered media, as this computer reached it
 	// when registering.
 	Repository string `json:"repository,omitempty"`
+
+	// Drivers are the driver packages the media holds, besides the ones
+	// added from folders. Nil in records of media built before kopia
+	// recorded them.
+	Drivers []image.Driver `json:"drivers"`
 }
 
 // Shared tells whether the record is of media built on another computer.
@@ -223,6 +228,10 @@ type Current struct {
 
 	// Layouts are the disks being imaged, by image source.
 	Layouts map[string]*image.Layout
+
+	// Drivers are the computer's storage, network and USB drivers, or nil
+	// when not known.
+	Drivers []image.Driver
 }
 
 // Stale returns why media built as recorded no longer matches the
@@ -258,6 +267,8 @@ func (r *Record) Stale(ctx context.Context, cur *Current) []string {
 		}
 	}
 
+	out = append(out, r.driverFindings(cur.Drivers)...)
+
 	if r.Shared() {
 		return append(out, r.ageFinding(cur.Now)...)
 	}
@@ -279,6 +290,26 @@ func (r *Record) Stale(ctx context.Context, cur *Current) []string {
 	}
 
 	return append(out, r.ageFinding(cur.Now)...)
+}
+
+// driverFindings reports the computer's drivers that the media lacks, when
+// both are known.
+func (r *Record) driverFindings(have []image.Driver) []string {
+	if r.Drivers == nil || have == nil {
+		return nil
+	}
+
+	missing := MissingDrivers(r.Drivers, have)
+	if len(missing) == 0 {
+		return nil
+	}
+
+	names := make([]string, 0, len(missing))
+	for _, d := range missing {
+		names = append(names, d.String())
+	}
+
+	return []string{"the media lacks drivers of this computer, which it may need to reach the disks or the network: " + strings.Join(names, ", ")}
 }
 
 func (r *Record) ageFinding(now time.Time) []string {

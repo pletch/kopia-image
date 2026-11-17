@@ -108,6 +108,10 @@ type CreateOptions struct {
 	// device reads. It defaults to make.
 	NewBuffer func(n int) []byte
 
+	// Drivers are driver packages of the imaged computer to store with the
+	// image, in its drivers folder.
+	Drivers []DriverSource
+
 	// Tags are added to the snapshot manifest besides TagKey.
 	Tags map[string]string
 
@@ -340,11 +344,18 @@ func (opt *CreateOptions) fileEntry(name string, size int64, oid object.ID, mtim
 	}
 }
 
-// commit writes layout.json, restore.sh and image.json, then the root
-// directory and the snapshot manifest.
+// commit writes the drivers folder, layout.json, restore.sh and image.json,
+// then the root directory and the snapshot manifest.
 func (opt *CreateOptions) commit(ctx context.Context, rep repo.RepositoryWriter, md *Metadata, files []*snapshot.DirEntry) (*snapshot.Manifest, error) {
 	if err := md.Validate(opt.Layout); err != nil {
 		return nil, errors.Wrap(err, "invalid image metadata")
+	}
+
+	if len(opt.Drivers) > 0 {
+		if e, stored := opt.writeDrivers(ctx, rep, fs.UTCTimestampFromTime(md.StartTime)); e != nil {
+			files = append(files, e)
+			md.Drivers = stored
+		}
 	}
 
 	layoutJSON, err := json.MarshalIndent(opt.Layout, "", "  ")

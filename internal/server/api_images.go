@@ -138,6 +138,7 @@ func convertImageSnapshot(ctx context.Context, rc requestContext, m *snapshot.Ma
 	img.Totals = md.Totals()
 	img.NewDataBytes = md.NewDataBytes
 	img.UploadedBytes = md.UploadedBytes
+	img.Drivers = md.Drivers
 
 	for i := range md.Volumes {
 		v := &md.Volumes[i]
@@ -241,6 +242,21 @@ func scheduleInstalled(host ImageHost) bool {
 	return err == nil
 }
 
+// handleImagesDrivers lists the drivers that the images of each computer
+// store, which recovery media needs to restore it.
+func handleImagesDrivers(ctx context.Context, rc requestContext) (any, *apiError) {
+	inv, err := image.DriverInventory(ctx, rc.rep)
+	if err != nil {
+		return nil, internalServerError(err)
+	}
+
+	if inv == nil {
+		inv = []image.HostDrivers{}
+	}
+
+	return &serverapi.ImageDriversResponse{Hosts: inv}, nil
+}
+
 // handleImagesDisks lists the disks of the server's computer that the image
 // schedule can image.
 func handleImagesDisks(_ context.Context, rc requestContext) (any, *apiError) {
@@ -268,6 +284,7 @@ func readRecoveryMedia(path string) (*serverapi.ImageRecoveryMedia, error) {
 		Target:           r.Target,
 		PasswordEmbedded: r.PasswordEmbedded,
 		BuiltOn:          r.BuiltOn,
+		Drivers:          r.Drivers,
 	}, nil
 }
 

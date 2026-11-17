@@ -57,6 +57,7 @@ type commandImageCreate struct {
 	dryRun        bool
 	description   string
 	statePath     string
+	drivers       bool
 
 	// req records the outcome of a run that KopiaUI started without a
 	// window; loc tells where.
@@ -77,6 +78,7 @@ func (c *commandImageCreate) setup(svc appServices, parent commandParent) {
 	cmd.Flag("flush-interval", "How often to save upload progress, so that a failed run's uploads are reused").Default(defaultImageFlushInterval.String()).DurationVar(&c.flushInterval)
 	cmd.Flag("dry-run", "Print the partition plan and the size of the zeroed space without imaging").BoolVar(&c.dryRun)
 	cmd.Flag("description", "Free-form snapshot description").StringVar(&c.description)
+	cmd.Flag("drivers", "Store this computer's storage, network and USB drivers with the images, for recovery media built on other computers").Default("true").BoolVar(&c.drivers)
 	cmd.Flag("state-file", "Override the file that records shadow copies to remove after a crash").Hidden().StringVar(&c.statePath)
 	c.req.flag(cmd)
 	cmd.Action(svc.noRepositoryAction(c.req.recording("create", &c.loc, c.runWithWriter)))
@@ -219,12 +221,21 @@ func (c *commandImageCreate) imageDisks(ctx context.Context, rep repo.Repository
 		defer monitor.close(ctx)
 	}
 
+	var drivers []image.DriverSource
+
+	if !c.dryRun && c.drivers {
+		var removeDrivers func()
+
+		drivers, removeDrivers = c.exportDrivers(ctx, filepath.Dir(statePath))
+		defer removeDrivers()
+	}
+
 	for i, plan := range plans {
 		if monitor != nil {
 			monitor.setDisk(i+1, plan.DiskNumber)
 		}
 
-		man, md, err := c.imageDisk(runCtx, rep, plan, guard.State, logf)
+		man, md, err := c.imageDisk(runCtx, rep, plan, guard.State, drivers, logf)
 		if man != nil {
 			status.Images = append(status.Images, runImage(man, md))
 		}
@@ -243,6 +254,34 @@ func (c *commandImageCreate) imageDisks(ctx context.Context, rep repo.Repository
 	}
 
 	return nil
+}
+
+// exportDrivers exports this computer's storage, network and USB drivers
+// into the image state folder, to store with the images, and returns them
+// with a function that removes them. Drivers that cannot be exported are only
+// reported: the images do not depend on them.
+func (c *commandImageCreate) exportDrivers(ctx context.Context, stateDir string) ([]image.DriverSource, func()) {
+	dir := filepath.Join(stateDir, "drivers-export")
+	remove := func() { os.RemoveAll(dir) } //nolint:errcheck
+
+	// left by a run that ended abruptly
+	remove()
+
+	exported, failures, err := recoverymedia.ExportHostDrivers(ctx, dir)
+
+	switch {
+	case errors.Is(err, recoverymedia.ErrNotSupported):
+		return nil, remove
+	case err != nil:
+		log(ctx).Warnf("Unable to store this computer's drivers with the images: %v", err)
+		return nil, remove
+	}
+
+	for _, f := range failures {
+		log(ctx).Warnf("Driver not stored with the images: %v", f)
+	}
+
+	return exported, remove
 }
 
 // checkRecoveryMedia reports why the recovery media last built on this
@@ -290,7 +329,7 @@ func runImage(man *snapshot.Manifest, md *image.Metadata) disksource.RunImage {
 
 // imageDisk images one disk. It returns the saved snapshot also when a later
 // step, such as applying retention, fails.
-func (c *commandImageCreate) imageDisk(ctx context.Context, rep repo.RepositoryWriter, plan *disksource.Plan, state *disksource.ShadowState, logf func(string, ...any)) (man *snapshot.Manifest, md *image.Metadata, err error) {
+func (c *commandImageCreate) imageDisk(ctx context.Context, rep repo.RepositoryWriter, plan *disksource.Plan, state *disksource.ShadowState, drivers []image.DriverSource, logf func(string, ...any)) (man *snapshot.Manifest, md *image.Metadata, err error) {
 	sourcePath, err := image.DiskSourcePath(plan.Layout.DiskGUID)
 	if err != nil {
 		return nil, nil, errors.Wrap(err, "invalid disk GUID")
@@ -336,6 +375,7 @@ func (c *commandImageCreate) imageDisk(ctx context.Context, rep repo.RepositoryW
 		AsyncWrites:        parallel,
 		FlushInterval:      c.flushInterval,
 		NewBuffer:          blockdev.AlignedBuffer,
+		Drivers:            drivers,
 		Logf:               logf,
 		Progress:           &c.progress,
 	})

@@ -5,6 +5,7 @@ type commandImage struct {
 	recover  commandImageRecover
 	media    commandImageRecoveryMedia
 	create   commandImageCreate
+	drivers  commandImageDrivers
 	list     commandImageList
 	ls       commandImageLs
 	restore  commandImageRestore
@@ -19,6 +20,7 @@ func (c *commandImage) setup(svc advancedAppServices, parent commandParent) {
 	c.recover.setup(svc, cmd)
 	c.media.setup(svc, cmd)
 	c.create.setup(svc, cmd)
+	c.drivers.setup(svc, cmd)
 	c.list.setup(svc, cmd)
 	c.ls.setup(svc, cmd)
 	c.restore.setup(svc, cmd)

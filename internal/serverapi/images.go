@@ -45,6 +45,9 @@ type ImageSnapshot struct {
 	NewDataBytes  *int64 `json:"newDataBytes,omitempty"`
 	UploadedBytes *int64 `json:"uploadedBytes,omitempty"`
 
+	// Drivers are the drivers of the imaged computer stored with the image.
+	Drivers []image.Driver `json:"drivers,omitempty"`
+
 	// MetadataError says why the image's statistics and volumes are
 	// missing: its image.json could not be read.
 	MetadataError string `json:"metadataError,omitempty"`
@@ -135,6 +138,15 @@ type ImageRecoveryMedia struct {
 
 	// BuiltOn is the computer that built media registered for this one.
 	BuiltOn string `json:"builtOn,omitempty"`
+
+	// Drivers are the drivers the media holds, or null when not recorded.
+	Drivers []image.Driver `json:"drivers"`
+}
+
+// ImageDriversResponse is the driver inventory: the drivers stored with the
+// newest image of each computer that stores them.
+type ImageDriversResponse struct {
+	Hosts []image.HostDrivers `json:"hosts"`
 }
 
 // RunImageTaskResponse is the response of starting the scheduled image task.
