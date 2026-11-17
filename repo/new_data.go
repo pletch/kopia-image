@@ -1,5 +1,11 @@
 package repo
 
+import (
+	"context"
+
+	"github.com/pkg/errors"
+)
+
 // NewData is how much new data a repository writer has stored so far.
 // Contents that already existed in the repository are not counted.
 type NewData struct {
@@ -54,4 +60,22 @@ func NewDataOf(w RepositoryWriter) NewData {
 	}
 
 	return NewData{}
+}
+
+// FlushForNewData flushes w if NewDataOf(w) can count what was written only
+// after a flush: through a repository server, which reports its totals on a
+// flush. A direct repository counts contents as they are added to packs, so
+// it is not flushed here; a snapshot then writes its contents and manifest
+// under a single index blob, as it would without counting new data.
+func FlushForNewData(ctx context.Context, w RepositoryWriter) error {
+	if _, ok := w.(DirectRepositoryWriter); ok {
+		return nil
+	}
+
+	if _, ok := w.(NewDataReporter); !ok {
+		// nothing to count, so nothing to flush for
+		return nil
+	}
+
+	return errors.Wrap(w.Flush(ctx), "unable to flush to count new data")
 }

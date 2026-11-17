@@ -428,8 +428,10 @@ func (s *sourceManager) snapshotInternal(ctx context.Context, ctrl uitask.Contro
 			}
 		}
 
-		// through a repository server, the flush reports what was stored
-		if err := w.Flush(ctx); err != nil {
+		// through a repository server, only a flush reports what was stored; a
+		// direct repository has counted it already and is not flushed, keeping
+		// one index blob per snapshot
+		if err := repo.FlushForNewData(ctx, w); err != nil {
 			return errors.Wrap(err, "unable to flush snapshot contents")
 		}
 
