@@ -87,6 +87,13 @@ type ImageStatusResponse struct {
 	// KopiaVersion is the server's version; when the tasks run an older copy
 	// of kopia, Schedule.KopiaVersion differs.
 	KopiaVersion string `json:"kopiaVersion"`
+
+	// Progress is the progress of the image run in progress, if any.
+	Progress *disksource.RunProgress `json:"progress,omitempty"`
+
+	// LastRequest is the outcome of the last image command KopiaUI ran as
+	// administrator without a window, such as creating an image now.
+	LastRequest *schedule.Request `json:"lastRequest,omitempty"`
 }
 
 // ImageDisksResponse lists the disks of the server's computer that the image

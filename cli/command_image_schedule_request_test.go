@@ -8,7 +8,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/kopia/kopia/internal/clock"
 	"github.com/kopia/kopia/repo"
+	"github.com/kopia/kopia/snapshot/image/disksource"
 	"github.com/kopia/kopia/snapshot/image/schedule"
 	"github.com/kopia/kopia/tests/testenv"
 )
@@ -122,4 +124,31 @@ func TestImageSchedulePause_notScheduled(t *testing.T) {
 		require.Equal(t, op, req.Operation)
 		require.False(t, req.Success)
 	}
+}
+
+// TestImageStop checks that stop asks the run in progress to stop, and says
+// when no image is being created.
+func TestImageStop(t *testing.T) {
+	env := testenv.NewCLITest(t, testenv.RepoFormatNotImportant, testenv.NewInProcRunner(t))
+
+	stateDir := t.TempDir()
+	loc := []string{"--state-file", filepath.Join(stateDir, "state.json")}
+
+	_, stderr := env.RunAndExpectFailure(t, append([]string{"image", "stop", "--request-id", "s1"}, loc...)...)
+	require.Contains(t, strings.Join(stderr, "\n"), "no image is being created")
+	require.NoFileExists(t, disksource.StopPathIn(stateDir))
+
+	req, err := schedule.ReadRequest(schedule.RequestPath(stateDir))
+	require.NoError(t, err)
+	require.Equal(t, "s1", req.ID)
+	require.False(t, req.Success)
+
+	// a run in progress
+	require.NoError(t, disksource.WriteRunProgress(disksource.ProgressPathIn(stateDir), &disksource.RunProgress{UpdatedAt: clock.Now()}))
+
+	env.RunAndExpectSuccess(t, append([]string{"image", "stop"}, loc...)...)
+
+	r, err := disksource.ReadStopRequest(disksource.StopPathIn(stateDir))
+	require.NoError(t, err)
+	require.False(t, r.RequestedAt.IsZero())
 }

@@ -441,3 +441,30 @@ func TestCreate_invalidOptions(t *testing.T) {
 	_, _, err = Create(ctx, env.RepositoryWriter, opt)
 	require.ErrorContains(t, err, "no volumes")
 }
+
+// TestCreate_reportsProgress checks that Progress ends at the size of the
+// volumes, counting each raw volume once although it is read twice.
+func TestCreate_reportsProgress(t *testing.T) {
+	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
+
+	ntfsData := testVolumeData()
+	rawData := randomBytes(2, 3<<20)
+
+	var p Progress
+
+	opts := testCreateOptions(t, ntfsData, rawData)
+	opts.Progress = &p
+
+	require.Equal(t, ProgressSnapshot{}, p.Snapshot())
+
+	_, _, err := Create(ctx, env.RepositoryWriter, opts)
+	require.NoError(t, err)
+
+	s := p.Snapshot()
+	total := int64(len(ntfsData) + len(rawData))
+	require.Equal(t, total, s.BytesTotal)
+	require.Equal(t, total, s.BytesDone)
+	require.Equal(t, 2, s.Volumes)
+	require.Equal(t, 2, s.Volume)
+	require.NotEmpty(t, s.VolumeName)
+}

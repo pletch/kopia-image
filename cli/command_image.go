@@ -10,6 +10,7 @@ type commandImage struct {
 	restore  commandImageRestore
 	files    commandImageRestoreFiles
 	schedule commandImageSchedule
+	stop     commandImageStop
 }
 
 func (c *commandImage) setup(svc advancedAppServices, parent commandParent) {
@@ -23,4 +24,5 @@ func (c *commandImage) setup(svc advancedAppServices, parent commandParent) {
 	c.restore.setup(svc, cmd)
 	c.files.setup(svc, cmd)
 	c.schedule.setup(svc, cmd)
+	c.stop.setup(svc, cmd)
 }

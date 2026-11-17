@@ -20,6 +20,9 @@ type RunStatus struct {
 	Success   bool      `json:"success"`
 	Error     string    `json:"error,omitempty"`
 
+	// Stopped is set when the run ended because "kopia image stop" asked it to.
+	Stopped bool `json:"stopped,omitempty"`
+
 	// Images are the image snapshots the run saved, also when it failed later.
 	Images []RunImage `json:"images,omitempty"`
 

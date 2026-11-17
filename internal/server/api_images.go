@@ -10,6 +10,7 @@ import (
 
 	"github.com/pkg/errors"
 
+	"github.com/kopia/kopia/internal/clock"
 	"github.com/kopia/kopia/internal/serverapi"
 	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/snapshot"
@@ -169,6 +170,13 @@ func handleImagesStatus(ctx context.Context, rc requestContext) (any, *apiError)
 		resp.LastRun, resp.LastRunError = readImageStatusFile(disksource.StatusPathIn(stateDir), disksource.ReadRunStatus)
 		resp.RecoveryMedia, resp.RecoveryMediaError = readImageStatusFile(filepath.Join(stateDir, recoverymedia.RecordFileName), readRecoveryMedia)
 		resp.Schedule, resp.ScheduleError = readImageStatusFile(schedule.SettingsPath(stateDir), schedule.ReadSettings)
+		resp.LastRequest, _ = readImageStatusFile(schedule.RequestPath(stateDir), schedule.ReadRequest)
+
+		// a file not updated for a minute belongs to a run that ended without
+		// removing it
+		if p, _ := readImageStatusFile(disksource.ProgressPathIn(stateDir), disksource.ReadRunProgress); p != nil && clock.Now().Sub(p.UpdatedAt) < imageProgressStale {
+			resp.Progress = p
+		}
 	}
 
 	for _, name := range []string{schedule.CreateTaskName, schedule.CheckTaskName} {
@@ -306,3 +314,7 @@ func handleImagesScheduleRun(ctx context.Context, rc requestContext) (any, *apiE
 		return nil, internalServerError(err)
 	}
 }
+
+// imageProgressStale is how old a progress file may be before its run counts
+// as ended: a run updates it every disksource.ProgressInterval.
+const imageProgressStale = 30 * disksource.ProgressInterval

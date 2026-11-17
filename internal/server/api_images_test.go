@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kopia/kopia/internal/apiclient"
+	"github.com/kopia/kopia/internal/clock"
 	"github.com/kopia/kopia/internal/repotesting"
 	"github.com/kopia/kopia/internal/serverapi"
 	"github.com/kopia/kopia/internal/servertesting"
@@ -460,4 +461,46 @@ func TestImagesStatus_hiddenTasks(t *testing.T) {
 	_, err = serverapi.RunImageTask(ctx, cli)
 	require.ErrorAs(t, err, &statusErr)
 	require.Equal(t, http.StatusNotFound, statusErr.HTTPStatusCode)
+}
+
+// TestImagesStatus_progress checks that the status reports the progress of a
+// run in progress, ignores a progress file a run left behind, and reports the
+// last request.
+func TestImagesStatus_progress(t *testing.T) {
+	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
+
+	host := &fakeImageHost{dir: testutil.TempDirectory(t), tasks: map[string]schedule.TaskStatus{}}
+	cli := startImageServer(t, env, host)
+
+	st, err := serverapi.ImageStatus(ctx, cli)
+	require.NoError(t, err)
+	require.Nil(t, st.Progress)
+	require.Nil(t, st.LastRequest)
+
+	p := &disksource.RunProgress{
+		Volumes: []string{"C:"}, StartTime: clock.Now(), UpdatedAt: clock.Now(), Disk: 1, Disks: 1, DiskNumber: 3,
+		ProgressSnapshot: image.ProgressSnapshot{Volume: 3, Volumes: 4, VolumeName: "p3-C.img", BytesDone: 250, BytesTotal: 1000},
+		UploadedBytes:    42,
+	}
+	require.NoError(t, disksource.WriteRunProgress(disksource.ProgressPathIn(host.dir), p))
+	require.NoError(t, schedule.WriteRequest(schedule.RequestPath(host.dir), &schedule.Request{ID: "r", Operation: "create", Error: "open repository: invalid password"}))
+
+	st, err = serverapi.ImageStatus(ctx, cli)
+	require.NoError(t, err)
+	require.NotNil(t, st.Progress)
+	require.Equal(t, int64(250), st.Progress.BytesDone)
+	require.Equal(t, "p3-C.img", st.Progress.VolumeName)
+	require.Equal(t, 4, st.Progress.ProgressSnapshot.Volumes, "the partition count must not clash with the drive letters")
+	require.Equal(t, []string{"C:"}, st.Progress.Volumes)
+
+	require.NotNil(t, st.LastRequest)
+	require.Equal(t, "create", st.LastRequest.Operation)
+
+	// left by a run that ended without removing it
+	p.UpdatedAt = clock.Now().Add(-time.Hour)
+	require.NoError(t, disksource.WriteRunProgress(disksource.ProgressPathIn(host.dir), p))
+
+	st, err = serverapi.ImageStatus(ctx, cli)
+	require.NoError(t, err)
+	require.Nil(t, st.Progress)
 }

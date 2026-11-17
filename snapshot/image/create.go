@@ -111,6 +111,9 @@ type CreateOptions struct {
 	// Tags are added to the snapshot manifest besides TagKey.
 	Tags map[string]string
 
+	// Progress, when set, is updated as the volumes are imaged.
+	Progress *Progress
+
 	// Logf, when set, receives progress messages.
 	Logf func(format string, args ...any)
 
@@ -132,7 +135,7 @@ func Create(ctx context.Context, rep repo.RepositoryWriter, options *CreateOptio
 
 	// the caller's options stay untouched
 	withProgress := *options
-	withProgress.progress = &progress{}
+	withProgress.progress = &progress{report: options.Progress}
 	opt := &withProgress
 
 	md := &Metadata{
@@ -210,11 +213,15 @@ func (opt *CreateOptions) writeVolumes(ctx context.Context, rep repo.RepositoryW
 	volumes := slices.Clone(opt.Volumes)
 	slices.SortFunc(volumes, func(a, b VolumeSource) int { return a.PartitionNumber - b.PartitionNumber })
 
+	opt.Progress.startDisk(volumes)
+
 	var files []*snapshot.DirEntry
 
 	for i := range volumes {
 		v := &volumes[i]
 		name := VolumeEntryName(v.PartitionNumber, v.Label)
+
+		opt.Progress.startVolume(i+1, name)
 
 		opt.logf("Imaging partition %v (%v, %v bytes) as %v", v.PartitionNumber, v.Kind, v.Size, name)
 
@@ -234,6 +241,8 @@ func (opt *CreateOptions) writeVolumes(ctx context.Context, rep repo.RepositoryW
 		if _, err := rep.VerifyObject(ctx, oid); err != nil {
 			return nil, errors.Wrapf(err, "image of partition %v is incomplete", v.PartitionNumber)
 		}
+
+		opt.Progress.finishVolume(v.Size)
 
 		md.Volumes = append(md.Volumes, Volume{
 			EntryName:       name,
@@ -476,6 +485,8 @@ func (opt *CreateOptions) checkpoint(ctx context.Context, rep repo.RepositoryWri
 // volumes outside Create.
 type progress struct {
 	mu sync.Mutex
+	// report receives the progress of the volumes for CreateOptions.Progress.
+	report *Progress
 	// files are the entries of the finished volumes and bitmaps.
 	// +checklocks:mu
 	files []*snapshot.DirEntry
@@ -504,6 +515,8 @@ func (p *progress) beginVolume(name string, entries []object.IndirectObjectEntry
 		return
 	}
 
+	p.report.restartVolume()
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -526,6 +539,8 @@ func (p *progress) setChunk(entry *object.IndirectObjectEntry, oid object.ID) {
 		entry.Object = oid
 		return
 	}
+
+	p.report.addVolumeBytes(entry.Length)
 
 	p.mu.Lock()
 	defer p.mu.Unlock()

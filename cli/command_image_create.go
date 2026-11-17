@@ -4,8 +4,10 @@ import (
 	"context"
 	stderrors "errors"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/pkg/errors"
@@ -56,6 +58,14 @@ type commandImageCreate struct {
 	description   string
 	statePath     string
 
+	// req records the outcome of a run that KopiaUI started without a
+	// window; loc tells where.
+	req imageScheduleRequest
+	loc imageScheduleLocation
+
+	progress image.Progress
+	uploaded atomic.Int64
+
 	svc appServices
 	out textOutput
 }
@@ -68,9 +78,33 @@ func (c *commandImageCreate) setup(svc appServices, parent commandParent) {
 	cmd.Flag("dry-run", "Print the partition plan and the size of the zeroed space without imaging").BoolVar(&c.dryRun)
 	cmd.Flag("description", "Free-form snapshot description").StringVar(&c.description)
 	cmd.Flag("state-file", "Override the file that records shadow copies to remove after a crash").Hidden().StringVar(&c.statePath)
-	cmd.Action(svc.repositoryWriterAction(c.run))
+	c.req.flag(cmd)
+	cmd.Action(svc.noRepositoryAction(c.req.recording("create", &c.loc, c.runWithWriter)))
 	c.svc = svc
 	c.out.setup(svc)
+}
+
+// runWithWriter opens the repository and a write session itself, rather than
+// through a repository action, so that a request records a repository that
+// does not open, and counts the bytes the session uploads for the progress.
+func (c *commandImageCreate) runWithWriter(ctx context.Context) (err error) {
+	c.loc.statePath = c.statePath
+
+	rep, err := c.svc.openRepository(ctx, true)
+	if err != nil {
+		return errors.Wrap(err, "open repository")
+	}
+
+	defer func() {
+		if cerr := rep.Close(ctx); cerr != nil {
+			err = stderrors.Join(err, errors.Wrap(cerr, "unable to close repository"))
+		}
+	}()
+
+	return repo.WriteSession(ctx, rep, repo.WriteSessionOptions{ //nolint:wrapcheck
+		Purpose:  "cli:image create",
+		OnUpload: func(n int64) { c.uploaded.Add(n) },
+	}, c.run)
 }
 
 func (c *commandImageCreate) run(ctx context.Context, rep repo.RepositoryWriter) (err error) {
@@ -107,10 +141,13 @@ func (c *commandImageCreate) run(ctx context.Context, rep repo.RepositoryWriter)
 			}
 
 			status.EndTime = clock.Now()
-			status.Success = err == nil
+			status.Success = err == nil && !status.Stopped
 
-			if err != nil {
+			switch {
+			case err != nil:
 				status.Error = err.Error()
+			case status.Stopped:
+				status.Error = errImageStopped.Error()
 			}
 
 			if werr := disksource.WriteRunStatus(disksource.StatusPath(statePath), status); werr != nil {
@@ -119,7 +156,18 @@ func (c *commandImageCreate) run(ctx context.Context, rep repo.RepositoryWriter)
 		}()
 	}
 
-	return c.imageDisks(ctx, rep, statePath, status)
+	err = c.imageDisks(ctx, rep, statePath, status)
+
+	// a stopped run is not a failure, so that Task Scheduler does not retry it
+	if errors.Is(err, errImageStopped) {
+		status.Stopped = true
+
+		log(ctx).Infof("The image run stopped as requested.")
+
+		return nil
+	}
+
+	return err
 }
 
 func (c *commandImageCreate) imageDisks(ctx context.Context, rep repo.RepositoryWriter, statePath string, status *disksource.RunStatus) error {
@@ -156,10 +204,33 @@ func (c *commandImageCreate) imageDisks(ctx context.Context, rep repo.Repository
 		}
 	}()
 
-	for _, plan := range plans {
-		man, md, err := c.imageDisk(ctx, rep, plan, guard.State, logf)
+	// the run holds the lock, so the progress file and stop requests are its
+	// own; canceling runCtx stops it, saving what was uploaded
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var monitor *imageRunMonitor
+
+	if !c.dryRun {
+		uploadedBefore := c.uploaded.Load()
+		monitor = startImageRunMonitor(ctx, filepath.Dir(statePath), status.StartTime, c.volumes, len(plans), &c.progress,
+			func() int64 { return c.uploaded.Load() - uploadedBefore }, cancel)
+
+		defer monitor.close(ctx)
+	}
+
+	for i, plan := range plans {
+		if monitor != nil {
+			monitor.setDisk(i+1, plan.DiskNumber)
+		}
+
+		man, md, err := c.imageDisk(runCtx, rep, plan, guard.State, logf)
 		if man != nil {
 			status.Images = append(status.Images, runImage(man, md))
+		}
+
+		if monitor != nil && monitor.stopped() {
+			return errImageStopped
 		}
 
 		if err != nil {
@@ -266,6 +337,7 @@ func (c *commandImageCreate) imageDisk(ctx context.Context, rep repo.RepositoryW
 		FlushInterval:      c.flushInterval,
 		NewBuffer:          blockdev.AlignedBuffer,
 		Logf:               logf,
+		Progress:           &c.progress,
 	})
 	if err != nil {
 		return nil, nil, err //nolint:wrapcheck
