@@ -38,7 +38,7 @@ const (
 	// installed by the Linux package, which is how desktops find the window's icon.
 	// It must differ from singleInstanceID, which is a D-Bus name of its own.
 	linuxApplicationID = "io.kopia.KopiaUIWails"
-	logFileName      = "kopiaui-wails.log"
+	logFileName        = "kopiaui-wails.log"
 
 	// quitArg asks a running instance to quit; used by the installer.
 	quitArg = "--quit"
@@ -385,6 +385,11 @@ func (s *shell) showRepoWindow(repoID string) {
 		URL:             "/",
 		InitialPosition: application.WindowCentered,
 		Hidden:          true,
+		// Painted before the page loads, so a dark system does not flash white.
+		BackgroundColour: windowBackground(s.app.Env.IsDarkMode()),
+		Windows: application.WindowsWindow{
+			CustomTheme: windowsTitleBarTheme,
+		},
 	})
 
 	geometry, restored := s.windows.restore(s.screens())
