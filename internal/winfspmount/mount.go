@@ -119,11 +119,13 @@ func Mount(ctx context.Context, root fs.Directory, driveLetter, label string) (*
 }
 
 // mountOptions returns the WinFsp FUSE options: the drive belongs to the
-// current user, and since a snapshot never changes, Windows may cache file
-// information and data for as long as the drive is mounted.
+// current user, who alone can read it (a snapshot holds files that other
+// users could not read on the original disk), and since a snapshot never
+// changes, Windows may cache file information and data for as long as the
+// drive is mounted.
 func mountOptions(label string) []string {
 	return []string{
-		"-o", "uid=-1,gid=-1,umask=0222",
+		"-o", "uid=-1,gid=-1,umask=0277",
 		"-o", "FileInfoTimeout=-1,DirInfoTimeout=-1,VolumeInfoTimeout=-1",
 		"-o", "volname=" + volumeLabel(label),
 		"-o", "ExactFileSystemName=Kopia",

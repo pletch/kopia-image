@@ -138,6 +138,15 @@ func TestReadOnly(t *testing.T) {
 	require.Equal(t, -fuse.EROFS, f.Write("/Docs/Report.txt", []byte("x"), 0, 1))
 }
 
+// Only the user who mounted a snapshot can read it: the umask leaves the
+// owner's read (and folder traversal) bits alone.
+func TestMountOptions_ownerOnly(t *testing.T) {
+	opts := strings.Join(mountOptions("x"), " ")
+	require.Contains(t, opts, "uid=-1,gid=-1,umask=0277")
+	require.Equal(t, uint32(0o500), uint32(dirMode&0o777)&^0o277)
+	require.Equal(t, uint32(0o400), uint32(fileMode&0o777)&^0o277)
+}
+
 func TestVolumeLabel(t *testing.T) {
 	require.Equal(t, "C on host, 2026-11-17", strings.ReplaceAll(volumeLabel("C on host, 2026-11-17"), "_", ","))
 	require.Equal(t, "a_b_c", volumeLabel("a,b\\c"))
