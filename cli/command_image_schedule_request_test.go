@@ -3,6 +3,7 @@ package cli_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -46,6 +47,11 @@ func TestImageScheduleInstall_recordsFailure(t *testing.T) {
 // TestImageScheduleUpdate checks that update reports whether the tasks run
 // another kopia and replaces their copy, keeping their connection.
 func TestImageScheduleUpdate(t *testing.T) {
+	// image schedule commands refuse to run elsewhere than on Windows
+	if runtime.GOOS != "windows" {
+		t.Skip("image schedules are Windows-only")
+	}
+
 	env := testenv.NewCLITest(t, testenv.RepoFormatNotImportant, testenv.NewInProcRunner(t))
 
 	stateDir := t.TempDir()
@@ -109,6 +115,11 @@ func TestImageScheduleUpdate(t *testing.T) {
 // TestImageSchedulePause_notScheduled checks that pause and resume say when
 // there is nothing to pause, and record it for KopiaUI.
 func TestImageSchedulePause_notScheduled(t *testing.T) {
+	// image schedule commands refuse to run elsewhere than on Windows
+	if runtime.GOOS != "windows" {
+		t.Skip("image schedules are Windows-only")
+	}
+
 	env := testenv.NewCLITest(t, testenv.RepoFormatNotImportant, testenv.NewInProcRunner(t))
 
 	stateDir := t.TempDir()

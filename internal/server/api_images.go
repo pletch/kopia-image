@@ -186,7 +186,6 @@ func handleImagesStatus(ctx context.Context, rc requestContext) (any, *apiError)
 		ts, err := host.QueryTask(ctx, t.Name)
 
 		switch {
-		// checked first: elsewhere than on Windows ErrTaskNotFound is ErrNotSupported
 		case errors.Is(err, schedule.ErrNotSupported):
 			return &serverapi.ImageStatusResponse{Tasks: []*serverapi.ImageTask{}}, nil
 		case errors.Is(err, schedule.ErrTaskNotFound):
@@ -298,7 +297,7 @@ func handleImagesScheduleRun(ctx context.Context, rc requestContext) (any, *apiE
 	}
 
 	// a task hidden from the server's account can be started as administrator
-	if errors.Is(err, schedule.ErrTaskNotFound) && !errors.Is(err, schedule.ErrNotSupported) && scheduleInstalled(host) {
+	if errors.Is(err, schedule.ErrTaskNotFound) && scheduleInstalled(host) {
 		err = schedule.ErrAccessDenied
 	}
 

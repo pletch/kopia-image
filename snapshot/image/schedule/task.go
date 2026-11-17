@@ -21,6 +21,11 @@ import (
 // ErrNotSupported is returned on platforms without Windows Task Scheduler.
 var ErrNotSupported = errors.New("scheduling kopia image runs is supported only on Windows")
 
+// ErrTaskNotFound is returned when a task does not exist. It is distinct from
+// ErrNotSupported on every platform, so that code taking task status from
+// elsewhere, such as a test's fake scheduler, tells the two apart.
+var ErrTaskNotFound = errors.New("scheduled task not found")
+
 // ErrAccessDenied is returned when Task Scheduler refuses the caller, such as
 // a user who is not running as administrator starting a task that runs as
 // SYSTEM.

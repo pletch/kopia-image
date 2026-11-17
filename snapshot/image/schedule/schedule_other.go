@@ -4,9 +4,6 @@ package schedule
 
 import "context"
 
-// ErrTaskNotFound is returned when a task does not exist.
-var ErrTaskNotFound = ErrNotSupported
-
 // Install is not supported on this platform.
 func Install(context.Context, *Task) error { return ErrNotSupported }
 

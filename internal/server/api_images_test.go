@@ -518,13 +518,18 @@ func TestImageSnapshots_sizeIsBytesRead(t *testing.T) {
 	require.NotNil(t, current.ImageBytesRead)
 	require.Equal(t, int64(len(data)), *current.ImageBytesRead)
 
-	// an image taken by an earlier version, whose manifest lacks the field
-	older := mustCreateRawImage(t, env, localHost, "0f6ab3f2-1c3d-4e5f-8a9b-0c1d2e3f4a55", data)
-	require.NoError(t, env.RepositoryWriter.DeleteManifest(ctx, older.ID))
+	// an image taken by an earlier version, whose manifest lacks the field:
+	// a copy of the manifest for another disk, sharing the image's contents.
+	// Rewriting a manifest would mean deleting it, and the deletion can carry
+	// the same timestamp as the manifest on coarse clocks, so it may not win.
+	olderPath, err := image.DiskSourcePath("0f6ab3f2-1c3d-4e5f-8a9b-0c1d2e3f4a55")
+	require.NoError(t, err)
 
+	older := current.Clone()
 	older.ID = ""
+	older.Source.Path = olderPath
 	older.ImageBytesRead = nil
-	_, err := snapshot.SaveSnapshot(ctx, env.RepositoryWriter, older)
+	_, err = snapshot.SaveSnapshot(ctx, env.RepositoryWriter, older)
 	require.NoError(t, err)
 	require.NoError(t, env.RepositoryWriter.Flush(ctx))
 

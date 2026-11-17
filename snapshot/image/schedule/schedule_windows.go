@@ -16,9 +16,6 @@ import (
 	"github.com/kopia/kopia/internal/clock"
 )
 
-// ErrTaskNotFound is returned when a task does not exist.
-var ErrTaskNotFound = errors.New("scheduled task not found")
-
 // Install registers a task, replacing a task of the same name.
 func Install(ctx context.Context, t *Task) error {
 	data, err := t.XML(clock.Now())
