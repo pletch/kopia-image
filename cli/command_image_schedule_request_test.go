@@ -1,11 +1,13 @@
 package cli_test
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/snapshot/image/schedule"
 	"github.com/kopia/kopia/tests/testenv"
 )
@@ -36,4 +38,67 @@ func TestImageScheduleInstall_recordsFailure(t *testing.T) {
 	other := t.TempDir()
 	env.RunAndExpectFailure(t, "image", "schedule", "install", "C:", "--state-file", filepath.Join(other, "state.json"))
 	require.NoFileExists(t, schedule.RequestPath(other))
+}
+
+// TestImageScheduleUpdate checks that update reports whether the tasks run
+// another kopia and replaces their copy, keeping their connection.
+func TestImageScheduleUpdate(t *testing.T) {
+	env := testenv.NewCLITest(t, testenv.RepoFormatNotImportant, testenv.NewInProcRunner(t))
+
+	stateDir := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "image")
+	loc := []string{"--task-folder", `\KopiaTest`, "--config-dir", configDir, "--state-file", filepath.Join(stateDir, "state.json")}
+
+	// not scheduled
+	out := env.RunAndExpectSuccess(t, append([]string{"image", "schedule", "update", "--check"}, loc...)...)
+	require.Equal(t, []string{"not-scheduled"}, out)
+
+	env.RunAndExpectFailure(t, append([]string{"image", "schedule", "update"}, loc...)...)
+
+	// scheduled by an older kopia
+	require.NoError(t, schedule.WriteSettings(schedule.SettingsPath(stateDir), &schedule.Settings{
+		Volumes: []string{"C:"}, At: "02:00", KopiaVersion: "0.0.1-old",
+	}))
+
+	out = env.RunAndExpectSuccess(t, append([]string{"image", "schedule", "update", "--check"}, loc...)...)
+	require.Equal(t, []string{"outdated 0.0.1-old " + repo.BuildVersion}, out)
+
+	// the tasks' connection is missing: install is needed
+	env.RunAndExpectFailure(t, append([]string{"image", "schedule", "update", "--request-id", "u1"}, loc...)...)
+
+	req, err := schedule.ReadRequest(schedule.RequestPath(stateDir))
+	require.NoError(t, err)
+	require.Equal(t, "u1", req.ID)
+	require.False(t, req.Success)
+	require.Contains(t, req.Error, "kopia image schedule install")
+
+	// with the connection, the copy is replaced and the connection kept
+	require.NoError(t, os.MkdirAll(configDir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "repository.config"), []byte("{}"), 0o600))
+
+	newExe := filepath.Join(t.TempDir(), "kopia.exe")
+	require.NoError(t, os.WriteFile(newExe, []byte("new kopia"), 0o600))
+
+	env.RunAndExpectSuccess(t, append([]string{"image", "schedule", "update", "--kopia-exe", newExe, "--request-id", "u2"}, loc...)...)
+
+	b, err := os.ReadFile(filepath.Join(configDir, "bin", "kopia.exe"))
+	require.NoError(t, err)
+	require.Equal(t, "new kopia", string(b))
+
+	cfg, err := os.ReadFile(filepath.Join(configDir, "repository.config"))
+	require.NoError(t, err)
+	require.Equal(t, "{}", string(cfg))
+
+	s, err := schedule.ReadSettings(schedule.SettingsPath(stateDir))
+	require.NoError(t, err)
+	require.Equal(t, repo.BuildVersion, s.KopiaVersion)
+	require.Equal(t, []string{"C:"}, s.Volumes)
+
+	req, err = schedule.ReadRequest(schedule.RequestPath(stateDir))
+	require.NoError(t, err)
+	require.Equal(t, "u2", req.ID)
+	require.True(t, req.Success, req.Error)
+
+	out = env.RunAndExpectSuccess(t, append([]string{"image", "schedule", "update", "--check"}, loc...)...)
+	require.Equal(t, []string{"up-to-date " + repo.BuildVersion}, out)
 }

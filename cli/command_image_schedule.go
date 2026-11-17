@@ -37,6 +37,7 @@ type commandImageSchedule struct {
 	show    commandImageScheduleShow
 	run     commandImageScheduleRun
 	remove  commandImageScheduleRemove
+	update  commandImageScheduleUpdate
 }
 
 func (c *commandImageSchedule) setup(svc advancedAppServices, parent commandParent) {
@@ -45,6 +46,7 @@ func (c *commandImageSchedule) setup(svc advancedAppServices, parent commandPare
 	c.show.setup(svc, cmd)
 	c.run.setup(svc, cmd)
 	c.remove.setup(svc, cmd)
+	c.update.setup(svc, cmd)
 }
 
 // imageScheduleLocation names the scheduled tasks and the folder holding
@@ -471,7 +473,12 @@ func (c *commandImageScheduleInstall) secureConfigDir() error {
 // such as a per-user installation, and replacing it would then run any
 // program as SYSTEM.
 func (c *commandImageScheduleInstall) installExecutable() error {
-	src := c.kopiaExe
+	return installTaskExecutable(&c.loc, c.kopiaExe)
+}
+
+// installTaskExecutable copies src, or the running kopia when src is "",
+// into the task folder of loc.
+func installTaskExecutable(loc *imageScheduleLocation, src string) error {
 	if src == "" {
 		exe, err := os.Executable()
 		if err != nil {
@@ -481,7 +488,7 @@ func (c *commandImageScheduleInstall) installExecutable() error {
 		src = exe
 	}
 
-	dst := c.loc.taskExe()
+	dst := loc.taskExe()
 
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil { //nolint:mnd
 		return errors.Wrapf(err, "unable to create %v", filepath.Dir(dst))
@@ -527,7 +534,33 @@ func copyFile(src, dst string) (err error) {
 		return joined
 	}
 
-	return os.Rename(tmp, dst) //nolint:wrapcheck
+	return replaceFile(tmp, dst)
+}
+
+// replaceFile renames src to dst, replacing it. Windows does not replace a
+// program that is running, as the tasks' kopia is during an image run, but
+// lets it be renamed: the running program goes on from the renamed file,
+// which is removed by the next replacement once nothing runs it.
+func replaceFile(src, dst string) error {
+	old := dst + ".old"
+
+	// left by an earlier replacement; still in use if that run goes on
+	_ = os.Remove(old)
+
+	err := os.Rename(src, dst)
+	if err == nil {
+		return nil
+	}
+
+	if rerr := os.Rename(dst, old); rerr != nil {
+		return err //nolint:wrapcheck
+	}
+
+	if err := os.Rename(src, dst); err != nil {
+		return stderrors.Join(err, os.Rename(old, dst))
+	}
+
+	return nil
 }
 
 func parseWeekdays(s string) ([]time.Weekday, error) {

@@ -259,8 +259,21 @@ func verifyContents(root string) error {
 			return errors.Wrapf(err, "unable to examine %v", path)
 		}
 
+		// Nobody but SYSTEM and Administrators can add entries once the folder
+		// is secured, so a link of theirs, such as the latest.log link that
+		// kopia's logging keeps next to the scheduled runs' logs, is kopia's
+		// own. Links are never followed.
 		if isLink(fi) {
-			return errors.Wrapf(ErrUntrusted, "%v is a link; remove it and try again", path)
+			owner, err := linkOwner(path)
+			if err != nil {
+				return errors.Wrapf(err, "unable to read the owner of %v", path)
+			}
+
+			if !isTrustedOwner(owner) {
+				return errors.Wrapf(ErrUntrusted, "%v is a link owned by %v; remove it and try again", path, owner)
+			}
+
+			return nil
 		}
 
 		sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
@@ -297,6 +310,31 @@ func isLink(fi os.FileInfo) bool {
 	}
 
 	return fi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0
+}
+
+// linkOwner returns the owner of a link itself, not of what it points to.
+func linkOwner(path string) (*windows.SID, error) {
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return nil, err //nolint:wrapcheck
+	}
+
+	h, err := windows.CreateFile(p, windows.READ_CONTROL,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil,
+		windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT|windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		return nil, err //nolint:wrapcheck
+	}
+	defer windows.CloseHandle(h) //nolint:errcheck
+
+	sd, err := windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	if err != nil {
+		return nil, err //nolint:wrapcheck
+	}
+
+	owner, _, err := sd.Owner()
+
+	return owner, err //nolint:wrapcheck
 }
 
 func isTrustedOwner(sid *windows.SID) bool {

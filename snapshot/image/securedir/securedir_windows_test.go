@@ -171,12 +171,45 @@ func TestSecure_rejectsLinks(t *testing.T) {
 		require.ErrorIs(t, securedir.Secure(link, securedir.AdminsOnly), securedir.ErrUntrusted)
 	})
 
-	t.Run("an entry", func(t *testing.T) {
-		dir := t.TempDir()
-		makeJunction(t, filepath.Join(dir, "link"), target)
+	t.Run("an entry of another owner", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "secured")
+		require.NoError(t, securedir.Secure(dir, securedir.AdminsOnly))
+
+		link := filepath.Join(dir, "link")
+		makeJunction(t, link, target)
+		giveLinkToCurrentUser(t, link)
 
 		require.ErrorIs(t, securedir.Secure(dir, securedir.AdminsOnly), securedir.ErrUntrusted)
 	})
+
+	// such as the latest.log link of kopia's logging, made by a scheduled run
+	t.Run("an entry of an administrator", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "secured")
+		require.NoError(t, securedir.Secure(dir, securedir.AdminsOnly))
+		makeJunction(t, filepath.Join(dir, "link"), target)
+
+		require.NoError(t, securedir.Secure(dir, securedir.AdminsOnly))
+	})
+}
+
+// giveLinkToCurrentUser makes the current user the owner of a link itself,
+// not of what it points to.
+func giveLinkToCurrentUser(t *testing.T, link string) {
+	t.Helper()
+
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	require.NoError(t, err)
+
+	p, err := windows.UTF16PtrFromString(link)
+	require.NoError(t, err)
+
+	h, err := windows.CreateFile(p, windows.WRITE_OWNER, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil,
+		windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT|windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	require.NoError(t, err)
+
+	defer windows.CloseHandle(h) //nolint:errcheck
+
+	require.NoError(t, windows.SetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION, user.User.Sid, nil, nil, nil))
 }
 
 func makeJunction(t *testing.T, link, target string) {
