@@ -408,6 +408,9 @@ func (h *proxyHandler) serveShim(w http.ResponseWriter, r *http.Request, repoID 
 			return h.host.startImage(repoID, req.Volumes)
 		})
 
+	case "stop-image":
+		serveElevated(w, r, "done", func(*struct{}) error { return h.host.stopImage() })
+
 	case "create-recovery-media":
 		serveElevated(w, r, "started", func(*struct{}) error { return h.host.startRecoveryMedia(repoID) })
 

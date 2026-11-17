@@ -245,10 +245,15 @@ func TestServeShim_imageSchedule(t *testing.T) {
 func TestServeShim_createImageAndRecoveryMedia(t *testing.T) {
 	sh := scheduleShell(t)
 
-	var consoles [][]string
+	var consoles, detached [][]string
 
 	sh.runConsole = func(exe string, args []string) error {
 		consoles = append(consoles, append([]string{exe}, args...))
+		return nil
+	}
+
+	sh.runDetached = func(exe string, args []string) error {
+		detached = append(detached, append([]string{exe}, args...))
 		return nil
 	}
 
@@ -270,34 +275,56 @@ func TestServeShim_createImageAndRecoveryMedia(t *testing.T) {
 
 	cfg := sh.configs.configFile(defaultRepoID)
 
-	if want := []string{sh.kopiaPath, "--config-file", cfg, "image", "create", "C:", "D:"}; !slices.Equal(consoles[0], want) {
-		t.Fatalf("ran %q, want %q", consoles[0], want)
+	// an image runs without a window, with a request ID for its outcome
+	got := detached[0]
+	if want := []string{sh.kopiaPath, "--config-file", cfg, "image", "create", "C:", "D:", "--request-id"}; len(got) != len(want)+1 || !slices.Equal(got[:len(want)], want) {
+		t.Fatalf("ran %q, want %q and an ID", got, want)
 	}
 
 	if rec := post("create-recovery-media", `{}`); rec.Code != http.StatusOK {
 		t.Fatalf("create-recovery-media: got %v: %s", rec.Code, rec.Body)
 	}
 
-	if want := []string{sh.kopiaPath, "--config-file", cfg, "image", "recovery-media", "create"}; !slices.Equal(consoles[1], want) {
-		t.Fatalf("ran %q, want %q", consoles[1], want)
+	// recovery media asks which USB disk to erase in its console
+	if want := []string{sh.kopiaPath, "--config-file", cfg, "image", "recovery-media", "create"}; len(consoles) != 1 || !slices.Equal(consoles[0], want) {
+		t.Fatalf("ran %q, want %q", consoles, want)
 	}
 
 	// what reaches the administrator command line is checked
-	for _, body := range []string{`{"volumes":[]}`, `{"volumes":["C:\Windows"]}`, `{"volumes":["--config-file=x"]}`} {
-		if rec := post("create-image", body); rec.Code != http.StatusBadRequest {
-			t.Fatalf("%v: got %v", body, rec.Code)
+	for _, body := range []string{`{"volumes":[]}`, `{"volumes":["C:\\Windows"]}`, `{"volumes":["--config-file=x"]}`} {
+		if rec := post("create-image", body); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid image schedule") {
+			t.Fatalf("%v: got %v: %s", body, rec.Code, rec.Body)
 		}
 	}
 
 	// a declined prompt
-	sh.runConsole = func(string, []string) error { return errElevationCanceled }
+	sh.runDetached = func(string, []string) error { return errElevationCanceled }
 
 	if rec := post("create-image", `{"volumes":["C:"]}`); !strings.Contains(rec.Body.String(), `"canceled"`) {
 		t.Fatalf("declined: got %v: %s", rec.Code, rec.Body)
 	}
 
-	if len(consoles) != 2 {
-		t.Fatalf("ran %v consoles, want 2", len(consoles))
+	if len(detached) != 1 {
+		t.Fatalf("started %v images, want 1", len(detached))
+	}
+}
+
+func TestStopImage(t *testing.T) {
+	sh := scheduleShell(t)
+
+	var ran [][]string
+
+	sh.runElevated = fakeKopia(t, sh.imageStateDir, func([]string) imageScheduleOutcome {
+		return imageScheduleOutcome{Error: "no image is being created"}
+	}, &ran)
+
+	err := sh.stopImage()
+	if err == nil || !strings.Contains(err.Error(), "no image is being created") {
+		t.Fatalf("got %v", err)
+	}
+
+	if len(ran) != 1 || !slices.Equal(ran[0][:2], []string{"image", "stop"}) {
+		t.Fatalf("ran %q", ran)
 	}
 }
 

@@ -37,10 +37,11 @@ func (s *shell) startRecoveryMedia(repoID string) error {
 	})
 }
 
-// startImage opens an administrator console that runs "kopia image create"
-// for a repository, imaging the disks that hold the given volumes, so that
-// images can be created without a schedule. The console shows its progress;
-// closing it cancels the run.
+// startImage starts "kopia image create" as administrator, after the UAC
+// prompt, without a window, for a repository, imaging the disks that hold
+// the given volumes, so that images can be created without a schedule. It
+// does not wait: the run reports its progress, and a failure to start,
+// through the state folder, which the Images page shows.
 func (s *shell) startImage(repoID string, volumes []string) error {
 	if s.server(repoID) == nil {
 		return fmt.Errorf("unknown repository %q", repoID)
@@ -50,7 +51,30 @@ func (s *shell) startImage(repoID string, volumes []string) error {
 		return err
 	}
 
-	args := []string{"--config-file", s.configs.configFile(repoID), "image", "create"}
+	id, err := newRequestID()
+	if err != nil {
+		return err
+	}
 
-	return s.elevatedConsole()(s.kopiaPath, append(args, volumes...))
+	args := []string{"--config-file", s.configs.configFile(repoID), "image", "create"}
+	args = append(args, volumes...)
+	args = append(args, "--request-id", id)
+
+	run := s.runDetached
+	if run == nil {
+		run = runElevatedDetached
+	}
+
+	return run(s.kopiaPath, args)
+}
+
+// stopImage asks the image run in progress to stop, as administrator after
+// the UAC prompt; the run keeps what it uploaded.
+func (s *shell) stopImage() error {
+	id, err := newRequestID()
+	if err != nil {
+		return err
+	}
+
+	return s.runImageScheduleRequest("stop", id, []string{"image", "stop", "--request-id", id})
 }

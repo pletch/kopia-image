@@ -115,6 +115,9 @@ type shell struct {
 
 	// runConsole is nil except in tests: runElevatedConsole is used.
 	runConsole consoleRunner
+
+	// runDetached is nil except in tests: runElevatedDetached is used.
+	runDetached func(exe string, args []string) error
 }
 
 func main() {

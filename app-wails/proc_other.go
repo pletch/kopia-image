@@ -26,3 +26,8 @@ func runElevatedHidden(string, []string, time.Duration) (uint32, error) {
 func kopiaStateDir() (string, error) {
 	return "", errors.New("disk images are scheduled only on Windows")
 }
+
+// runElevatedDetached is used only on Windows.
+func runElevatedDetached(string, []string) error {
+	return errors.New("disk images are created only on Windows")
+}

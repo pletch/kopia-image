@@ -74,11 +74,16 @@
       return postElevated("resume-image-schedule", {});
     },
     // Creates images of the disks holding the given volumes (drive letters)
-    // now, without a schedule: after the UAC prompt, a console window runs
-    // kopia image create with this window's repository and shows its
-    // progress. Resolves to "started" or "canceled".
+    // now, whether or not images are scheduled: after the UAC prompt, kopia
+    // image create runs with this window's repository without a window; the
+    // Images page shows its progress. Resolves to "started" or "canceled".
     createImageElevated: function (volumes) {
       return postElevated("create-image", { volumes: volumes });
+    },
+    // Asks the image run in progress to stop, as an administrator after the
+    // UAC prompt; it keeps what it uploaded. Resolves to "done" or "canceled".
+    stopImageElevated: function () {
+      return postElevated("stop-image", {});
     },
     // Opens a console window that builds recovery media for this window's
     // repository, after the UAC prompt. Resolves to "started" or "canceled".

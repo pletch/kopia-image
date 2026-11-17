@@ -171,3 +171,47 @@ func kopiaStateDir() (string, error) {
 
 	return filepath.Join(pd, "kopia"), nil
 }
+
+// runElevatedDetached starts a program as an administrator, after the UAC
+// prompt, without a window, and does not wait for it: for long jobs that
+// report their progress elsewhere, such as an image run.
+func runElevatedDetached(exe string, args []string) error {
+	parts := make([]string, 0, len(args))
+	for _, a := range args {
+		parts = append(parts, syscall.EscapeArg(a))
+	}
+
+	verb, _ := windows.UTF16PtrFromString("runas")
+
+	file, err := windows.UTF16PtrFromString(exe)
+	if err != nil {
+		return err //nolint:wrapcheck
+	}
+
+	params, err := windows.UTF16PtrFromString(strings.Join(parts, " "))
+	if err != nil {
+		return err //nolint:wrapcheck
+	}
+
+	dir, _ := windows.UTF16PtrFromString(filepath.Dir(exe))
+
+	info := &shellExecuteInfo{
+		fMask:      seeMaskNoAsync,
+		verb:       verb,
+		file:       file,
+		parameters: params,
+		directory:  dir,
+		show:       windows.SW_HIDE,
+	}
+	info.cbSize = uint32(unsafe.Sizeof(*info))
+
+	if ok, _, callErr := procShellExecuteExW.Call(uintptr(unsafe.Pointer(info))); ok == 0 {
+		if errors.Is(callErr, windows.ERROR_CANCELLED) { //nolint:misspell // the Windows API name
+			return errElevationCanceled
+		}
+
+		return fmt.Errorf("unable to start %v: %w", filepath.Base(exe), callErr)
+	}
+
+	return nil
+}
