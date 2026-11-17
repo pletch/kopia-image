@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"fmt"
 	"io"
 	"sync/atomic"
 	"testing"
@@ -35,7 +36,9 @@ func TestImageCreate_throughAPIServer(t *testing.T) {
 	require.Equal(t, int64(len(data)), md.Totals().BytesRead)
 
 	// random data does not compress: the server stored at least its size
-	require.NotNil(t, md.UploadedBytes, "uploaded bytes are recorded through a repository server")
+	require.NotNil(t, md.NewDataBytes)
+	require.GreaterOrEqual(t, *md.NewDataBytes, int64(len(data)))
+	require.NotNil(t, md.UploadedBytes, "stored bytes are recorded through a repository server")
 	require.GreaterOrEqual(t, *md.UploadedBytes, int64(len(data)))
 	require.GreaterOrEqual(t, sent, int64(len(data)))
 }
@@ -44,11 +47,19 @@ func TestImageCreate_throughAPIServer(t *testing.T) {
 // made through a repository server records what the server stored after
 // compressing, not the larger amount the client sent.
 func TestImageCreate_throughAPIServerRecordsStoredBytes(t *testing.T) {
-	data := bytes.Repeat([]byte("kopia image compressible data.. "), (2*image.DefaultChunkSize)/32)
+	// numbered lines: compressible, but no two chunks alike
+	var buf bytes.Buffer
+	for i := 0; buf.Len() < 2*image.DefaultChunkSize; i++ {
+		fmt.Fprintf(&buf, "kopia image compressible line %010d\n", i)
+	}
+
+	data := buf.Bytes()[:2*image.DefaultChunkSize]
 
 	md, sent := createImageThroughAPIServer(t, data, "zstd-fastest")
 
 	require.GreaterOrEqual(t, sent, int64(len(data)), "the client sends contents uncompressed")
+	require.NotNil(t, md.NewDataBytes)
+	require.GreaterOrEqual(t, *md.NewDataBytes, int64(len(data)), "new data is counted before compression")
 	require.NotNil(t, md.UploadedBytes)
 	require.Positive(t, *md.UploadedBytes)
 	require.Less(t, *md.UploadedBytes, int64(len(data))/10, "the server reports the compressed size")
@@ -101,7 +112,6 @@ func createImageThroughAPIServer(t *testing.T, data []byte, comp compression.Nam
 				Open: func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(data)), nil },
 			}},
 			Compressor: comp,
-			Uploaded:   sent.Load,
 		})
 
 		return cerr
@@ -115,6 +125,7 @@ func createImageThroughAPIServer(t *testing.T, data []byte, comp compression.Nam
 	md, err := image.ReadMetadata(ctx, rep, mans[0])
 	require.NoError(t, err)
 	require.Equal(t, md.UploadedBytes, mans[0].UploadedBytes)
+	require.Equal(t, md.NewDataBytes, mans[0].NewDataBytes)
 
 	return md, sent.Load()
 }

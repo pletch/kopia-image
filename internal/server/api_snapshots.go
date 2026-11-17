@@ -270,6 +270,11 @@ func convertSnapshotManifest(m *snapshot.Manifest) *serverapi.Snapshot {
 		e.UploadedBytes = &n
 	}
 
+	if m.NewDataBytes != nil {
+		n := *m.NewDataBytes
+		e.NewDataBytes = &n
+	}
+
 	if m.ImageBytesRead != nil {
 		n := *m.ImageBytesRead
 		e.ImageBytesRead = &n

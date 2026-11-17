@@ -136,6 +136,7 @@ func convertImageSnapshot(ctx context.Context, rc requestContext, m *snapshot.Ma
 
 	img.DiskGUID = md.DiskGUID
 	img.Totals = md.Totals()
+	img.NewDataBytes = md.NewDataBytes
 	img.UploadedBytes = md.UploadedBytes
 
 	for i := range md.Volumes {

@@ -111,13 +111,6 @@ type CreateOptions struct {
 	// Tags are added to the snapshot manifest besides TagKey.
 	Tags map[string]string
 
-	// Uploaded, when set, returns how many bytes the write session has sent
-	// so far; Create records the difference over the run as the image's
-	// uploaded bytes. Through a repository server it is the only source of
-	// that number (the caller counts WriteSessionOptions.OnUpload); a direct
-	// repository's own pack counter is used instead.
-	Uploaded func() int64
-
 	// Progress, when set, is updated as the volumes are imaged.
 	Progress *Progress
 
@@ -152,7 +145,7 @@ func Create(ctx context.Context, rep repo.RepositoryWriter, options *CreateOptio
 		StartTime:     rep.Time().UTC(),
 	}
 
-	uploaded := opt.newUploadCounter(rep)
+	newDataBefore := repo.NewDataOf(rep)
 
 	stopPeriodic := opt.startPeriodic(ctx, rep, md)
 
@@ -173,7 +166,9 @@ func Create(ctx context.Context, rep repo.RepositoryWriter, options *CreateOptio
 		return nil, nil, errors.Wrap(err, "unable to flush images")
 	}
 
-	md.UploadedBytes = uploaded()
+	newBytes, storedBytes := repo.NewDataOf(rep).Since(newDataBefore)
+	md.NewDataBytes = &newBytes
+	md.UploadedBytes = storedBytes
 
 	md.EndTime = rep.Time().UTC()
 
@@ -447,6 +442,11 @@ func (opt *CreateOptions) saveManifest(ctx context.Context, rep repo.RepositoryW
 		man.UploadedBytes = &n
 	}
 
+	if md.NewDataBytes != nil {
+		n := *md.NewDataBytes
+		man.NewDataBytes = &n
+	}
+
 	read := md.Totals().BytesRead
 	man.ImageBytesRead = &read
 
@@ -584,34 +584,6 @@ func (p *progress) replaceCheckpoint(ctx context.Context, rep repo.RepositoryWri
 
 	if err := rep.DeleteManifest(ctx, previous); err != nil {
 		logf("Unable to delete the checkpoint %v, which retention will remove: %v", previous, err)
-	}
-}
-
-// newUploadCounter starts counting what the run stores and returns a function
-// that, after a flush, returns the count, or nil if it is not known. It is
-// the new contents stored, compressed and encrypted, see repo.StoredBytes.
-// When a repository server does not report that, it falls back to what the
-// write session sent, opt.Uploaded, which is not compressed.
-func (opt *CreateOptions) newUploadCounter(rep repo.RepositoryWriter) func() *int64 {
-	storedBefore, _ := repo.StoredBytes(rep)
-
-	var sentBefore int64
-	if opt.Uploaded != nil {
-		sentBefore = opt.Uploaded()
-	}
-
-	return func() *int64 {
-		if stored, ok := repo.StoredBytes(rep); ok {
-			n := stored - storedBefore
-			return &n
-		}
-
-		if opt.Uploaded != nil {
-			n := opt.Uploaded() - sentBefore
-			return &n
-		}
-
-		return nil
 	}
 }
 

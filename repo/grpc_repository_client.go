@@ -265,11 +265,14 @@ type grpcRepositoryClient struct {
 
 	recent recentlyRead
 
-	// storedBytes sums what the server reported storing for this client's
-	// sessions, see StoredBytes; storedBytesKnown is set once a server
-	// reported it.
-	storedBytes      atomic.Int64
-	storedBytesKnown atomic.Bool
+	// serverNewBytes and serverStoredBytes sum what the server reported
+	// storing for this client's sessions, before and after compression, see
+	// NewData; serverReported is set once a server reported them. sentBytes
+	// counts the contents sent, for servers that do not.
+	serverNewBytes    atomic.Int64
+	serverStoredBytes atomic.Int64
+	serverReported    atomic.Bool
+	sentBytes         atomic.Int64
 }
 
 type grpcInnerSession struct {
@@ -284,8 +287,9 @@ type grpcInnerSession struct {
 
 	wg sync.WaitGroup
 
-	// packedBytes is the last count of stored bytes the server reported for
-	// this session; flush responses report the session's running total.
+	// newBytes and packedBytes are the last totals the server reported for
+	// this session; flush responses report the session's running totals.
+	newBytes    atomic.Int64
 	packedBytes atomic.Int64
 }
 
@@ -976,12 +980,13 @@ func (r *grpcRepositoryClient) Flush(ctx context.Context) error {
 	}
 
 	if _, err := inSessionWithoutRetry(ctx, r, func(ctx context.Context, sess *grpcInnerSession) (bool, error) {
-		packed, err := sess.Flush(ctx)
-		if err == nil && packed != nil {
-			// Swap makes concurrent flushes add up to the session's total
+		resp, err := sess.Flush(ctx)
+		if err == nil && resp.PackedBytes != nil && resp.NewBytes != nil {
+			// Swap makes concurrent flushes add up to the session's totals
 			// whichever response arrives last.
-			r.storedBytes.Add(*packed - sess.packedBytes.Swap(*packed))
-			r.storedBytesKnown.Store(true)
+			r.serverStoredBytes.Add(*resp.PackedBytes - sess.packedBytes.Swap(*resp.PackedBytes))
+			r.serverNewBytes.Add(*resp.NewBytes - sess.newBytes.Swap(*resp.NewBytes))
+			r.serverReported.Store(true)
 		}
 
 		return false, err
@@ -996,26 +1001,32 @@ func (r *grpcRepositoryClient) Flush(ctx context.Context) error {
 	return nil
 }
 
-// Flush flushes the session on the server and returns the bytes the session
-// has stored so far, or nil if the server does not report them.
-func (r *grpcInnerSession) Flush(ctx context.Context) (*int64, error) {
+// Flush flushes the session on the server and returns its response, which
+// reports the new data the session has stored if the server is recent.
+func (r *grpcInnerSession) Flush(ctx context.Context) (*apipb.FlushResponse, error) {
 	return sendAndReceive(ctx, r, &apipb.SessionRequest{
 		Request: &apipb.SessionRequest_Flush{
 			Flush: &apipb.FlushRequest{},
 		},
-	}, func(resp *apipb.SessionResponse) (*int64, error) {
+	}, func(resp *apipb.SessionResponse) (*apipb.FlushResponse, error) {
 		switch rr := resp.GetResponse().(type) {
 		case *apipb.SessionResponse_Flush:
-			return rr.Flush.PackedBytes, nil
+			return rr.Flush, nil
 		default:
 			return nil, unhandledSessionResponse(resp)
 		}
 	})
 }
 
-// StoredBytes implements StoredBytesReporter.
-func (r *grpcRepositoryClient) StoredBytes() (int64, bool) {
-	return r.storedBytes.Load(), r.storedBytesKnown.Load()
+// NewData implements NewDataReporter. The server reports the new data when
+// the client flushes; until a server has, or with a server too old to report
+// it, the new data is what the client sent and the stored size is unknown.
+func (r *grpcRepositoryClient) NewData() NewData {
+	if r.serverReported.Load() {
+		return NewData{Bytes: r.serverNewBytes.Load(), StoredBytes: r.serverStoredBytes.Load(), StoredKnown: true}
+	}
+
+	return NewData{Bytes: r.sentBytes.Load()}
 }
 
 func (r *grpcRepositoryClient) NewWriter(ctx context.Context, opt WriteSessionOptions) (context.Context, RepositoryWriter, error) {
@@ -1203,6 +1214,7 @@ func (r *grpcRepositoryClient) doWriteAsync(ctx context.Context, contentID conte
 	}
 
 	r.opt.OnUpload(int64(len(data)))
+	r.sentBytes.Add(int64(len(data)))
 
 	if _, err := inSessionWithoutRetry(ctx, r, func(ctx context.Context, sess *grpcInnerSession) (content.ID, error) {
 		sess.writeContentAsyncAndVerify(ctx, contentID, data, prefix, comp, r.asyncWritesWG)

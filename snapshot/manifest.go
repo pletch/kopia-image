@@ -40,10 +40,19 @@ type Manifest struct {
 
 	// UploadedBytes is how much new data the snapshot stored: its new file
 	// contents and directory listings after deduplication, compression and
-	// encryption, or, through a repository server, the contents it sent to
-	// the server. Pack headers, indexes and the snapshot manifest itself are
-	// left out. Nil for snapshots taken before kopia recorded it.
+	// encryption. Pack headers, indexes and the snapshot manifest itself are
+	// left out. Nil when not known: for snapshots taken before kopia recorded
+	// it, and through a repository server too old to report it. Snapshots
+	// taken through a repository server before kopia v0.23.1-wails.16
+	// recorded the contents sent to the server here, before compression.
 	UploadedBytes *int64 `json:"uploadedBytes,omitempty"`
+
+	// NewDataBytes is the size of the new data the snapshot stored before
+	// compression: its new file contents and directory listings after
+	// deduplication. Through a repository server too old to report it, the
+	// contents sent to the server. Nil for snapshots taken before kopia
+	// recorded it.
+	NewDataBytes *int64 `json:"newDataBytes,omitempty"`
 
 	// ImageBytesRead is, for a disk image snapshot, how much of the disks was
 	// read: their used space. Its files are as large as the partitions, free
@@ -196,6 +205,11 @@ func (m *Manifest) Clone() *Manifest {
 	if m2.UploadedBytes != nil {
 		n := *m2.UploadedBytes
 		m2.UploadedBytes = &n
+	}
+
+	if m2.NewDataBytes != nil {
+		n := *m2.NewDataBytes
+		m2.NewDataBytes = &n
 	}
 
 	if m2.ImageBytesRead != nil {

@@ -1,6 +1,7 @@
 package endtoend_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -251,16 +252,34 @@ func testAPIServerRepository(t *testing.T, allowRepositoryUsers bool) {
 	snapshots = clitestutil.ListSnapshotsAndExpectSuccess(t, e2)
 	require.Len(t, snapshots, 3)
 
-	// a snapshot through the server records the new data it sent
+	// a snapshot through the server records the new data and what the
+	// server stored, which for random data is about the same
 	uploadDir := testutil.TempDirectory(t)
 	writeUniqueRandomFile(t, filepath.Join(uploadDir, "f"), 1<<20)
 
 	var uploadMan snapshot.Manifest
 
 	testutil.MustParseJSONLines(t, e2.RunAndExpectSuccess(t, "snapshot", "create", uploadDir, "--json"), &uploadMan)
+	require.NotNil(t, uploadMan.NewDataBytes)
+	require.GreaterOrEqual(t, *uploadMan.NewDataBytes, int64(1<<20))
+	require.Less(t, *uploadMan.NewDataBytes, int64(1<<20+256<<10))
 	require.NotNil(t, uploadMan.UploadedBytes)
 	require.GreaterOrEqual(t, *uploadMan.UploadedBytes, int64(1<<20))
 	require.Less(t, *uploadMan.UploadedBytes, int64(1<<20+256<<10))
+
+	// a compressible file: the server stores much less than the new data
+	textDir := testutil.TempDirectory(t)
+	require.NoError(t, os.WriteFile(filepath.Join(textDir, "f.txt"),
+		bytes.Repeat([]byte("compressible text, numbered by nothing at all\n"), 1<<15), 0o600))
+
+	e2.RunAndExpectSuccess(t, "policy", "set", textDir, "--compression=zstd-fastest")
+
+	var textMan snapshot.Manifest
+
+	testutil.MustParseJSONLines(t, e2.RunAndExpectSuccess(t, "snapshot", "create", textDir, "--json"), &textMan)
+	require.NotNil(t, textMan.NewDataBytes)
+	require.NotNil(t, textMan.UploadedBytes)
+	require.Less(t, *textMan.UploadedBytes, *textMan.NewDataBytes/4)
 
 	// shutdown the server
 	require.NoError(t, serverapi.Shutdown(ctx, controlClient))

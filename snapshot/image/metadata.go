@@ -56,12 +56,16 @@ type Metadata struct {
 	// Volumes holds one entry per imaged partition, ordered by partition number.
 	Volumes []Volume `json:"volumes"`
 
-	// UploadedBytes is how much new data imaging the volumes stored,
-	// compressed and encrypted; chunks that were already in the repository
-	// are not counted. Through a repository server it is what the server
-	// reported storing when the run flushed; a server too old to report it
-	// leaves the contents sent instead, before compression. It is nil when it
-	// was not counted.
+	// NewDataBytes is the size of the new data imaging the volumes stored,
+	// before compression; chunks that were already in the repository are not
+	// counted. Through a repository server too old to report it, it is what
+	// was sent to the server. Nil for images taken before kopia recorded it.
+	NewDataBytes *int64 `json:"newDataBytes,omitempty"`
+
+	// UploadedBytes is the size of the same data as stored, compressed and
+	// encrypted. Nil when not known: through a repository server too old to
+	// report it. Images of kopia v0.23.1-wails.15 recorded what was sent to a
+	// repository server here, before compression.
 	UploadedBytes *int64 `json:"uploadedBytes,omitempty"`
 }
 

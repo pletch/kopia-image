@@ -81,6 +81,8 @@ func TestSnapshotRecordsUploadedBytes(t *testing.T) {
 	}
 
 	first := snapshotNow(1)
+	require.NotNil(t, first.NewDataBytes)
+	require.GreaterOrEqual(t, *first.NewDataBytes, int64(size))
 	require.NotNil(t, first.UploadedBytes)
 	require.GreaterOrEqual(t, *first.UploadedBytes, int64(size))
 	require.Less(t, *first.UploadedBytes, int64(size+overhead))
@@ -101,6 +103,7 @@ func TestSnapshotRecordsUploadedBytes(t *testing.T) {
 
 	require.NotNil(t, last.UploadedBytes)
 	require.Equal(t, *first.UploadedBytes, *last.UploadedBytes)
+	require.Equal(t, first.NewDataBytes, last.NewDataBytes)
 
 	// nothing changed: nothing new to store
 	second := snapshotNow(2)

@@ -319,13 +319,14 @@ func handleFlushRequest(ctx context.Context, dw repo.DirectRepositoryWriter, aut
 		return errorResponse(err)
 	}
 
-	// what this session stored, after compression, for the client to record
-	// as a snapshot's uploaded bytes
-	packed := dw.ContentManager().PackedBytes()
+	// the new data this session stored, before and after compression, for
+	// the client to record in its snapshots
+	cm := dw.ContentManager()
+	packed, newBytes := cm.PackedBytes(), cm.NewBytes()
 
 	return &grpcapi.SessionResponse{
 		Response: &grpcapi.SessionResponse_Flush{
-			Flush: &grpcapi.FlushResponse{PackedBytes: &packed},
+			Flush: &grpcapi.FlushResponse{PackedBytes: &packed, NewBytes: &newBytes},
 		},
 	}
 }

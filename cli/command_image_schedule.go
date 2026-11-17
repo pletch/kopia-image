@@ -651,12 +651,8 @@ func (c *commandImageScheduleShow) run(ctx context.Context) error {
 		strings.Join(st.Volumes, " "), formatTimestamp(st.StartTime), st.EndTime.Sub(st.StartTime).Truncate(time.Second), result)
 
 	for _, img := range st.Images {
-		uploaded := "?"
-		if img.UploadedBytes != nil {
-			uploaded = units.BytesString(*img.UploadedBytes)
-		}
-
-		c.out.printStdout("  %v %v: read %v, uploaded %v\n", img.Source, img.SnapshotID, units.BytesString(img.BytesRead), uploaded)
+		c.out.printStdout("  %v %v: read %v, new data %v, stored %v\n", img.Source, img.SnapshotID,
+			units.BytesString(img.BytesRead), optionalBytes(img.NewDataBytes, "?"), optionalBytes(img.UploadedBytes, "?"))
 	}
 
 	if len(st.RecoveryMedia) > 0 {

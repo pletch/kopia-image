@@ -798,7 +798,10 @@ type FlushResponse struct {
 	// packs since it started, compressed and encrypted: what the server stored
 	// for this client. Contents that already existed are not counted. Older
 	// servers do not set it.
-	PackedBytes   *int64 `protobuf:"varint,1,opt,name=packed_bytes,json=packedBytes,proto3,oneof" json:"packed_bytes,omitempty"`
+	PackedBytes *int64 `protobuf:"varint,1,opt,name=packed_bytes,json=packedBytes,proto3,oneof" json:"packed_bytes,omitempty"`
+	// new_bytes is the size of the same contents before compression. Set
+	// together with packed_bytes.
+	NewBytes      *int64 `protobuf:"varint,2,opt,name=new_bytes,json=newBytes,proto3,oneof" json:"new_bytes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -836,6 +839,13 @@ func (*FlushResponse) Descriptor() ([]byte, []int) {
 func (x *FlushResponse) GetPackedBytes() int64 {
 	if x != nil && x.PackedBytes != nil {
 		return *x.PackedBytes
+	}
+	return 0
+}
+
+func (x *FlushResponse) GetNewBytes() int64 {
+	if x != nil && x.NewBytes != nil {
+		return *x.NewBytes
 	}
 	return 0
 }
@@ -2319,10 +2329,13 @@ const file_repository_server_proto_rawDesc = "" +
 	"content_id\x18\x01 \x01(\tR\tcontentId\"(\n" +
 	"\x12GetContentResponse\x12\x12\n" +
 	"\x04data\x18\x01 \x01(\fR\x04data\"\x0e\n" +
-	"\fFlushRequest\"H\n" +
+	"\fFlushRequest\"x\n" +
 	"\rFlushResponse\x12&\n" +
-	"\fpacked_bytes\x18\x01 \x01(\x03H\x00R\vpackedBytes\x88\x01\x01B\x0f\n" +
-	"\r_packed_bytes\"c\n" +
+	"\fpacked_bytes\x18\x01 \x01(\x03H\x00R\vpackedBytes\x88\x01\x01\x12 \n" +
+	"\tnew_bytes\x18\x02 \x01(\x03H\x01R\bnewBytes\x88\x01\x01B\x0f\n" +
+	"\r_packed_bytesB\f\n" +
+	"\n" +
+	"_new_bytes\"c\n" +
 	"\x13WriteContentRequest\x12\x16\n" +
 	"\x06prefix\x18\x01 \x01(\tR\x06prefix\x12\x12\n" +
 	"\x04data\x18\x02 \x01(\fR\x04data\x12 \n" +

@@ -91,6 +91,10 @@ message FlushResponse {
   // for this client. Contents that already existed are not counted. Older
   // servers do not set it.
   optional int64 packed_bytes = 1;
+
+  // new_bytes is the size of the same contents before compression. Set
+  // together with packed_bytes.
+  optional int64 new_bytes = 2;
 }
 
 message WriteContentRequest {

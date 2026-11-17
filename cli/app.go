@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sync/atomic"
 	"time"
 
 	"github.com/alecthomas/kingpin/v2"
@@ -97,7 +96,6 @@ type appServices interface {
 	dangerousCommand()
 	repositoryConfigFileName() string
 	getProgress() *cliProgress
-	totalUploadedBytes() int64
 	getRestoreProgress() RestoreProgress
 	notificationTemplateOptions() notifytemplate.Options
 
@@ -129,10 +127,6 @@ type advancedAppServices interface {
 
 // App contains per-invocation flags and state of Kopia CLI.
 type App struct {
-	// uploadedBytes counts what the command's write sessions uploaded. The
-	// progress counters cannot be used: each snapshot upload resets them.
-	uploadedBytes atomic.Int64
-
 	// global flags
 	enableAutomaticMaintenance    bool
 	progress                      *cliProgress
@@ -205,17 +199,9 @@ func (c *App) getProgress() *cliProgress {
 	return c.progress
 }
 
-// onUpload records bytes uploaded by a write session and reports them as
-// progress.
+// onUpload reports bytes uploaded by a write session as progress.
 func (c *App) onUpload(numBytes int64) {
-	c.uploadedBytes.Add(numBytes)
 	c.progress.UploadedBytes(numBytes)
-}
-
-// totalUploadedBytes returns the bytes the command's write sessions uploaded
-// so far.
-func (c *App) totalUploadedBytes() int64 {
-	return c.uploadedBytes.Load()
 }
 
 // SetRestoreProgress is used to set custom restore progress, purposed to be used in tests.

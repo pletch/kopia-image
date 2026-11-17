@@ -77,6 +77,9 @@ type WriteManager struct {
 	// compressed and encrypted, see PackedBytes.
 	packedBytes atomic.Int64
 
+	// newBytes counts the same contents before compression, see NewBytes.
+	newBytes atomic.Int64
+
 	mu sync.RWMutex
 	// +checklocks:mu
 	cond *sync.Cond
@@ -123,6 +126,12 @@ type pendingPackInfo struct {
 // uploaded yet. Contents that already existed are not counted.
 func (bm *WriteManager) PackedBytes() int64 {
 	return bm.packedBytes.Load()
+}
+
+// NewBytes returns the bytes of the new contents counted by PackedBytes,
+// before compression and encryption.
+func (bm *WriteManager) NewBytes() int64 {
+	return bm.newBytes.Load()
 }
 
 // Revision returns data revision number that changes on each write or refresh.
@@ -348,6 +357,7 @@ func (bm *WriteManager) addToPackUnlocked(ctx context.Context, contentID ID, dat
 
 	if !isDeleted {
 		bm.packedBytes.Add(int64(info.PackedLength))
+		bm.newBytes.Add(int64(info.OriginalLength))
 	}
 
 	pp.currentPackItems[contentID] = info

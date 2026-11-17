@@ -279,7 +279,7 @@ func (c *commandImageCreate) checkRecoveryMedia(ctx context.Context, rep repo.Re
 }
 
 func runImage(man *snapshot.Manifest, md *image.Metadata) disksource.RunImage {
-	ri := disksource.RunImage{Source: man.Source.String(), SnapshotID: string(man.ID), UploadedBytes: md.UploadedBytes}
+	ri := disksource.RunImage{Source: man.Source.String(), SnapshotID: string(man.ID), NewDataBytes: md.NewDataBytes, UploadedBytes: md.UploadedBytes}
 
 	for i := range md.Volumes {
 		ri.BytesRead += md.Volumes[i].Stats.BytesRead
@@ -336,7 +336,6 @@ func (c *commandImageCreate) imageDisk(ctx context.Context, rep repo.RepositoryW
 		AsyncWrites:        parallel,
 		FlushInterval:      c.flushInterval,
 		NewBuffer:          blockdev.AlignedBuffer,
-		Uploaded:           c.uploaded.Load,
 		Logf:               logf,
 		Progress:           &c.progress,
 	})
@@ -406,11 +405,7 @@ func (c *commandImageCreate) printSummary(man *snapshot.Manifest, md *image.Meta
 		read += md.Volumes[i].Stats.BytesRead
 	}
 
-	uploaded := "unknown (repository server)"
-	if md.UploadedBytes != nil {
-		uploaded = units.BytesString(*md.UploadedBytes)
-	}
-
-	c.out.printStdout("Created image snapshot %v of %v in %v: %v read, %v uploaded.\n",
-		man.ID, man.Source, md.EndTime.Sub(md.StartTime).Truncate(time.Second), units.BytesString(read), uploaded)
+	c.out.printStdout("Created image snapshot %v of %v in %v: %v read, %v new data, %v stored.\n",
+		man.ID, man.Source, md.EndTime.Sub(md.StartTime).Truncate(time.Second), units.BytesString(read),
+		optionalBytes(md.NewDataBytes, "?"), optionalBytes(md.UploadedBytes, "unknown (repository server)"))
 }

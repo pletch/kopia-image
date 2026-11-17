@@ -446,6 +446,19 @@ func (c *commandSnapshotList) entryBits(ctx context.Context, m *snapshot.Manifes
 			fmt.Sprintf("new-dirs:%v", atomic.LoadInt32(&u.NewData.DirObjectCount)),
 			fmt.Sprintf("compression:%v", formatCompressionPercentage(atomic.LoadInt64(&u.NewData.OriginalContentBytes), atomic.LoadInt64(&u.NewData.PackedContentBytes))),
 		)
+	} else {
+		// what the snapshot recorded when it was taken
+		if m.ImageBytesRead != nil {
+			bits = append(bits, "read:"+maybeHumanReadableBytes(c.snapshotListShowHumanReadable, *m.ImageBytesRead))
+		}
+
+		if m.NewDataBytes != nil {
+			bits = append(bits, "new:"+maybeHumanReadableBytes(c.snapshotListShowHumanReadable, *m.NewDataBytes))
+		}
+
+		if m.UploadedBytes != nil {
+			bits = append(bits, "stored:"+maybeHumanReadableBytes(c.snapshotListShowHumanReadable, *m.UploadedBytes))
+		}
 	}
 
 	return bits, col

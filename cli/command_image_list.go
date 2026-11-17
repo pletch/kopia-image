@@ -76,15 +76,20 @@ func formatImageListLine(m *snapshot.Manifest, md *image.Metadata) string {
 		size = m.RootEntry.DirSummary.TotalFileSize
 	}
 
-	uploaded := "?"
-	if md.UploadedBytes != nil {
-		uploaded = units.BytesString(*md.UploadedBytes)
-	}
-
 	return formatTimestamp(m.StartTime.ToTime()) + " " + string(m.ID) +
 		"  size " + units.BytesString(size) +
 		"  read " + units.BytesString(t.BytesRead) +
-		"  uploaded " + uploaded +
+		"  new data " + optionalBytes(md.NewDataBytes, "?") +
+		"  stored " + optionalBytes(md.UploadedBytes, "?") +
 		"  zero chunks " + units.Count(t.ZeroChunks) + "/" + units.Count(t.ChunksTotal) +
 		"  took " + md.EndTime.Sub(md.StartTime).Round(1e9).String()
+}
+
+// optionalBytes formats a byte count that may not be known.
+func optionalBytes(n *int64, unknown string) string {
+	if n == nil {
+		return unknown
+	}
+
+	return units.BytesString(*n)
 }

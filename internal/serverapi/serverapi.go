@@ -180,6 +180,10 @@ type Snapshot struct {
 	// snapshots taken before kopia recorded it.
 	UploadedBytes *int64 `json:"uploadedBytes,omitempty"`
 
+	// NewDataBytes is the new data the snapshot stored before compression;
+	// nil for snapshots taken before kopia recorded it.
+	NewDataBytes *int64 `json:"newDataBytes,omitempty"`
+
 	// ImageBytesRead is the used space read from the disks of an image
 	// snapshot, which the UI shows as its size; nil for other snapshots.
 	ImageBytesRead *int64 `json:"imageBytesRead,omitempty"`

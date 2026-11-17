@@ -333,8 +333,7 @@ func (c *commandSnapshotCreate) snapshotSingleSource(
 		return errors.Wrap(finalErr, "unable to get policy tree")
 	}
 
-	newData := upload.NewDataCounter(rep, c.svc.totalUploadedBytes)
-	newDataBefore := newData()
+	newDataBefore := repo.NewDataOf(rep)
 
 	manifest, finalErr := u.Upload(ctx, fsEntry, policyTree, sourceInfo, previous...)
 	if finalErr != nil {
@@ -343,8 +342,14 @@ func (c *commandSnapshotCreate) snapshotSingleSource(
 		return errors.Wrap(finalErr, "upload error")
 	}
 
-	uploaded := newData() - newDataBefore
-	manifest.UploadedBytes = &uploaded
+	// through a repository server, the flush reports what was stored
+	if err := rep.Flush(ctx); err != nil {
+		return errors.Wrap(err, "unable to flush snapshot contents")
+	}
+
+	newBytes, storedBytes := repo.NewDataOf(rep).Since(newDataBefore)
+	manifest.NewDataBytes = &newBytes
+	manifest.UploadedBytes = storedBytes
 
 	manifest.Description = c.snapshotCreateDescription
 	manifest.Tags = tags

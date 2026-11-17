@@ -37,7 +37,9 @@ type RunImage struct {
 	SnapshotID string `json:"snapshotId"`
 	BytesRead  int64  `json:"bytesRead"`
 
-	// UploadedBytes is nil when the repository does not report it.
+	// NewDataBytes is the new data stored before compression, UploadedBytes
+	// after; each is nil when not known.
+	NewDataBytes  *int64 `json:"newDataBytes,omitempty"`
 	UploadedBytes *int64 `json:"uploadedBytes,omitempty"`
 }
 

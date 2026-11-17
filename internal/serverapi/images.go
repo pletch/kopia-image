@@ -40,7 +40,9 @@ type ImageSnapshot struct {
 
 	image.Totals
 
-	// UploadedBytes is nil when the repository did not report it.
+	// NewDataBytes is the new data the image stored before compression,
+	// UploadedBytes after; each is nil when not recorded.
+	NewDataBytes  *int64 `json:"newDataBytes,omitempty"`
 	UploadedBytes *int64 `json:"uploadedBytes,omitempty"`
 
 	// MetadataError says why the image's statistics and volumes are
