@@ -76,6 +76,21 @@ if ! echo "$WINFSP_SHA256  $WINFSP_MSI" | sha256sum -c --status; then
   exit 1
 fi
 
+# The MSI must also carry a valid Authenticode signature of WinFsp's
+# publisher, so that a pin updated to a replaced or tampered release fails
+# here. The publisher is checked by name: its certificate is renewed.
+WINFSP_PUBLISHER="NAVIMATICS LLC"
+# Windows PowerShell started from PowerShell 7 can fail to load the module,
+# so PowerShell 7 is preferred.
+PWSH=$(command -v pwsh || command -v powershell.exe)
+SIGNER=$("$PWSH" -NoProfile -NonInteractive -Command \
+  "Import-Module Microsoft.PowerShell.Security; \$s = Get-AuthenticodeSignature -LiteralPath '$(cygpath -w "$WINFSP_MSI")'; if (\$s.Status -eq 'Valid') { \$s.SignerCertificate.GetNameInfo('SimpleName', \$false) }" \
+  | tr -d '\r')
+if [ "$SIGNER" != "$WINFSP_PUBLISHER" ]; then
+  echo "$WINFSP_MSI is not validly signed by $WINFSP_PUBLISHER (signer: ${SIGNER:-none})" >&2
+  exit 1
+fi
+
 echo "Building KopiaUI-Wails $VERSION"
 
 go generate ./...
