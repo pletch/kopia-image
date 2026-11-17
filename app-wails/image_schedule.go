@@ -153,6 +153,18 @@ func (s *shell) removeImageSchedule() error {
 	return s.runImageScheduleRequest("remove", id, []string{"image", "schedule", "remove", "--request-id", id})
 }
 
+// updateImageSchedule makes the scheduled image tasks run the kopia that
+// KopiaUI bundles, as administrator after the UAC prompt. The tasks keep their
+// settings and their own repository connection.
+func (s *shell) updateImageSchedule() error {
+	id, err := newRequestID()
+	if err != nil {
+		return err
+	}
+
+	return s.runImageScheduleRequest("update", id, []string{"image", "schedule", "update", "--request-id", id})
+}
+
 // runImageScheduleRequest runs kopia as administrator without a window and
 // reports why it failed from the outcome kopia records under the request ID.
 func (s *shell) runImageScheduleRequest(operation, id string, args []string) error {

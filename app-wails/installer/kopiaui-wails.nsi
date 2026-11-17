@@ -16,6 +16,7 @@ RequestExecutionLevel user
 
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
+!include "WordFunc.nsh"
 
 !define APPNAME      "KopiaUI Wails"
 !define DISPLAYNAME  "KopiaUI-Wails"
@@ -92,6 +93,47 @@ FunctionEnd
 !insertmacro StopRunningApp ""
 !insertmacro StopRunningApp "un."
 
+; UpdateImageTasks offers to make the scheduled disk image tasks run the kopia
+; just installed. The tasks run as SYSTEM a copy of kopia in a folder only
+; administrators can change, since this per-user folder is not one, so the
+; copy does not follow upgrades. kopia tells whether the tasks run another
+; version, needing no administrator; updating them asks for one. Silent
+; installs leave the tasks as they are.
+Function UpdateImageTasks
+  IfSilent done
+
+  nsExec::ExecToStack '"$INSTDIR\kopia.exe" image schedule update --check'
+  Pop $0
+  Pop $1
+  ${If} $0 != "0"
+    Goto done
+  ${EndIf}
+
+  ; "outdated <tasks' version> <this version>"
+  StrCpy $2 $1 8
+  ${If} $2 != "outdated"
+    Goto done
+  ${EndIf}
+
+  ${WordFind} $1 " " "+2" $3
+
+  MessageBox MB_YESNO|MB_ICONQUESTION "Disk images of this computer are scheduled, and the scheduled tasks run kopia $3.$\r$\n$\r$\nUpdate them to this version now? Windows asks for administrator rights." IDNO done
+
+  ExecShellWait "runas" "$INSTDIR\kopia.exe" "image schedule update" SW_HIDE
+
+  nsExec::ExecToStack '"$INSTDIR\kopia.exe" image schedule update --check'
+  Pop $0
+  Pop $1
+  StrCpy $2 $1 10
+  ${If} $2 == "up-to-date"
+    MessageBox MB_OK|MB_ICONINFORMATION "The scheduled image tasks now run this version of kopia."
+  ${Else}
+    MessageBox MB_OK|MB_ICONEXCLAMATION "The scheduled image tasks were not updated. Use Update the Tasks on the Images page of ${DISPLAYNAME}."
+  ${EndIf}
+
+done:
+FunctionEnd
+
 Section "Install"
   SetShellVarContext current
   Call StopRunningApp
@@ -114,6 +156,8 @@ Section "Install"
   WriteRegDWORD HKCU "${UNINSTKEY}" "NoModify" 1
   WriteRegDWORD HKCU "${UNINSTKEY}" "NoRepair" 1
   WriteRegDWORD HKCU "${UNINSTKEY}" "EstimatedSize" ${ESTIMATEDSIZEKB}
+
+  Call UpdateImageTasks
 SectionEnd
 
 Section "Uninstall"

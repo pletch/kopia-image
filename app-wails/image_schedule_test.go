@@ -300,3 +300,30 @@ func TestServeShim_createImageAndRecoveryMedia(t *testing.T) {
 		t.Fatalf("ran %v consoles, want 2", len(consoles))
 	}
 }
+
+func TestUpdateImageSchedule(t *testing.T) {
+	sh := scheduleShell(t)
+
+	var ran [][]string
+
+	sh.runElevated = fakeKopia(t, sh.imageStateDir, func([]string) imageScheduleOutcome {
+		return imageScheduleOutcome{Success: true}
+	}, &ran)
+
+	if err := sh.updateImageSchedule(); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(ran) != 1 || !slices.Equal(ran[0][:3], []string{"image", "schedule", "update"}) {
+		t.Fatalf("ran %q", ran)
+	}
+
+	// kopia's reason reaches the page
+	sh.runElevated = fakeKopia(t, sh.imageStateDir, func([]string) imageScheduleOutcome {
+		return imageScheduleOutcome{Error: "the scheduled tasks' repository connection is missing"}
+	}, &ran)
+
+	if err := sh.updateImageSchedule(); err == nil || !strings.Contains(err.Error(), "connection is missing") {
+		t.Fatalf("got %v", err)
+	}
+}

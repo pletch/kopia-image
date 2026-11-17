@@ -59,6 +59,11 @@
     removeImageSchedule: function () {
       return postElevated("remove-image-schedule", {});
     },
+    // Makes the scheduled image tasks run the kopia KopiaUI bundles, as an
+    // administrator after the UAC prompt. Resolves to "done" or "canceled".
+    updateImageSchedule: function () {
+      return postElevated("update-image-schedule", {});
+    },
     // Creates images of the disks holding the given volumes (drive letters)
     // now, without a schedule: after the UAC prompt, a console window runs
     // kopia image create with this window's repository and shows its

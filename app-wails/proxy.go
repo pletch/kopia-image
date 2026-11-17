@@ -391,6 +391,9 @@ func (h *proxyHandler) serveShim(w http.ResponseWriter, r *http.Request, repoID 
 	case "remove-image-schedule":
 		serveElevated(w, r, "done", func(*struct{}) error { return h.host.removeImageSchedule() })
 
+	case "update-image-schedule":
+		serveElevated(w, r, "done", func(*struct{}) error { return h.host.updateImageSchedule() })
+
 	case "create-image":
 		serveElevated(w, r, "started", func(req *struct {
 			Volumes []string `json:"volumes"`
