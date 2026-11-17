@@ -10,6 +10,7 @@ import (
 
 	"github.com/pkg/errors"
 
+	"github.com/kopia/kopia/internal/background"
 	"github.com/kopia/kopia/internal/clock"
 	"github.com/kopia/kopia/internal/units"
 	"github.com/kopia/kopia/repo"
@@ -73,6 +74,15 @@ func (c *commandImageCreate) setup(svc appServices, parent commandParent) {
 }
 
 func (c *commandImageCreate) run(ctx context.Context, rep repo.RepositoryWriter) (err error) {
+	// an image reads the whole used part of each disk: it must yield to what
+	// the person is doing
+	leave, berr := background.Enter()
+	if berr != nil {
+		log(ctx).Warnf("%v", berr)
+	}
+
+	defer leave()
+
 	statePath := c.statePath
 	if statePath == "" {
 		if statePath, err = disksource.DefaultStatePath(); err != nil {

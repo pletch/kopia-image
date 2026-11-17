@@ -21,6 +21,7 @@ import (
 
 	"github.com/kopia/kopia/internal/acmecert"
 	"github.com/kopia/kopia/internal/auth"
+	"github.com/kopia/kopia/internal/background"
 	"github.com/kopia/kopia/internal/insecureserverbind"
 	"github.com/kopia/kopia/internal/server"
 	"github.com/kopia/kopia/notification"
@@ -45,6 +46,7 @@ type commandServerStart struct {
 	serverStartRefreshInterval time.Duration
 	serverStartInsecure        bool
 	serverStartMaxConcurrency  int
+	serverStartBackground      bool
 
 	serverStartWithoutPassword bool
 	serverStartRandomPassword  bool
@@ -109,6 +111,7 @@ func (c *commandServerStart) setup(svc advancedAppServices, parent commandParent
 	cmd.Flag("refresh-interval", "Frequency for refreshing repository status").Default("4h").DurationVar(&c.serverStartRefreshInterval)
 	cmd.Flag("insecure", "Allow insecure configurations (do not use in production)").Hidden().BoolVar(&c.serverStartInsecure)
 	cmd.Flag("max-concurrency", "Maximum number of server goroutines").Default("0").IntVar(&c.serverStartMaxConcurrency)
+	cmd.Flag("background", "Run at background priority, so that snapshots yield to other programs (Windows; KopiaUI uses it)").BoolVar(&c.serverStartBackground)
 
 	cmd.Flag(insecureserverbind.AllowDangerousUnauthenticatedNetworkFlag, insecureserverbind.AllowDangerousUnauthenticatedNetworkFlagHelp).
 		Hidden().
@@ -226,6 +229,15 @@ func (c *commandServerStart) initRepositoryPossiblyAsync(ctx context.Context, sr
 }
 
 func (c *commandServerStart) run(ctx context.Context) (reterr error) {
+	if c.serverStartBackground {
+		leave, err := background.Enter()
+		if err != nil {
+			log(ctx).Warnf("%v", err)
+		}
+
+		defer leave()
+	}
+
 	if err := insecureserverbind.ValidateListenAddressIfRestricted(
 		c.serverStartInsecure,
 		c.serverStartWithoutPassword,
