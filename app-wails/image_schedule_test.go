@@ -327,3 +327,25 @@ func TestUpdateImageSchedule(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestPauseImageSchedule(t *testing.T) {
+	sh := scheduleShell(t)
+
+	var ran [][]string
+
+	sh.runElevated = fakeKopia(t, sh.imageStateDir, func([]string) imageScheduleOutcome {
+		return imageScheduleOutcome{Success: true}
+	}, &ran)
+
+	if err := sh.pauseImageSchedule(false); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := sh.pauseImageSchedule(true); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(ran) != 2 || !slices.Equal(ran[0][:3], []string{"image", "schedule", "pause"}) || !slices.Equal(ran[1][:3], []string{"image", "schedule", "resume"}) {
+		t.Fatalf("ran %q", ran)
+	}
+}

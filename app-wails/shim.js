@@ -64,6 +64,15 @@
     updateImageSchedule: function () {
       return postElevated("update-image-schedule", {});
     },
+    // Keeps the scheduled image tasks from starting, or lets them start
+    // again, as an administrator after the UAC prompt; a run in progress
+    // goes on. Resolve to "done" or "canceled".
+    pauseImageSchedule: function () {
+      return postElevated("pause-image-schedule", {});
+    },
+    resumeImageSchedule: function () {
+      return postElevated("resume-image-schedule", {});
+    },
     // Creates images of the disks holding the given volumes (drive letters)
     // now, without a schedule: after the UAC prompt, a console window runs
     // kopia image create with this window's repository and shows its

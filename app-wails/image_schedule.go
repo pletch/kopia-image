@@ -165,6 +165,23 @@ func (s *shell) updateImageSchedule() error {
 	return s.runImageScheduleRequest("update", id, []string{"image", "schedule", "update", "--request-id", id})
 }
 
+// pauseImageSchedule keeps the scheduled image tasks from starting, or lets
+// them start again when resume is set, as administrator after the UAC
+// prompt.
+func (s *shell) pauseImageSchedule(resume bool) error {
+	id, err := newRequestID()
+	if err != nil {
+		return err
+	}
+
+	operation := "pause"
+	if resume {
+		operation = "resume"
+	}
+
+	return s.runImageScheduleRequest(operation, id, []string{"image", "schedule", operation, "--request-id", id})
+}
+
 // runImageScheduleRequest runs kopia as administrator without a window and
 // reports why it failed from the outcome kopia records under the request ID.
 func (s *shell) runImageScheduleRequest(operation, id string, args []string) error {

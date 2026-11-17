@@ -117,6 +117,8 @@ func (s *repoServer) start() error {
 		"--error-notifications=always",
 		"--kopiaui-notifications",
 		"--shutdown-on-stdin",
+		// snapshots yield to what the person is doing
+		"--background",
 		"--address=127.0.0.1:0",
 		"--config-file", s.host.configs.configFile(s.id),
 	}
