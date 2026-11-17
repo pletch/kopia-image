@@ -11,6 +11,7 @@ import (
 	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/repo/manifest"
 	"github.com/kopia/kopia/snapshot"
+	"github.com/kopia/kopia/snapshot/image"
 	"github.com/kopia/kopia/snapshot/policy"
 )
 
@@ -28,6 +29,10 @@ func handleListSnapshots(ctx context.Context, rc requestContext) (any, *apiError
 	}
 
 	manifests = snapshot.SortByTime(manifests, false)
+
+	if image.IsSourcePath(si.Path) {
+		image.FillBytesRead(ctx, rc.rep, manifests)
+	}
 
 	resp := &serverapi.SnapshotsResponse{
 		Snapshots: []*serverapi.Snapshot{},
@@ -263,6 +268,11 @@ func convertSnapshotManifest(m *snapshot.Manifest) *serverapi.Snapshot {
 	if m.UploadedBytes != nil {
 		n := *m.UploadedBytes
 		e.UploadedBytes = &n
+	}
+
+	if m.ImageBytesRead != nil {
+		n := *m.ImageBytesRead
+		e.ImageBytesRead = &n
 	}
 
 	if re := m.RootEntry; re != nil {

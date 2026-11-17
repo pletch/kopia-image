@@ -504,3 +504,43 @@ func TestImagesStatus_progress(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, st.Progress)
 }
+
+// TestImageSnapshots_sizeIsBytesRead checks that the snapshot list and the
+// sources list report how much of the disk an image read, which the UI shows
+// as its size, also for images taken before manifests recorded it.
+func TestImageSnapshots_sizeIsBytesRead(t *testing.T) {
+	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
+
+	localHost := env.Repository.ClientOptions().Hostname
+	data := bytes.Repeat([]byte{1, 2, 3, 4}, 1<<18)
+
+	current := mustCreateRawImage(t, env, localHost, "0f6ab3f2-1c3d-4e5f-8a9b-0c1d2e3f4a54", data)
+	require.NotNil(t, current.ImageBytesRead)
+	require.Equal(t, int64(len(data)), *current.ImageBytesRead)
+
+	// an image taken by an earlier version, whose manifest lacks the field
+	older := mustCreateRawImage(t, env, localHost, "0f6ab3f2-1c3d-4e5f-8a9b-0c1d2e3f4a55", data)
+	require.NoError(t, env.RepositoryWriter.DeleteManifest(ctx, older.ID))
+
+	older.ID = ""
+	older.ImageBytesRead = nil
+	_, err := snapshot.SaveSnapshot(ctx, env.RepositoryWriter, older)
+	require.NoError(t, err)
+	require.NoError(t, env.RepositoryWriter.Flush(ctx))
+
+	cli := startImageServer(t, env, &fakeImageHost{dir: testutil.TempDirectory(t)})
+
+	for _, src := range []snapshot.SourceInfo{current.Source, older.Source} {
+		snaps, err := serverapi.ListSnapshots(ctx, cli, src, true)
+		require.NoError(t, err)
+		require.Len(t, snaps.Snapshots, 1)
+		require.NotNil(t, snaps.Snapshots[0].ImageBytesRead, src)
+		require.Equal(t, int64(len(data)), *snaps.Snapshots[0].ImageBytesRead, src)
+
+		sources, err := serverapi.ListSources(ctx, cli, &src)
+		require.NoError(t, err)
+		require.Len(t, sources.Sources, 1)
+		require.NotNil(t, sources.Sources[0].LastSnapshot.ImageBytesRead, src)
+		require.Equal(t, int64(len(data)), *sources.Sources[0].LastSnapshot.ImageBytesRead, src)
+	}
+}

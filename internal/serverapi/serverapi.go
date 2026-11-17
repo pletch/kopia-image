@@ -179,6 +179,10 @@ type Snapshot struct {
 	// UploadedBytes is how much the snapshot sent to the repository; nil for
 	// snapshots taken before kopia recorded it.
 	UploadedBytes *int64 `json:"uploadedBytes,omitempty"`
+
+	// ImageBytesRead is the used space read from the disks of an image
+	// snapshot, which the UI shows as its size; nil for other snapshots.
+	ImageBytesRead *int64 `json:"imageBytesRead,omitempty"`
 }
 
 // SnapshotsResponse contains a list of snapshots.

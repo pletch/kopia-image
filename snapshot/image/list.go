@@ -83,6 +83,25 @@ func ReadMetadata(ctx context.Context, rep repo.Repository, m *snapshot.Manifest
 	return &md, nil
 }
 
+// FillBytesRead sets ImageBytesRead of image snapshots taken before it was
+// recorded in the manifest, from their image.json. Other snapshots, and
+// images whose metadata cannot be read, are left unchanged.
+func FillBytesRead(ctx context.Context, rep repo.Repository, mans []*snapshot.Manifest) {
+	for _, m := range mans {
+		if m == nil || m.ImageBytesRead != nil || m.Tags[TagKey] != TagValue {
+			continue
+		}
+
+		md, err := ReadMetadata(ctx, rep, m)
+		if err != nil {
+			continue
+		}
+
+		n := md.Totals().BytesRead
+		m.ImageBytesRead = &n
+	}
+}
+
 // Totals are the statistics of an image summed over its volumes.
 type Totals struct {
 	BytesRead   int64 `json:"bytesRead"`

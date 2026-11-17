@@ -109,6 +109,8 @@ func TestCreate(t *testing.T) {
 	require.Positive(t, *md.UploadedBytes)
 	require.NotNil(t, man.UploadedBytes)
 	require.Equal(t, *md.UploadedBytes, *man.UploadedBytes)
+	require.NotNil(t, man.ImageBytesRead)
+	require.Equal(t, md.Totals().BytesRead, *man.ImageBytesRead)
 
 	require.Len(t, md.Volumes, 2)
 	require.Equal(t, "p1-esp.img", md.Volumes[0].EntryName)

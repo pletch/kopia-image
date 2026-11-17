@@ -44,6 +44,12 @@ type Manifest struct {
 	// the server. Pack headers, indexes and the snapshot manifest itself are
 	// left out. Nil for snapshots taken before kopia recorded it.
 	UploadedBytes *int64 `json:"uploadedBytes,omitempty"`
+
+	// ImageBytesRead is, for a disk image snapshot, how much of the disks was
+	// read: their used space. Its files are as large as the partitions, free
+	// space included, so their total size is the size of the disks instead.
+	// Nil for other snapshots and for images taken before kopia recorded it.
+	ImageBytesRead *int64 `json:"imageBytesRead,omitempty"`
 }
 
 // UpdatePins updates pins in the provided manifest.
@@ -190,6 +196,11 @@ func (m *Manifest) Clone() *Manifest {
 	if m2.UploadedBytes != nil {
 		n := *m2.UploadedBytes
 		m2.UploadedBytes = &n
+	}
+
+	if m2.ImageBytesRead != nil {
+		n := *m2.ImageBytesRead
+		m2.ImageBytesRead = &n
 	}
 
 	return &m2

@@ -490,6 +490,14 @@ func (s *sourceManager) refreshStatus(ctx context.Context) {
 		return
 	}
 
+	snaps := snapshot.SortByTime(snapshots, true)
+
+	// the UI shows an image's size as what was read, which older image
+	// manifests do not record; read it before taking the lock
+	if len(snaps) > 0 && image.IsSourcePath(s.src.Path) {
+		image.FillBytesRead(ctx, s.rep, snaps[:1])
+	}
+
 	s.sourceMutex.Lock()
 	defer s.sourceMutex.Unlock()
 
@@ -497,7 +505,6 @@ func (s *sourceManager) refreshStatus(ctx context.Context) {
 	s.manifestsSinceLastCompleteSnapshot = nil
 	s.lastCompleteSnapshot = nil
 
-	snaps := snapshot.SortByTime(snapshots, true)
 	if len(snaps) > 0 {
 		s.lastSnapshot = snaps[0]
 		for _, sn := range snaps {
