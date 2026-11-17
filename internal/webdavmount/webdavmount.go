@@ -104,6 +104,9 @@ type webdavDir struct {
 
 	w    *webdavFS
 	info os.FileInfo
+	dir  fs.Directory
+
+	// iter is created by the first Readdir
 	iter fs.DirectoryIterator
 }
 
@@ -116,6 +119,15 @@ func (d *webdavDir) Readdir(n int) ([]os.FileInfo, error) {
 	var fis []os.FileInfo
 
 	foundEntries := 0
+
+	if d.iter == nil {
+		iter, err := d.dir.Iterate(ctx)
+		if err != nil {
+			return nil, errors.Wrap(err, "error reading directory")
+		}
+
+		d.iter = iter
+	}
 
 	e, err := d.iter.Next(ctx)
 	for e != nil {
@@ -152,7 +164,10 @@ func (d *webdavDir) Write(_ []byte) (int, error) {
 }
 
 func (d *webdavDir) Close() error {
-	d.iter.Close()
+	if d.iter != nil {
+		d.iter.Close()
+	}
+
 	return nil
 }
 
@@ -193,12 +208,9 @@ func (w *webdavFS) OpenFile(ctx context.Context, path string, _ int, _ os.FileMo
 
 	switch f := f.(type) {
 	case fs.Directory:
-		iter, err := f.Iterate(ctx)
-		if err != nil {
-			return nil, err //nolint:wrapcheck
-		}
-
-		return &webdavDir{ctx, w, webdavFileInfo{f}, iter}, nil
+		// WebDAV opens every entry of a folder it lists to read its
+		// properties, so a directory is listed only when it is read
+		return &webdavDir{ctx: ctx, w: w, info: webdavFileInfo{f}, dir: f}, nil
 	case fs.File:
 		return &webdavFile{ctx: ctx, entry: f}, nil
 	}

@@ -61,6 +61,8 @@ type Volume struct {
 	mu sync.Mutex
 	// +checklocks:mu
 	ntfs *parser.NTFSContext
+
+	dirs dirCache
 }
 
 // Open opens the NTFS volume in an image object. The volume reads the
@@ -140,9 +142,29 @@ func (v *Volume) Close() {
 	})
 
 	v.cr.purge()
+	v.dirs.purge()
 }
 
-// list returns the entries of the directory in an MFT entry.
+// listing returns the entries of the directory in an MFT entry, from the
+// directory cache when it holds them. File managers look up each entry of a
+// folder on its own, and every lookup needs the folder's entries.
+func (v *Volume) listing(mft int64) (*dirListing, error) {
+	if l := v.dirs.get(mft); l != nil {
+		return l, nil
+	}
+
+	entries, err := v.list(mft)
+	if err != nil {
+		return nil, err
+	}
+
+	l := newDirListing(entries)
+	v.dirs.put(mft, l)
+
+	return l, nil
+}
+
+// list reads the entries of the directory in an MFT entry.
 func (v *Volume) list(mft int64) ([]fs.Entry, error) {
 	var infos []*parser.FileInfo
 
@@ -240,25 +262,19 @@ func (e *fileEntry) Size() int64                     { return e.size }
 // Child returns the named entry. NTFS names are case-insensitive, so an
 // exact match is preferred and a case-insensitive one accepted.
 func (e *dirEntry) Child(_ context.Context, name string) (fs.Entry, error) {
-	entries, err := e.v.list(e.mft)
+	l, err := e.v.listing(e.mft)
 	if err != nil {
 		return nil, err
 	}
 
-	var folded fs.Entry
-
-	for _, c := range entries {
-		if c.Name() == name {
-			return c, nil
-		}
-
-		if folded == nil && strings.EqualFold(c.Name(), name) {
-			folded = c
-		}
+	if c, ok := l.byName[name]; ok {
+		return c, nil
 	}
 
-	if folded != nil {
-		return folded, nil
+	for _, c := range l.entries {
+		if strings.EqualFold(c.Name(), name) {
+			return c, nil
+		}
 	}
 
 	return nil, fs.ErrEntryNotFound
@@ -266,12 +282,12 @@ func (e *dirEntry) Child(_ context.Context, name string) (fs.Entry, error) {
 
 // Iterate lists the directory.
 func (e *dirEntry) Iterate(_ context.Context) (fs.DirectoryIterator, error) {
-	entries, err := e.v.list(e.mft)
+	l, err := e.v.listing(e.mft)
 	if err != nil {
 		return nil, err
 	}
 
-	return &sliceIterator{entries: entries}, nil
+	return &sliceIterator{entries: l.entries}, nil
 }
 
 type sliceIterator struct {
