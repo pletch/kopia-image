@@ -290,6 +290,29 @@ func TestServeShim_createImageAndRecoveryMedia(t *testing.T) {
 		t.Fatalf("ran %q, want %q", consoles, want)
 	}
 
+	// with the drivers of other computers
+	if rec := post("create-recovery-media", `{"driverHosts":["LAPTOP","nas.home"]}`); rec.Code != http.StatusOK {
+		t.Fatalf("create-recovery-media with drivers: got %v: %s", rec.Code, rec.Body)
+	}
+
+	if want := []string{sh.kopiaPath, "--config-file", cfg, "image", "recovery-media", "create", "--drivers-from", "LAPTOP", "--drivers-from", "nas.home"}; len(consoles) != 2 || !slices.Equal(consoles[1], want) {
+		t.Fatalf("ran %q, want %q", consoles, want)
+	}
+
+	// computer names reach the administrator command line only as such
+	for _, body := range []string{
+		`{"driverHosts":["--config-file=x"]}`, `{"driverHosts":["-x"]}`, `{"driverHosts":["a b"]}`,
+		`{"driverHosts":["C:\\x"]}`, `{"driverHosts":["all"]}`, `{"driverHosts":["pc","PC"]}`, `{"driverHosts":[""]}`,
+	} {
+		if rec := post("create-recovery-media", body); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid recovery media options") {
+			t.Fatalf("%v: got %v: %s", body, rec.Code, rec.Body)
+		}
+	}
+
+	if len(consoles) != 2 {
+		t.Fatalf("invalid requests ran %q", consoles[2:])
+	}
+
 	// what reaches the administrator command line is checked
 	for _, body := range []string{`{"volumes":[]}`, `{"volumes":["C:\\Windows"]}`, `{"volumes":["--config-file=x"]}`} {
 		if rec := post("create-image", body); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid image schedule") {

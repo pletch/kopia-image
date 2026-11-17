@@ -86,9 +86,11 @@
       return postElevated("stop-image", {});
     },
     // Opens a console window that builds recovery media for this window's
-    // repository, after the UAC prompt. Resolves to "started" or "canceled".
-    createRecoveryMediaElevated: function () {
-      return postElevated("create-recovery-media", {});
+    // repository, after the UAC prompt, adding the drivers stored with the
+    // images of the computers named in driverHosts, if any. Resolves to
+    // "started" or "canceled".
+    createRecoveryMediaElevated: function (driverHosts) {
+      return postElevated("create-recovery-media", { driverHosts: driverHosts || [] });
     },
   };
 

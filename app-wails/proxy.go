@@ -412,7 +412,13 @@ func (h *proxyHandler) serveShim(w http.ResponseWriter, r *http.Request, repoID 
 		serveElevated(w, r, "done", func(*struct{}) error { return h.host.stopImage() })
 
 	case "create-recovery-media":
-		serveElevated(w, r, "started", func(*struct{}) error { return h.host.startRecoveryMedia(repoID) })
+		serveElevated(w, r, "started", func(req *struct {
+			// DriverHosts are the computers whose drivers the media gets.
+			DriverHosts []string `json:"driverHosts"`
+		},
+		) error {
+			return h.host.startRecoveryMedia(repoID, req.DriverHosts)
+		})
 
 	default:
 		http.NotFound(w, r)
