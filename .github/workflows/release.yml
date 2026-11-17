@@ -45,6 +45,8 @@ jobs:
     runs-on: windows-latest
     env:
       VERSION: ${{ needs.version.outputs.version }}
+      # without cgo, kopia mounts with WinFsp (internal/winfspmount)
+      CGO_ENABLED: "0"
     defaults:
       run:
         shell: bash

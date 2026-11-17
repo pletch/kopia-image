@@ -10,6 +10,8 @@
 #   MAKENSIS    makensis.exe (default: PATH, then electron-builder's NSIS cache)
 #   VERSION     display version (default: <yyyymmdd>.0.0-<commit>); CI sets it
 #               from the release tag
+#   WINFSP_MSI  WinFsp installer to bundle (default: downloaded once to
+#               ../dist/cache/ and checked against its SHA-256)
 #
 # Output: ../dist/kopiaui-wails/ and ../dist/KopiaUI-Wails-Setup-<version>.exe
 set -euo pipefail
@@ -55,6 +57,25 @@ else
   VIVERSION="${DATE:0:4}.$((10#${DATE:4:4})).0.0"
 fi
 
+# WinFsp lets kopia mount snapshots as native drives instead of WebDAV ones.
+# The installer carries its MSI and offers to install it. WinFsp is GPLv3
+# with an exception for free software; the MSI is shipped unmodified.
+WINFSP_VERSION=2.1.25156
+WINFSP_URL="https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-$WINFSP_VERSION.msi"
+WINFSP_SHA256=073a70e00f77423e34bed98b86e600def93393ba5822204fac57a29324db9f7a
+WINFSP_MSI=${WINFSP_MSI:-$DIST/cache/winfsp-$WINFSP_VERSION.msi}
+
+if [ ! -f "$WINFSP_MSI" ]; then
+  mkdir -p "$(dirname "$WINFSP_MSI")"
+  curl -fsSL -o "$WINFSP_MSI.tmp" "$WINFSP_URL"
+  mv "$WINFSP_MSI.tmp" "$WINFSP_MSI"
+fi
+
+if ! echo "$WINFSP_SHA256  $WINFSP_MSI" | sha256sum -c --status; then
+  echo "$WINFSP_MSI does not match the expected SHA-256" >&2
+  exit 1
+fi
+
 echo "Building KopiaUI-Wails $VERSION"
 
 go generate ./...
@@ -71,6 +92,8 @@ SETUP="$DIST/KopiaUI-Wails-Setup-$VERSION.exe"
   "-DSRCDIR=$(cygpath -w "$OUT")" \
   "-DOUTFILE=$(cygpath -w "$SETUP")" \
   "-DESTIMATEDSIZEKB=$SIZE_KB" \
+  "-DWINFSPMSI=$(cygpath -w "$WINFSP_MSI")" \
+  "-DWINFSPVERSION=$WINFSP_VERSION" \
   "$(cygpath -w installer/kopiaui-wails.nsi)"
 
 ls -la "$SETUP"

@@ -68,7 +68,11 @@ $ umount /tmp/mnt
 
 ## Windows
 
-On Windows, the mounting is done with `net use` on a WebDAV server. To unmount, press Ctrl-C at the prompt:
+On Windows, Kopia mounts snapshots as native, read-only drives when [WinFsp](https://winfsp.dev) is installed. The KopiaUI installer offers to install it, or install it with `winget install WinFsp.WinFsp`. Files of any size can then be opened and copied, and only the parts of a file that a program reads are fetched from the repository.
+
+Without WinFsp, the mounting is done with `net use` on a WebDAV server. Windows then limits files to 50 MB (the `FileSizeLimitInBytes` setting of the WebClient service, at most 4 GB) and downloads each file whole before a program can read it. `kopia mount --webdav` uses WebDAV even when WinFsp is installed.
+
+To unmount, press Ctrl-C at the prompt:
 
 ```shell
 PS> kopia mount all Z:
@@ -81,14 +85,14 @@ Unmounting...
 Unmounted.
 ```
 
-If for some reason you lost the prompt, unmounting can be done by using the "Disconnect" command in Explorer drive menu, or a `net use` command:
+If for some reason you lost the prompt, a WinFsp drive goes away when the `kopia` process ends. A WebDAV drive can be removed with the "Disconnect" command in Explorer drive menu, or a `net use` command:
 
 ```shell
 PS> net use Z: /delete
 Z: was deleted successfully.
 ```
 
-If you encounter an error with status "2", one possible cause is the "WebClient" service being unable to start. It could be disabled, or its dependencies have problem to start, etc. You can check the service status in the "Services" administrative tool. Windows 2012 not install WebClient Service by default.
+When mounting with WebDAV, if you encounter an error with status "2", one possible cause is the "WebClient" service being unable to start. It could be disabled, or its dependencies have problem to start, etc. You can check the service status in the "Services" administrative tool. Windows 2012 not install WebClient Service by default.
 
 ```shell
 PS> kopia mount all Z:  # unable to mount

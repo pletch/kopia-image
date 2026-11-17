@@ -11,22 +11,38 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/kopia/kopia/fs"
+	"github.com/kopia/kopia/internal/winfspmount"
 )
 
-// Directory mounts a given directory under a provided drive letter.
+// Directory mounts a given directory under a provided drive letter. It uses
+// WinFsp when it is installed, and otherwise a WebDAV server mapped with
+// 'net use', which Windows limits to files of 50 MB unless configured.
 func Directory(ctx context.Context, entry fs.Directory, driveLetter string, opts Options) (Controller, error) {
 	if !isValidWindowsDriveOrAsterisk(driveLetter) {
 		return nil, errors.New("must be a valid drive letter or asterisk")
 	}
 
-	c, err := DirectoryWebDAV(ctx, entry)
-	if err != nil {
-		return nil, err
-	}
-
 	label := opts.DriveLabel
 	if label == "" {
 		label = defaultDriveLabel
+	}
+
+	if !opts.PreferWebDAV && winfspmount.Available() {
+		c, err := winfspmount.Mount(ctx, entry, driveLetter, label)
+		if err == nil {
+			return c, nil
+		}
+
+		log(ctx).Warnf("unable to mount with WinFsp, using WebDAV: %v", err)
+	}
+
+	return directoryNetUse(ctx, entry, driveLetter, label)
+}
+
+func directoryNetUse(ctx context.Context, entry fs.Directory, driveLetter, label string) (Controller, error) {
+	c, err := DirectoryWebDAV(ctx, entry)
+	if err != nil {
+		return nil, err
 	}
 
 	labelKey := labelDrive(ctx, c.MountPath(), label)

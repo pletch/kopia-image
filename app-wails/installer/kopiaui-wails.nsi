@@ -5,6 +5,8 @@
 ;   /DVIVERSION=<a.b.c.d>         numeric file version
 ;   /DSRCDIR=<dir>                directory with KopiaUI-Wails.exe and kopia.exe
 ;   /DOUTFILE=<path>              installer output path
+;   /DWINFSPMSI=<path>            WinFsp MSI offered during install
+;   /DWINFSPVERSION=<version>     its version
 ;
 ; Per-user install: no administrator rights needed. Repository configuration
 ; in %APPDATA%\kopia is shared with Electron KopiaUI and the Kopia CLI and is
@@ -134,6 +136,34 @@ Function UpdateImageTasks
 done:
 FunctionEnd
 
+; OfferWinFsp offers to install WinFsp, with which kopia mounts snapshots as
+; native drives; without it they are WebDAV drives, which Windows limits to
+; files of 50 MB and reads slowly. WinFsp installs for all users, so it asks
+; for administrator rights. Silent installs leave it out.
+Function OfferWinFsp
+  IfSilent done
+
+  ; the installer is 32-bit, so this reads the key WinFsp writes
+  ReadRegStr $0 HKLM "SOFTWARE\WinFsp" "InstallDir"
+  ${If} $0 != ""
+    Goto done
+  ${EndIf}
+
+  MessageBox MB_YESNO|MB_ICONQUESTION "Install WinFsp ${WINFSPVERSION} too?$\r$\n$\r$\nWith WinFsp, mounted snapshots are native drives: files of any size can be opened and copied, and browsing is faster. Without it they are WebDAV drives, which Windows limits to files of 50 MB.$\r$\n$\r$\nWinFsp (winfsp.dev) is free software installed for all users. Windows asks for administrator rights." IDNO done
+
+  InitPluginsDir
+  File "/oname=$PLUGINSDIR\winfsp.msi" "${WINFSPMSI}"
+  DetailPrint "Installing WinFsp ${WINFSPVERSION}..."
+  ExecShellWait "runas" "msiexec.exe" '/i "$PLUGINSDIR\winfsp.msi" /qb /norestart'
+
+  ReadRegStr $0 HKLM "SOFTWARE\WinFsp" "InstallDir"
+  ${If} $0 == ""
+    MessageBox MB_OK|MB_ICONEXCLAMATION "WinFsp was not installed. Snapshots will be mounted as WebDAV drives. You can install WinFsp from winfsp.dev later."
+  ${EndIf}
+
+done:
+FunctionEnd
+
 Section "Install"
   SetShellVarContext current
   Call StopRunningApp
@@ -158,6 +188,7 @@ Section "Install"
   WriteRegDWORD HKCU "${UNINSTKEY}" "EstimatedSize" ${ESTIMATEDSIZEKB}
 
   Call UpdateImageTasks
+  Call OfferWinFsp
 SectionEnd
 
 Section "Uninstall"
