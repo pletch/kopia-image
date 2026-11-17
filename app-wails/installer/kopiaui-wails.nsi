@@ -136,29 +136,82 @@ Function UpdateImageTasks
 done:
 FunctionEnd
 
-; OfferWinFsp offers to install WinFsp, with which kopia mounts snapshots as
-; native drives; without it they are WebDAV drives, which Windows limits to
-; files of 50 MB and reads slowly. WinFsp installs for all users, so it asks
-; for administrator rights. Silent installs leave it out.
-Function OfferWinFsp
-  IfSilent done
+; InstalledWinFspVersion pushes the version of the installed WinFsp, such as
+; "2.1.25156.0", read from its DLL, or "" when WinFsp is not installed. The
+; registry key that WinFsp writes holds no version.
+Function InstalledWinFspVersion
+  Push $0
+  Push $1
+  Push $2
+  Push $3
+  Push $4
+  Push $5
+
+  StrCpy $5 ""
 
   ; the installer is 32-bit, so this reads the key WinFsp writes
   ReadRegStr $0 HKLM "SOFTWARE\WinFsp" "InstallDir"
   ${If} $0 != ""
-    Goto done
+    ClearErrors
+    GetDLLVersion "$0\bin\winfsp-x64.dll" $1 $2
+    ${IfNot} ${Errors}
+      IntOp $3 $1 >> 16
+      IntOp $3 $3 & 0xFFFF
+      IntOp $4 $1 & 0xFFFF
+      StrCpy $5 "$3.$4"
+      IntOp $3 $2 >> 16
+      IntOp $3 $3 & 0xFFFF
+      IntOp $4 $2 & 0xFFFF
+      StrCpy $5 "$5.$3.$4"
+    ${EndIf}
   ${EndIf}
 
-  MessageBox MB_YESNO|MB_ICONQUESTION "Install WinFsp ${WINFSPVERSION} too?$\r$\n$\r$\nWith WinFsp, mounted snapshots are native drives: files of any size can be opened and copied, and browsing is faster. Without it they are WebDAV drives, which Windows limits to files of 50 MB.$\r$\n$\r$\nWinFsp (winfsp.dev) is free software installed for all users. Windows asks for administrator rights." IDNO done
+  Pop $4
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
+  Exch $5
+FunctionEnd
+
+; OfferWinFsp offers to install WinFsp, or to update an older one, with which
+; kopia mounts snapshots as native drives; without it they are WebDAV
+; drives, which Windows limits to files of 50 MB and reads slowly. WinFsp
+; installs for all users, so it asks for administrator rights. Silent
+; installs leave it as it is.
+Function OfferWinFsp
+  IfSilent done
+
+  Call InstalledWinFspVersion
+  Pop $0
+
+  ${If} $0 == ""
+    MessageBox MB_YESNO|MB_ICONQUESTION "Install WinFsp ${WINFSPVERSION} too?$\r$\n$\r$\nWith WinFsp, mounted snapshots are native drives: files of any size can be opened and copied, and browsing is faster. Without it they are WebDAV drives, which Windows limits to files of 50 MB.$\r$\n$\r$\nWinFsp (winfsp.dev) is free software installed for all users. Windows asks for administrator rights." IDNO done
+  ${Else}
+    ; 0: same version, 1: the installed one is newer, 2: it is older
+    ${VersionCompare} $0 "${WINFSPVERSION}.0" $1
+    ${If} $1 != 2
+      Goto done
+    ${EndIf}
+
+    MessageBox MB_YESNO|MB_ICONQUESTION "Update WinFsp $0 to ${WINFSPVERSION}?$\r$\n$\r$\nKopia mounts snapshots as native drives with WinFsp, and is tested with this version. Unmount any mounted snapshots first; Windows may need a restart to finish the update.$\r$\n$\r$\nWindows asks for administrator rights." IDNO done
+  ${EndIf}
 
   InitPluginsDir
   File "/oname=$PLUGINSDIR\winfsp.msi" "${WINFSPMSI}"
   DetailPrint "Installing WinFsp ${WINFSPVERSION}..."
   ExecShellWait "runas" "msiexec.exe" '/i "$PLUGINSDIR\winfsp.msi" /qb /norestart'
 
-  ReadRegStr $0 HKLM "SOFTWARE\WinFsp" "InstallDir"
-  ${If} $0 == ""
+  Call InstalledWinFspVersion
+  Pop $1
+
+  ${If} $1 == ""
     MessageBox MB_OK|MB_ICONEXCLAMATION "WinFsp was not installed. Snapshots will be mounted as WebDAV drives. You can install WinFsp from winfsp.dev later."
+  ${Else}
+    ${VersionCompare} $1 "${WINFSPVERSION}.0" $2
+    ${If} $2 == 2
+      MessageBox MB_OK|MB_ICONEXCLAMATION "WinFsp was not updated: version $1 is installed. Snapshots are still mounted with it."
+    ${EndIf}
   ${EndIf}
 
 done:
