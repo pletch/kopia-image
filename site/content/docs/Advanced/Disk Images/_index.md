@@ -204,13 +204,26 @@ replace existing files unless you pass `--overwrite-files`. It restores file
 contents and modification times, not NTFS permissions, and skips alternate data
 streams; restore the whole disk image to keep those.
 
-Mounting an image snapshot, with `kopia mount <snapshot-root-id> Z:` or the
-**Mount** button in the Kopia UI, shows a folder such as `p3-C` next to each NTFS
-volume image, so you can browse and copy files in Explorer.
+Mounting an image snapshot, with `kopia mount <snapshot-root-id> Z:` or
+**Browse** on the **Disk Images** page of the Kopia UI, shows a folder such as
+`p3-C` next to each NTFS volume image, so you can browse and copy files in
+Explorer. With [WinFsp](../../mounting/#windows) installed, the drive can be read
+only by the user who mounted it.
 
 NTFS metadata files such as `$MFT` are hidden. Alternate data streams appear as
 files named `name:stream`. Files encrypted with EFS are listed but their
 contents are not readable.
+
+An image shows its files without the NTFS permissions they had, so the
+credential stores that only administrators can read on the original disk are
+hidden unless kopia runs as an administrator: `Windows\System32\config` (the
+registry hives with password hashes and LSA secrets),
+`Windows\System32\Microsoft\Protect` (the machine's DPAPI keys),
+`Windows\ServiceProfiles`, `Windows\repair`, `Windows\NTDS`, `pagefile.sys`,
+`hiberfil.sys` and `swapfile.sys`. To see them, run `kopia image ls`,
+`kopia image restore-files` or `kopia mount` in an administrator command prompt.
+Anyone with the repository password can still restore the whole disk, so keep
+the password as safe as the computer itself.
 
 ## Restoring
 

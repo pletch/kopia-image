@@ -49,6 +49,10 @@ type Options struct {
 	// SkipStreams leaves out alternate data streams, which are otherwise
 	// listed as "name:stream" files.
 	SkipStreams bool
+
+	// ShowProtected lists the credential stores that are hidden unless the
+	// process runs as an administrator: see protectedPaths.
+	ShowProtected bool
 }
 
 // Volume is an NTFS volume image opened for reading.
@@ -63,6 +67,9 @@ type Volume struct {
 	ntfs *parser.NTFSContext
 
 	dirs dirCache
+
+	// hideProtected leaves the credential stores out of listings.
+	hideProtected bool
 }
 
 // Open opens the NTFS volume in an image object. The volume reads the
@@ -74,7 +81,7 @@ func Open(ctx context.Context, rep repo.Repository, oid object.ID, name string, 
 		return nil, err
 	}
 
-	v := &Volume{name: name, cr: cr, opt: opt}
+	v := &Volume{name: name, cr: cr, opt: opt, hideProtected: !opt.ShowProtected && !processIsAdmin()}
 
 	var ntfs *parser.NTFSContext
 
@@ -124,7 +131,7 @@ func recoverParser(op func() error) (err error) {
 
 // Root returns the root directory of the volume.
 func (v *Volume) Root() fs.Directory {
-	return &dirEntry{entry{v: v, name: v.name, mft: rootMFTEntry}}
+	return &dirEntry{v: v, name: v.name, mft: rootMFTEntry}
 }
 
 // Fetches returns the number of image chunks fetched from the repository.
@@ -148,12 +155,12 @@ func (v *Volume) Close() {
 // listing returns the entries of the directory in an MFT entry, from the
 // directory cache when it holds them. File managers look up each entry of a
 // folder on its own, and every lookup needs the folder's entries.
-func (v *Volume) listing(mft int64) (*dirListing, error) {
+func (v *Volume) listing(mft int64, path string) (*dirListing, error) {
 	if l := v.dirs.get(mft); l != nil {
 		return l, nil
 	}
 
-	entries, err := v.list(mft)
+	entries, err := v.list(mft, path)
 	if err != nil {
 		return nil, err
 	}
@@ -164,8 +171,9 @@ func (v *Volume) listing(mft int64) (*dirListing, error) {
 	return l, nil
 }
 
-// list reads the entries of the directory in an MFT entry.
-func (v *Volume) list(mft int64) ([]fs.Entry, error) {
+// list reads the entries of the directory in an MFT entry, whose path in the
+// volume is path.
+func (v *Volume) list(mft int64, path string) ([]fs.Entry, error) {
 	var infos []*parser.FileInfo
 
 	err := v.call(func(ntfs *parser.NTFSContext) error {
@@ -185,7 +193,7 @@ func (v *Volume) list(mft int64) ([]fs.Entry, error) {
 	entries := make([]fs.Entry, 0, len(infos))
 
 	for _, info := range infos {
-		e, ok := v.newEntry(info)
+		e, ok := v.newEntry(info, path)
 		if ok {
 			entries = append(entries, e)
 		}
@@ -194,13 +202,21 @@ func (v *Volume) list(mft int64) ([]fs.Entry, error) {
 	return entries, nil
 }
 
-func (v *Volume) newEntry(info *parser.FileInfo) (fs.Entry, bool) {
+func (v *Volume) newEntry(info *parser.FileInfo, parentPath string) (fs.Entry, bool) {
 	mft, attrType, attrID, stream, err := parser.ParseMFTId(info.MFTId)
 	if err != nil || mft < firstUserMFTEntry || info.IsSlack {
 		return nil, false
 	}
 
 	if v.opt.SkipStreams && strings.Contains(info.Name, ":") {
+		return nil, false
+	}
+
+	// an alternate data stream "name:stream" belongs to the file "name"
+	fileName, _, _ := strings.Cut(info.Name, ":")
+	path := childPath(parentPath, fileName)
+
+	if v.hideProtected && isProtectedPath(path) {
 		return nil, false
 	}
 
@@ -214,7 +230,7 @@ func (v *Volume) newEntry(info *parser.FileInfo) (fs.Entry, bool) {
 
 	// a directory's alternate data streams are files
 	if info.IsDir && attrType != attrTypeData {
-		return &dirEntry{e}, true
+		return &dirEntry{entry: e, path: path}, true
 	}
 
 	return &fileEntry{entry: e, attrID: uint16(attrID), stream: stream}, true //nolint:gosec
@@ -231,6 +247,9 @@ type entry struct {
 
 type dirEntry struct {
 	entry
+
+	// path is the directory's path in the volume, as childPath makes it.
+	path string
 }
 
 type fileEntry struct {
@@ -262,7 +281,7 @@ func (e *fileEntry) Size() int64                     { return e.size }
 // Child returns the named entry. NTFS names are case-insensitive, so an
 // exact match is preferred and a case-insensitive one accepted.
 func (e *dirEntry) Child(_ context.Context, name string) (fs.Entry, error) {
-	l, err := e.v.listing(e.mft)
+	l, err := e.v.listing(e.mft, e.path)
 	if err != nil {
 		return nil, err
 	}
@@ -282,7 +301,7 @@ func (e *dirEntry) Child(_ context.Context, name string) (fs.Entry, error) {
 
 // Iterate lists the directory.
 func (e *dirEntry) Iterate(_ context.Context) (fs.DirectoryIterator, error) {
-	l, err := e.v.listing(e.mft)
+	l, err := e.v.listing(e.mft, e.path)
 	if err != nil {
 		return nil, err
 	}
