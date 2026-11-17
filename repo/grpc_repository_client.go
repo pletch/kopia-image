@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pkg/errors"
@@ -263,6 +264,12 @@ type grpcRepositoryClient struct {
 	findManifestsPageSize int32
 
 	recent recentlyRead
+
+	// storedBytes sums what the server reported storing for this client's
+	// sessions, see StoredBytes; storedBytesKnown is set once a server
+	// reported it.
+	storedBytes      atomic.Int64
+	storedBytesKnown atomic.Bool
 }
 
 type grpcInnerSession struct {
@@ -276,6 +283,10 @@ type grpcInnerSession struct {
 	router     *sessionResponseRouter
 
 	wg sync.WaitGroup
+
+	// packedBytes is the last count of stored bytes the server reported for
+	// this session; flush responses report the session's running total.
+	packedBytes atomic.Int64
 }
 
 type sessionRequestRoute struct {
@@ -965,7 +976,15 @@ func (r *grpcRepositoryClient) Flush(ctx context.Context) error {
 	}
 
 	if _, err := inSessionWithoutRetry(ctx, r, func(ctx context.Context, sess *grpcInnerSession) (bool, error) {
-		return false, sess.Flush(ctx)
+		packed, err := sess.Flush(ctx)
+		if err == nil && packed != nil {
+			// Swap makes concurrent flushes add up to the session's total
+			// whichever response arrives last.
+			r.storedBytes.Add(*packed - sess.packedBytes.Swap(*packed))
+			r.storedBytesKnown.Store(true)
+		}
+
+		return false, err
 	}); err != nil {
 		return err
 	}
@@ -977,19 +996,26 @@ func (r *grpcRepositoryClient) Flush(ctx context.Context) error {
 	return nil
 }
 
-func (r *grpcInnerSession) Flush(ctx context.Context) error {
-	return sendAndReceiveNoValue(ctx, r, &apipb.SessionRequest{
+// Flush flushes the session on the server and returns the bytes the session
+// has stored so far, or nil if the server does not report them.
+func (r *grpcInnerSession) Flush(ctx context.Context) (*int64, error) {
+	return sendAndReceive(ctx, r, &apipb.SessionRequest{
 		Request: &apipb.SessionRequest_Flush{
 			Flush: &apipb.FlushRequest{},
 		},
-	}, func(resp *apipb.SessionResponse) error {
-		switch resp.GetResponse().(type) {
+	}, func(resp *apipb.SessionResponse) (*int64, error) {
+		switch rr := resp.GetResponse().(type) {
 		case *apipb.SessionResponse_Flush:
-			return nil
+			return rr.Flush.PackedBytes, nil
 		default:
-			return unhandledSessionResponse(resp)
+			return nil, unhandledSessionResponse(resp)
 		}
 	})
+}
+
+// StoredBytes implements StoredBytesReporter.
+func (r *grpcRepositoryClient) StoredBytes() (int64, bool) {
+	return r.storedBytes.Load(), r.storedBytesKnown.Load()
 }
 
 func (r *grpcRepositoryClient) NewWriter(ctx context.Context, opt WriteSessionOptions) (context.Context, RepositoryWriter, error) {

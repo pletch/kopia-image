@@ -56,11 +56,12 @@ type Metadata struct {
 	// Volumes holds one entry per imaged partition, ordered by partition number.
 	Volumes []Volume `json:"volumes"`
 
-	// UploadedBytes is how much new data imaging the volumes stored. With a
-	// direct repository it is the size of the pack blobs written (compressed
-	// and encrypted). Through a repository server it is the contents sent to
-	// the server, which compresses them, so it is larger than what the server
-	// stores for compressible data. It is nil when it was not counted.
+	// UploadedBytes is how much new data imaging the volumes stored,
+	// compressed and encrypted; chunks that were already in the repository
+	// are not counted. Through a repository server it is what the server
+	// reported storing when the run flushed; a server too old to report it
+	// leaves the contents sent instead, before compression. It is nil when it
+	// was not counted.
 	UploadedBytes *int64 `json:"uploadedBytes,omitempty"`
 }
 

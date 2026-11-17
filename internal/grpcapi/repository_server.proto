@@ -86,6 +86,11 @@ message FlushRequest {
 }
 
 message FlushResponse {
+  // packed_bytes is how many bytes of new contents the session has added to
+  // packs since it started, compressed and encrypted: what the server stored
+  // for this client. Contents that already existed are not counted. Older
+  // servers do not set it.
+  optional int64 packed_bytes = 1;
 }
 
 message WriteContentRequest {

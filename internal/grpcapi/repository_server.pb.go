@@ -793,7 +793,12 @@ func (*FlushRequest) Descriptor() ([]byte, []int) {
 }
 
 type FlushResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// packed_bytes is how many bytes of new contents the session has added to
+	// packs since it started, compressed and encrypted: what the server stored
+	// for this client. Contents that already existed are not counted. Older
+	// servers do not set it.
+	PackedBytes   *int64 `protobuf:"varint,1,opt,name=packed_bytes,json=packedBytes,proto3,oneof" json:"packed_bytes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -826,6 +831,13 @@ func (x *FlushResponse) ProtoReflect() protoreflect.Message {
 // Deprecated: Use FlushResponse.ProtoReflect.Descriptor instead.
 func (*FlushResponse) Descriptor() ([]byte, []int) {
 	return file_repository_server_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *FlushResponse) GetPackedBytes() int64 {
+	if x != nil && x.PackedBytes != nil {
+		return *x.PackedBytes
+	}
+	return 0
 }
 
 type WriteContentRequest struct {
@@ -2307,8 +2319,10 @@ const file_repository_server_proto_rawDesc = "" +
 	"content_id\x18\x01 \x01(\tR\tcontentId\"(\n" +
 	"\x12GetContentResponse\x12\x12\n" +
 	"\x04data\x18\x01 \x01(\fR\x04data\"\x0e\n" +
-	"\fFlushRequest\"\x0f\n" +
-	"\rFlushResponse\"c\n" +
+	"\fFlushRequest\"H\n" +
+	"\rFlushResponse\x12&\n" +
+	"\fpacked_bytes\x18\x01 \x01(\x03H\x00R\vpackedBytes\x88\x01\x01B\x0f\n" +
+	"\r_packed_bytes\"c\n" +
 	"\x13WriteContentRequest\x12\x16\n" +
 	"\x06prefix\x18\x01 \x01(\tR\x06prefix\x12\x12\n" +
 	"\x04data\x18\x02 \x01(\fR\x04data\x12 \n" +
@@ -2527,6 +2541,7 @@ func file_repository_server_proto_init() {
 	if File_repository_server_proto != nil {
 		return
 	}
+	file_repository_server_proto_msgTypes[12].OneofWrappers = []any{}
 	file_repository_server_proto_msgTypes[31].OneofWrappers = []any{
 		(*SessionRequest_InitializeSession)(nil),
 		(*SessionRequest_GetContentInfo)(nil),

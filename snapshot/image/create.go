@@ -152,8 +152,7 @@ func Create(ctx context.Context, rep repo.RepositoryWriter, options *CreateOptio
 		StartTime:     rep.Time().UTC(),
 	}
 
-	uploaded, uploadedOK := uploadCounter(rep, opt.Uploaded)
-	uploadedBefore := uploaded()
+	uploaded := opt.newUploadCounter(rep)
 
 	stopPeriodic := opt.startPeriodic(ctx, rep, md)
 
@@ -168,15 +167,13 @@ func Create(ctx context.Context, rep repo.RepositoryWriter, options *CreateOptio
 		return nil, nil, err
 	}
 
-	// flushing here makes the pack upload count complete before it is recorded
+	// flushing here makes the stored byte count complete before it is
+	// recorded; through a repository server, the flush reports it
 	if err := rep.Flush(ctx); err != nil {
 		return nil, nil, errors.Wrap(err, "unable to flush images")
 	}
 
-	if uploadedOK {
-		n := uploaded() - uploadedBefore
-		md.UploadedBytes = &n
-	}
+	md.UploadedBytes = uploaded()
 
 	md.EndTime = rep.Time().UTC()
 
@@ -590,22 +587,32 @@ func (p *progress) replaceCheckpoint(ctx context.Context, rep repo.RepositoryWri
 	}
 }
 
-// uploadCounter returns a function reporting the bytes of pack blobs written
-// so far, when the repository exposes it.
-func uploadCounter(rep repo.RepositoryWriter, sent func() int64) (func() int64, bool) {
-	dw, ok := rep.(repo.DirectRepositoryWriter)
-	if !ok {
-		if sent != nil {
-			return sent, true
-		}
+// newUploadCounter starts counting what the run stores and returns a function
+// that, after a flush, returns the count, or nil if it is not known. It is
+// the new contents stored, compressed and encrypted, see repo.StoredBytes.
+// When a repository server does not report that, it falls back to what the
+// write session sent, opt.Uploaded, which is not compressed.
+func (opt *CreateOptions) newUploadCounter(rep repo.RepositoryWriter) func() *int64 {
+	storedBefore, _ := repo.StoredBytes(rep)
 
-		return func() int64 { return 0 }, false
+	var sentBefore int64
+	if opt.Uploaded != nil {
+		sentBefore = opt.Uploaded()
 	}
 
-	return func() int64 {
-		_, n := dw.ContentManager().Stats.WrittenContent()
-		return n
-	}, true
+	return func() *int64 {
+		if stored, ok := repo.StoredBytes(rep); ok {
+			n := stored - storedBefore
+			return &n
+		}
+
+		if opt.Uploaded != nil {
+			n := opt.Uploaded() - sentBefore
+			return &n
+		}
+
+		return nil
+	}
 }
 
 // saveProgressAfterFailure saves a checkpoint of what a failed run wrote and

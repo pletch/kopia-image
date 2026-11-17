@@ -1260,7 +1260,8 @@ func TestDoRetryEOFKillsAndReEstablishesSession(t *testing.T) {
 	// 2. Kill the inner session
 	// 3. Re-establish a new session, call Flush → succeed
 	_, err := doRetry(context.Background(), client, func(ctx context.Context, sess *grpcInnerSession) (bool, error) {
-		return false, sess.Flush(ctx)
+		_, err := sess.Flush(ctx)
+		return false, err
 	})
 	require.NoError(t, err)
 
