@@ -38,6 +38,12 @@ type ImageSnapshot struct {
 	DiskGUID string        `json:"diskGuid,omitempty"`
 	Volumes  []ImageVolume `json:"volumes"`
 
+	// DiskSize and Partitions describe the imaged disk, including the
+	// partitions that are not imaged; they are empty when its layout.json
+	// cannot be read.
+	DiskSize   int64            `json:"diskSize,omitempty"`
+	Partitions []ImagePartition `json:"partitions,omitempty"`
+
 	image.Totals
 
 	// NewDataBytes is the new data the image stored before compression,
@@ -60,6 +66,14 @@ type ImageVolume struct {
 	Kind            image.VolumeKind `json:"kind"`
 	Size            int64            `json:"size"`
 	FreeBytes       int64            `json:"freeBytes,omitempty"`
+}
+
+// ImagePartition is a GPT partition of an imaged disk.
+type ImagePartition struct {
+	Number   int    `json:"number"`
+	Name     string `json:"name,omitempty"`
+	TypeGUID string `json:"typeGuid"`
+	Length   int64  `json:"length"`
 }
 
 // ImageStatusResponse describes kopia image on the computer the server runs

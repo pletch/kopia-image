@@ -128,6 +128,20 @@ func convertImageSnapshot(ctx context.Context, rc requestContext, m *snapshot.Ma
 		img.Size = m.RootEntry.DirSummary.TotalFileSize
 	}
 
+	// the disk map is an extra; the image is listed without it
+	if l, err := image.ReadLayout(ctx, rc.rep, m); err == nil {
+		img.DiskSize = l.DiskSize
+
+		for _, p := range l.Partitions {
+			img.Partitions = append(img.Partitions, serverapi.ImagePartition{
+				Number:   p.Number,
+				Name:     p.Name,
+				TypeGUID: p.TypeGUID,
+				Length:   p.Length,
+			})
+		}
+	}
+
 	md, err := image.ReadMetadata(ctx, rc.rep, m)
 	if err != nil {
 		img.MetadataError = err.Error()

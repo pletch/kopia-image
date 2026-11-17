@@ -184,6 +184,12 @@ func TestImagesList(t *testing.T) {
 	require.Equal(t, image.VolumeKindRaw, img.Volumes[0].Kind)
 	require.Equal(t, int64(len(data)), img.Volumes[0].Size)
 
+	// the disk map shows the imaged disk's partitions
+	require.Equal(t, int64(1<<30), img.DiskSize)
+	require.Equal(t, []serverapi.ImagePartition{{
+		Number: 1, Name: "data", TypeGUID: image.PartitionTypeBasicData, Length: int64(len(data)),
+	}}, img.Partitions)
+
 	resp, err = serverapi.ListImages(ctx, cli, true)
 	require.NoError(t, err)
 	require.Len(t, resp.Images, 2)

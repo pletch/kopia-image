@@ -43,44 +43,65 @@ func ListSnapshots(ctx context.Context, rep repo.Repository) ([]*snapshot.Manife
 
 // ReadMetadata reads the image.json of an image snapshot.
 func ReadMetadata(ctx context.Context, rep repo.Repository, m *snapshot.Manifest) (*Metadata, error) {
+	var md Metadata
+
+	if err := readRootJSON(ctx, rep, m, MetadataFileName, &md); err != nil {
+		return nil, err
+	}
+
+	return &md, nil
+}
+
+// ReadLayout reads the layout.json of an image snapshot: the partition table
+// of the imaged disk.
+func ReadLayout(ctx context.Context, rep repo.Repository, m *snapshot.Manifest) (*Layout, error) {
+	var l Layout
+
+	if err := readRootJSON(ctx, rep, m, LayoutFileName, &l); err != nil {
+		return nil, err
+	}
+
+	return &l, nil
+}
+
+// readRootJSON decodes a JSON file in the root of an image snapshot.
+func readRootJSON(ctx context.Context, rep repo.Repository, m *snapshot.Manifest, name string, v any) error {
 	root, err := snapshotfs.SnapshotRoot(rep, m)
 	if err != nil {
-		return nil, errors.Wrap(err, "unable to open snapshot root")
+		return errors.Wrap(err, "unable to open snapshot root")
 	}
 
 	dir, ok := root.(fs.Directory)
 	if !ok {
-		return nil, errors.New("snapshot root is not a directory")
+		return errors.New("snapshot root is not a directory")
 	}
 
-	e, err := dir.Child(ctx, MetadataFileName)
+	e, err := dir.Child(ctx, name)
 	if err != nil {
-		return nil, errors.Wrap(err, "not found")
+		return errors.Wrapf(err, "%v not found", name)
 	}
 
 	f, ok := e.(fs.File)
 	if !ok {
-		return nil, errors.New("not a file")
+		return errors.Errorf("%v is not a file", name)
 	}
 
 	r, err := f.Open(ctx)
 	if err != nil {
-		return nil, errors.Wrap(err, "unable to open")
+		return errors.Wrapf(err, "unable to open %v", name)
 	}
 	defer r.Close() //nolint:errcheck
 
 	b, err := io.ReadAll(io.LimitReader(r, maxMetadataSize))
 	if err != nil {
-		return nil, errors.Wrap(err, "unable to read")
+		return errors.Wrapf(err, "unable to read %v", name)
 	}
 
-	var md Metadata
-
-	if err := json.Unmarshal(b, &md); err != nil {
-		return nil, errors.Wrap(err, "invalid JSON")
+	if err := json.Unmarshal(b, v); err != nil {
+		return errors.Wrapf(err, "invalid JSON in %v", name)
 	}
 
-	return &md, nil
+	return nil
 }
 
 // FillBytesRead sets ImageBytesRead of image snapshots taken before it was
