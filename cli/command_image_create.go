@@ -336,6 +336,7 @@ func (c *commandImageCreate) imageDisk(ctx context.Context, rep repo.RepositoryW
 		AsyncWrites:        parallel,
 		FlushInterval:      c.flushInterval,
 		NewBuffer:          blockdev.AlignedBuffer,
+		Uploaded:           c.uploaded.Load,
 		Logf:               logf,
 		Progress:           &c.progress,
 	})

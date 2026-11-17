@@ -111,6 +111,13 @@ type CreateOptions struct {
 	// Tags are added to the snapshot manifest besides TagKey.
 	Tags map[string]string
 
+	// Uploaded, when set, returns how many bytes the write session has sent
+	// so far; Create records the difference over the run as the image's
+	// uploaded bytes. Through a repository server it is the only source of
+	// that number (the caller counts WriteSessionOptions.OnUpload); a direct
+	// repository's own pack counter is used instead.
+	Uploaded func() int64
+
 	// Progress, when set, is updated as the volumes are imaged.
 	Progress *Progress
 
@@ -145,7 +152,7 @@ func Create(ctx context.Context, rep repo.RepositoryWriter, options *CreateOptio
 		StartTime:     rep.Time().UTC(),
 	}
 
-	uploaded, uploadedOK := uploadCounter(rep)
+	uploaded, uploadedOK := uploadCounter(rep, opt.Uploaded)
 	uploadedBefore := uploaded()
 
 	stopPeriodic := opt.startPeriodic(ctx, rep, md)
@@ -443,6 +450,9 @@ func (opt *CreateOptions) saveManifest(ctx context.Context, rep repo.RepositoryW
 		man.UploadedBytes = &n
 	}
 
+	read := md.Totals().BytesRead
+	man.ImageBytesRead = &read
+
 	if _, err := snapshot.SaveSnapshot(ctx, rep, man); err != nil {
 		return nil, errors.Wrap(err, "unable to save image snapshot")
 	}
@@ -582,9 +592,13 @@ func (p *progress) replaceCheckpoint(ctx context.Context, rep repo.RepositoryWri
 
 // uploadCounter returns a function reporting the bytes of pack blobs written
 // so far, when the repository exposes it.
-func uploadCounter(rep repo.RepositoryWriter) (func() int64, bool) {
+func uploadCounter(rep repo.RepositoryWriter, sent func() int64) (func() int64, bool) {
 	dw, ok := rep.(repo.DirectRepositoryWriter)
 	if !ok {
+		if sent != nil {
+			return sent, true
+		}
+
 		return func() int64 { return 0 }, false
 	}
 

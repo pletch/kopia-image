@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"io"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -45,9 +46,15 @@ func TestImageCreate_throughAPIServer(t *testing.T) {
 	path, err := image.DiskSourcePath(diskGUID)
 	require.NoError(t, err)
 
-	var man *snapshot.Manifest
+	var (
+		man  *snapshot.Manifest
+		sent atomic.Int64
+	)
 
-	require.NoError(t, repo.WriteSession(ctx, rep, repo.WriteSessionOptions{Purpose: "image"}, func(ctx context.Context, w repo.RepositoryWriter) error {
+	require.NoError(t, repo.WriteSession(ctx, rep, repo.WriteSessionOptions{
+		Purpose:  "image",
+		OnUpload: func(n int64) { sent.Add(n) },
+	}, func(ctx context.Context, w repo.RepositoryWriter) error {
 		var cerr error
 
 		man, _, cerr = image.Create(ctx, w, &image.CreateOptions{
@@ -63,6 +70,7 @@ func TestImageCreate_throughAPIServer(t *testing.T) {
 				PartitionNumber: 1, Label: "D", Kind: image.VolumeKindRaw, Size: int64(len(data)),
 				Open: func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(data)), nil },
 			}},
+			Uploaded: sent.Load,
 		})
 
 		return cerr
@@ -76,4 +84,9 @@ func TestImageCreate_throughAPIServer(t *testing.T) {
 	md, err := image.ReadMetadata(ctx, rep, mans[0])
 	require.NoError(t, err)
 	require.Equal(t, int64(len(data)), md.Totals().BytesRead)
+
+	// the random data does not compress, so what was sent is at least its size
+	require.NotNil(t, md.UploadedBytes, "uploaded bytes are recorded through a repository server")
+	require.GreaterOrEqual(t, *md.UploadedBytes, int64(len(data)))
+	require.Equal(t, md.UploadedBytes, mans[0].UploadedBytes)
 }
