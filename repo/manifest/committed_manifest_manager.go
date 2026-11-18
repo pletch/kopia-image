@@ -293,7 +293,11 @@ func (m *committedManifestManager) mergeEntryLocked(e *manifestEntry) {
 		return
 	}
 
-	if e.ModTime.After(prev.ModTime) {
+	// A deletion with the same time as the entry it deletes, as within one
+	// tick of a coarse clock, wins: IDs are never reused, so a deletion
+	// always comes after the entry, and contents are merged in no
+	// particular order.
+	if e.ModTime.After(prev.ModTime) || e.Deleted && e.ModTime.Equal(prev.ModTime) {
 		m.committedEntries[e.ID] = e
 	}
 }

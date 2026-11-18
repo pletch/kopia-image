@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/pkg/errors"
@@ -361,12 +362,24 @@ func TestCreate_checkpointsAreReplacedByTheImage(t *testing.T) {
 	opt.CheckpointInterval = 1
 	opt.FlushInterval = 1
 
-	var logged []string
+	var (
+		mu     sync.Mutex
+		logged []string
+	)
 
-	opt.Logf = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+	// the periodic checkpoints log from their own goroutine
+	opt.Logf = func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		logged = append(logged, fmt.Sprintf(format, args...))
+	}
 
 	man, _, err := Create(ctx, env.RepositoryWriter, opt)
 	require.NoError(t, err)
+
+	mu.Lock()
+	defer mu.Unlock()
 
 	for _, line := range logged {
 		require.NotContains(t, line, "checkpoint", "saving and replacing checkpoints works")
