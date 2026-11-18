@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	stderrors "errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -99,6 +102,12 @@ func (c *commandImageCreate) setup(svc appServices, parent commandParent) {
 // does not open, and counts the bytes the session uploads for the progress.
 func (c *commandImageCreate) runWithWriter(ctx context.Context) (err error) {
 	c.loc.statePath = c.statePath
+
+	// a dry run writes nothing, so it does not need the repository: it
+	// shows what would be imaged, and left out, on any computer
+	if c.dryRun {
+		return c.run(ctx, nil)
+	}
 
 	rep, err := c.svc.openRepository(ctx, true)
 	if err != nil {
@@ -343,13 +352,6 @@ func (c *commandImageCreate) imageDisk(ctx context.Context, rep repo.RepositoryW
 		return nil, nil, errors.Wrap(err, "invalid disk GUID")
 	}
 
-	src := snapshot.SourceInfo{Host: rep.ClientOptions().Hostname, UserName: rep.ClientOptions().Username, Path: sourcePath}
-
-	pol, def, _, err := policy.GetEffectivePolicy(ctx, rep, src)
-	if err != nil {
-		return nil, nil, errors.Wrapf(err, "unable to get the policy of %v", src)
-	}
-
 	session, err := disksource.OpenSession(ctx, plan, state, disksource.SessionOptions{
 		ExcludeKopiaCaches:        c.excludeCaches,
 		ExcludeFilesNotToSnapshot: c.excludeFNTS,
@@ -372,6 +374,13 @@ func (c *commandImageCreate) imageDisk(ctx context.Context, rep repo.RepositoryW
 	if c.dryRun {
 		c.printDryRun(plan, session)
 		return nil, nil, nil
+	}
+
+	src := snapshot.SourceInfo{Host: rep.ClientOptions().Hostname, UserName: rep.ClientOptions().Username, Path: sourcePath}
+
+	pol, def, _, err := policy.GetEffectivePolicy(ctx, rep, src)
+	if err != nil {
+		return nil, nil, errors.Wrapf(err, "unable to get the policy of %v", src)
 	}
 
 	parallel := c.parallel
@@ -457,12 +466,84 @@ func (c *commandImageCreate) printDryRun(plan *disksource.Plan, session *disksou
 	volumes := session.Volumes()
 
 	for i := range volumes {
-		v := &volumes[i]
-		excluded := image.ExcludedBytes(v.Excluded)
-		zeroed := v.FreeBytes + image.TotalLength(v.UnstableExtents) + excluded
-		c.out.printStdout("  %v: %v, %v read, %v zeroed, of which %v in kopia's caches\n",
-			image.VolumeEntryName(v.PartitionNumber, v.Label), units.BytesString(v.Size), units.BytesString(v.Size-zeroed), units.BytesString(zeroed), units.BytesString(excluded))
+		for _, line := range dryRunVolumeLines(&volumes[i]) {
+			c.out.printStdout("%v\n", line)
+		}
 	}
+}
+
+// dryRunMaxFolders is how many of a volume's largest excluded folders a dry
+// run lists.
+const dryRunMaxFolders = 10
+
+// dryRunVolumeLines describes what imaging a volume reads and leaves out: the
+// excluded bytes per source and the largest excluded folders.
+func dryRunVolumeLines(v *image.VolumeSource) []string {
+	excluded := image.ExcludedBytes(v.Excluded)
+	zeroed := v.FreeBytes + image.TotalLength(v.UnstableExtents) + excluded
+
+	lines := []string{fmt.Sprintf("  %v: %v, %v read, %v zeroed, of which %v left out",
+		image.VolumeEntryName(v.PartitionNumber, v.Label), units.BytesString(v.Size), units.BytesString(v.Size-zeroed),
+		units.BytesString(zeroed), units.BytesString(excluded))}
+
+	if len(v.Excluded) == 0 {
+		return lines
+	}
+
+	type total struct {
+		bytes, files int64
+		folders      int
+	}
+
+	bySource := map[string]*total{}
+
+	var sources []string
+
+	for _, f := range v.Excluded {
+		source, _, _ := strings.Cut(f.Source, `\`)
+
+		t := bySource[source]
+		if t == nil {
+			t = &total{}
+			bySource[source] = t
+			sources = append(sources, source)
+		}
+
+		t.bytes += f.Bytes
+		t.files += f.Files
+		t.folders++
+	}
+
+	slices.SortFunc(sources, func(a, b string) int { return cmp.Compare(bySource[b].bytes, bySource[a].bytes) })
+
+	for _, s := range sources {
+		t := bySource[s]
+		lines = append(lines, fmt.Sprintf("    %-20v %10v  %v files in %v folders", s, units.BytesString(t.bytes), groupDigits(t.files), groupDigits(t.folders)))
+	}
+
+	folders := slices.Clone(v.Excluded)
+	slices.SortFunc(folders, func(a, b image.ExcludedFolder) int { return cmp.Compare(b.Bytes, a.Bytes) })
+
+	lines = append(lines, "    largest folders:")
+
+	for _, f := range folders[:min(len(folders), dryRunMaxFolders)] {
+		path := f.Path
+		if f.Pattern != "" {
+			path += `\` + f.Pattern
+		}
+
+		lines = append(lines, fmt.Sprintf("    %10v  %v  (%v)", units.BytesString(f.Bytes), path, f.Source))
+	}
+
+	if more := len(folders) - dryRunMaxFolders; more > 0 {
+		lines = append(lines, fmt.Sprintf("    ... and %v more folders", groupDigits(more)))
+	}
+
+	if image.RequiredFormatVersion([]image.Volume{{Excluded: v.Excluded}}) > image.FormatVersion {
+		lines = append(lines, "    A restore deletes these files: it needs this version of kopia or newer, so rebuild recovery media made with older versions.")
+	}
+
+	return lines
 }
 
 func (c *commandImageCreate) printSummary(man *snapshot.Manifest, md *image.Metadata) {

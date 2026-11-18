@@ -17,11 +17,16 @@ func TestImageCreateAndList(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(mnt, "hello.txt"), []byte("hello"), 0o600))
 
 	env := testenv.NewCLITest(t, testenv.RepoFormatNotImportant, testenv.NewInProcRunner(t))
-	env.RunAndExpectSuccess(t, "repo", "create", "filesystem", "--path", env.RepoDir)
-
 	stateFile := "--state-file=" + filepath.Join(t.TempDir(), "state.json")
 
+	// a dry run needs no repository
 	out := env.RunAndExpectSuccess(t, "image", "create", mnt, "--dry-run", stateFile)
+	require.Contains(t, strings.Join(out, "\n"), "Dry run of disk")
+	require.Contains(t, strings.Join(out, "\n"), "left out")
+
+	env.RunAndExpectSuccess(t, "repo", "create", "filesystem", "--path", env.RepoDir)
+
+	out = env.RunAndExpectSuccess(t, "image", "create", mnt, "--dry-run", stateFile)
 	require.Contains(t, strings.Join(out, "\n"), "p2-data.img (NTFS from a shadow copy of")
 	require.Contains(t, strings.Join(out, "\n"), "Dry run of disk")
 
