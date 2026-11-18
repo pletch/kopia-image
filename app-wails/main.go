@@ -440,6 +440,40 @@ func (s *shell) repositories(current string) []repositoryInfo {
 	return result
 }
 
+// currentTitleBarColors returns the title bar colors of the web UI's theme,
+// or until the page has reported them, the default dark theme's in dark mode.
+func (s *shell) currentTitleBarColors() *titleBarColors {
+	if c := s.configs.titleBarColors(); c != nil {
+		return c
+	}
+
+	return defaultTitleBarColors(s.app != nil && s.app.Env.IsDarkMode())
+}
+
+// setTitleBarColors applies the colors of the web UI's theme to the title
+// bar and remembers them for the next start.
+func (s *shell) setTitleBarColors(c titleBarColors) error {
+	if err := c.validate(); err != nil {
+		return err
+	}
+
+	s.configs.setTitleBarColors(c)
+
+	if s.app == nil {
+		return nil
+	}
+
+	application.InvokeAsync(func() {
+		if w, ok := s.app.Window.GetByName(mainWindowName); ok {
+			if ww, ok := w.(*application.WebviewWindow); ok {
+				applyTitleBarColors(ww, &c, ww.IsFocused())
+			}
+		}
+	})
+
+	return nil
+}
+
 // updateWindowTitle names the window after the repository it shows.
 func (s *shell) updateWindowTitle() {
 	if s.app == nil {
@@ -487,10 +521,11 @@ func (s *shell) showRepoWindow(repoID string) {
 		Hidden:          true,
 		// Painted before the page loads, so a dark system does not flash white.
 		BackgroundColour: windowBackground(s.app.Env.IsDarkMode()),
-		Windows: application.WindowsWindow{
-			CustomTheme: windowsTitleBarTheme,
-		},
 	})
+
+	// the title bar takes the web UI theme's colors, whatever the Windows
+	// theme is; the page reports them once it has loaded
+	applyTitleBarColors(w, s.currentTitleBarColors(), true)
 
 	geometry, restored := s.windows.restore(s.screens())
 	if restored {
@@ -517,7 +552,12 @@ func (s *shell) showRepoWindow(repoID string) {
 	})
 
 	w.OnWindowEvent(events.Common.WindowFocus, func(*application.WindowEvent) {
+		applyTitleBarColors(w, s.currentTitleBarColors(), true)
 		s.pollAll()
+	})
+
+	w.OnWindowEvent(events.Common.WindowLostFocus, func(*application.WindowEvent) {
+		applyTitleBarColors(w, s.currentTitleBarColors(), false)
 	})
 
 	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {

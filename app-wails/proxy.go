@@ -371,6 +371,20 @@ func (h *proxyHandler) serveShim(w http.ResponseWriter, r *http.Request, repoID 
 
 		w.WriteHeader(http.StatusNoContent)
 
+	case "window-colors":
+		var req titleBarColors
+
+		if !decodeJSONRequest(w, r, &req) {
+			return
+		}
+
+		if err := h.host.setTitleBarColors(req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+
 	case "add-repository":
 		var req struct{}
 

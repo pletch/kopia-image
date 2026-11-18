@@ -28,6 +28,10 @@ const (
 
 type shellState struct {
 	ActiveRepository string `json:"activeRepository"`
+
+	// TitleBar is the title bar colors of the web UI's theme, reported by
+	// the page, so that the window opens with them before the page loads.
+	TitleBar *titleBarColors `json:"titleBar,omitempty"`
 }
 
 // configStore mirrors app/public/config.js: it discovers repository configs
@@ -40,7 +44,7 @@ type configStore struct {
 	firstRun bool
 	repos    map[string]bool
 	level    int
-	active   string
+	state    shellState
 }
 
 type notificationSettings struct {
@@ -187,8 +191,8 @@ func (c *configStore) activeRepository() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.repos[c.active] {
-		return c.active
+	if c.repos[c.state.ActiveRepository] {
+		return c.state.ActiveRepository
 	}
 
 	if ids := c.listLocked(); len(ids) > 0 {
@@ -202,21 +206,53 @@ func (c *configStore) activeRepository() string {
 // it for the next start.
 func (c *configStore) setActiveRepository(id string) {
 	c.mu.Lock()
-	changed := c.active != id
-	c.active = id
-	c.mu.Unlock()
+	defer c.mu.Unlock()
 
-	if !changed {
+	if c.state.ActiveRepository == id {
 		return
 	}
 
-	b, err := json.Marshal(shellState{ActiveRepository: id})
+	c.state.ActiveRepository = id
+	c.saveStateLocked()
+}
+
+// titleBarColors returns the title bar colors the web UI reported last, or
+// nil.
+func (c *configStore) titleBarColors() *titleBarColors {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.state.TitleBar == nil {
+		return nil
+	}
+
+	t := *c.state.TitleBar
+
+	return &t
+}
+
+// setTitleBarColors remembers the title bar colors for the next start.
+func (c *configStore) setTitleBarColors(t titleBarColors) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.state.TitleBar != nil && *c.state.TitleBar == t {
+		return
+	}
+
+	c.state.TitleBar = &t
+	c.saveStateLocked()
+}
+
+// +checklocks:c.mu
+func (c *configStore) saveStateLocked() {
+	b, err := json.Marshal(c.state)
 	if err != nil {
 		return
 	}
 
 	if err := os.WriteFile(c.stateFile(), b, stateFilePermissions); err != nil {
-		slog.Warn("unable to remember the repository the window shows", "err", err)
+		slog.Warn("unable to save the window state", "err", err)
 	}
 }
 
@@ -231,9 +267,16 @@ func (c *configStore) loadState() {
 	}
 
 	var st shellState
-	if json.Unmarshal(b, &st) == nil {
-		c.active = st.ActiveRepository
+	if json.Unmarshal(b, &st) != nil {
+		return
 	}
+
+	// colors from an edited file are not applied
+	if st.TitleBar != nil && st.TitleBar.validate() != nil {
+		st.TitleBar = nil
+	}
+
+	c.state = st
 }
 
 func (c *configStore) configFile(id string) string {

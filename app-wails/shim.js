@@ -103,6 +103,11 @@
         window.location.assign("/");
       });
     },
+    // Gives the window title bar the colours of the web UI's theme, as
+    // "#rrggbb": caption (its background) and text.
+    setWindowColors: function (colors) {
+      return postOK("window-colors", { caption: colors.caption, text: colors.text });
+    },
     // Adds a repository to connect to and shows its setup page.
     addRepository: function () {
       return postOK("add-repository", {}).then(function () {
