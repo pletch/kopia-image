@@ -76,8 +76,10 @@ func (c *commandImageRestore) run(ctx context.Context, rep repo.Repository) erro
 		return errors.Wrap(err, "unable to open the restore target")
 	}
 
+	closeTarget := sync.OnceValue(t.Close)
+
 	defer func() {
-		if cerr := t.Close(); cerr != nil {
+		if cerr := closeTarget(); cerr != nil {
 			log(ctx).Errorf("%v", cerr)
 		}
 	}()
@@ -91,7 +93,16 @@ func (c *commandImageRestore) run(ctx context.Context, rep repo.Repository) erro
 		return nil
 	}
 
-	return restoreImageToTarget(ctx, &c.out, rep, s, t, volumes, c.parallel)
+	if err := restoreImageToTarget(ctx, &c.out, rep, s, t, volumes, c.parallel); err != nil {
+		return err
+	}
+
+	// Windows mounts the restored volumes once the target is closed
+	if err := closeTarget(); err != nil {
+		return errors.Wrap(err, "unable to close the restore target")
+	}
+
+	return deleteExcludedAfterRestore(ctx, &c.out, rep, s, t, volumes)
 }
 
 // openTarget opens the restore target, read-only for a dry run so that the

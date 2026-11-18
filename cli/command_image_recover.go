@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pkg/errors"
@@ -694,7 +695,9 @@ func (c *commandImageRecover) restore(ctx context.Context, rep repo.Repository, 
 		return errors.Wrap(err, "unable to open the restore target")
 	}
 
-	defer tgt.Close() //nolint:errcheck
+	closeTarget := sync.OnceValue(tgt.Close)
+
+	defer closeTarget() //nolint:errcheck
 
 	if err := c.checkTarget(s, tgt); err != nil {
 		return err
@@ -702,7 +705,16 @@ func (c *commandImageRecover) restore(ctx context.Context, rep repo.Repository, 
 
 	c.out.printStdout("\nRestoring to %v...\n", tgt.Path())
 
-	return restoreImageToTarget(ctx, &c.out, rep, s, tgt, s.Metadata.Volumes, c.parallel)
+	if err := restoreImageToTarget(ctx, &c.out, rep, s, tgt, s.Metadata.Volumes, c.parallel); err != nil {
+		return err
+	}
+
+	// Windows mounts the restored volumes once the target is closed
+	if err := closeTarget(); err != nil {
+		return errors.Wrap(err, "unable to close the restore target")
+	}
+
+	return deleteExcludedAfterRestore(ctx, &c.out, rep, s, tgt, s.Metadata.Volumes)
 }
 
 func (c *commandImageRecover) checkTarget(s *imagerestore.Snapshot, t imagerestore.Target) error {

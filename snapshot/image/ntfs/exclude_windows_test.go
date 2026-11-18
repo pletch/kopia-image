@@ -59,6 +59,12 @@ func TestExclude(t *testing.T) {
 	require.Equal(t, int64(3), f.Files, "big.bin, nested.bin and tiny.txt")
 	require.Equal(t, image.TotalLength(v.ExcludedExtents), f.Bytes)
 
+	require.ElementsMatch(t, []string{
+		rel(filepath.Join(cache, "big.bin")),
+		rel(filepath.Join(cache, "sub", "nested.bin")),
+		rel(filepath.Join(cache, "tiny.txt")),
+	}, v.ExcludedFiles)
+
 	extentsOf := func(name string) []image.Extent {
 		e, err := ntfs.FileExtents(name, clusterSize)
 		require.NoError(t, err)

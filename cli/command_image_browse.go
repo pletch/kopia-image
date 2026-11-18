@@ -66,6 +66,12 @@ func openImagePath(ctx context.Context, rep repo.Repository, arg string, opt ntf
 		return nil, errors.Errorf("%v is a %v image; only NTFS volumes can be browsed (restore it with 'kopia image restore --only %v')", v.EntryName, v.Kind, v.PartitionNumber)
 	}
 
+	// files read as zeros are left out, as a restore deletes them
+	opt.Excluded, err = image.ReadExcludedFiles(ctx, rep, &v)
+	if err != nil {
+		return nil, err //nolint:wrapcheck
+	}
+
 	p.volume, err = ntfsfs.Open(ctx, rep, v.ObjectID, strings.TrimSuffix(v.EntryName, ".img"), opt)
 	if err != nil {
 		return nil, errors.Wrapf(err, "unable to open %v", v.EntryName)

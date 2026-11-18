@@ -162,7 +162,13 @@ func (l *lazyVolume) open() (fs.Directory, error) {
 		return nil, l.err
 	}
 
-	vol, err := Open(l.ctx, l.rep, l.volume.ObjectID, l.name, Options{})
+	excluded, err := image.ReadExcludedFiles(l.ctx, l.rep, &l.volume)
+	if err != nil {
+		l.err, l.failedAt = errors.Wrap(err, "unable to open the volume"), clock.Now()
+		return nil, l.err
+	}
+
+	vol, err := Open(l.ctx, l.rep, l.volume.ObjectID, l.name, Options{Excluded: excluded})
 	if err != nil {
 		l.err, l.failedAt = err, clock.Now()
 		return nil, err

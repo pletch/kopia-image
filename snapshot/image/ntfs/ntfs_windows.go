@@ -48,6 +48,9 @@ type Volume struct {
 	// and ExcludedExtents the allocated byte extents of those files.
 	Excluded        []image.ExcludedFolder
 	ExcludedExtents []image.Extent
+
+	// ExcludedFiles are the excluded files, relative to the volume root.
+	ExcludedFiles []string
 }
 
 // FreeExtents returns the byte extents of the free clusters.

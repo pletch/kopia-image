@@ -12,7 +12,8 @@ import (
 	"github.com/kopia/kopia/snapshot/image"
 )
 
-// Exclude reads the files below the folders dirs as zeros. root is the volume
+// Exclude reads the files below the folders dirs as zeros and lists them in
+// ExcludedFiles, so that restoring the image can delete them. root is the volume
 // root path ending in a backslash, normally a shadow copy device; dirs are
 // relative to it. Folders that do not exist are skipped.
 //
@@ -25,7 +26,7 @@ func (v *Volume) Exclude(root string, dirs []string) error {
 	var errs []error
 
 	for _, dir := range dirs {
-		folder, extents, err := excludeFolder(root, dir, v.Data.ClusterSize)
+		folder, files, extents, err := excludeFolder(root, dir, v.Data.ClusterSize)
 		if err != nil {
 			errs = append(errs, err)
 		}
@@ -33,16 +34,18 @@ func (v *Volume) Exclude(root string, dirs []string) error {
 		if folder.Files > 0 {
 			v.Excluded = append(v.Excluded, folder)
 			v.ExcludedExtents = append(v.ExcludedExtents, extents...)
+			v.ExcludedFiles = append(v.ExcludedFiles, files...)
 		}
 	}
 
 	return stderrors.Join(errs...)
 }
 
-func excludeFolder(root, dir string, clusterSize int64) (image.ExcludedFolder, []image.Extent, error) {
+func excludeFolder(root, dir string, clusterSize int64) (image.ExcludedFolder, []string, []image.Extent, error) {
 	folder := image.ExcludedFolder{Path: dir}
 
 	var (
+		files   []string
 		extents []image.Extent
 		errs    []error
 	)
@@ -60,6 +63,8 @@ func excludeFolder(root, dir string, clusterSize int64) (image.ExcludedFolder, [
 
 		folder.Files++
 		folder.Bytes += image.TotalLength(fileExtents)
+
+		files = append(files, strings.TrimPrefix(path, root))
 		extents = append(extents, fileExtents...)
 	})
 	if err != nil {
@@ -67,10 +72,10 @@ func excludeFolder(root, dir string, clusterSize int64) (image.ExcludedFolder, [
 	}
 
 	if len(errs) > 0 {
-		return folder, extents, errors.Wrapf(stderrors.Join(errs...), "%v", dir)
+		return folder, files, extents, errors.Wrapf(stderrors.Join(errs...), "%v", dir)
 	}
 
-	return folder, extents, nil
+	return folder, files, extents, nil
 }
 
 // walkRegularFiles calls visit for each regular file below dir, without

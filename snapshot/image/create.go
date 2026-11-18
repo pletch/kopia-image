@@ -68,6 +68,10 @@ type VolumeSource struct {
 	UnstableExtents []Extent
 	Excluded        []ExcludedFolder
 
+	// ExcludedFiles are the files read as zeros, relative to the volume
+	// root, stored as the volume's .excluded entry.
+	ExcludedFiles []string
+
 	// Bitmap, when set, is stored next to the image as the .bitmap entry.
 	Bitmap []byte
 }
@@ -274,6 +278,21 @@ func (opt *CreateOptions) writeVolumes(ctx context.Context, rep repo.RepositoryW
 			}
 
 			files = append(files, opt.fileEntry(bitmapName, int64(len(v.Bitmap)), boid, md.StartTime, filePermissions))
+			opt.progress.addFile(files[len(files)-1])
+		}
+
+		if len(v.ExcludedFiles) > 0 {
+			listName := ExcludedEntryName(v.PartitionNumber, v.Label)
+			list := EncodeExcludedFiles(v.ExcludedFiles)
+
+			loid, err := opt.writeSmallObject(ctx, rep, listName, list, opt.Compressor)
+			if err != nil {
+				return nil, err
+			}
+
+			md.Volumes[len(md.Volumes)-1].ExcludedFilesID = loid
+
+			files = append(files, opt.fileEntry(listName, int64(len(list)), loid, md.StartTime, filePermissions))
 			opt.progress.addFile(files[len(files)-1])
 		}
 	}

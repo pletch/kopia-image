@@ -102,3 +102,67 @@ func TestImageRestoreToDiskAndFile(t *testing.T) {
 	require.NoError(t, err, "chkdsk:\n%s", chk)
 	require.Contains(t, string(chk), "found no problems")
 }
+
+// TestImageRestoreDeletesExcludedFiles images a volume holding a kopia cache:
+// the cache's files are left out of listings, and restoring the image to a
+// disk deletes them from the restored volume, which Windows mounts by itself.
+func TestImageRestoreDeletesExcludedFiles(t *testing.T) {
+	src := vhdxtest.New(t)
+	mnt := src.FormatAndMount()
+
+	cacheRel := filepath.Join("Users", "someone", "AppData", "Local", "kopia", "0123456789abcdef")
+	files := map[string]string{
+		filepath.Join(cacheRel, "server-contents", "ab", "abcdef.f"): strings.Repeat("cached ", 100_000),
+		filepath.Join(cacheRel, "indexes", "x1.sndx"):                strings.Repeat("index ", 10_000),
+		"other.txt": strings.Repeat("other ", 10_000),
+	}
+
+	for name, data := range files {
+		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(mnt, name)), 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(mnt, name), []byte(data), 0o600))
+	}
+
+	env := testenv.NewCLITest(t, testenv.RepoFormatNotImportant, testenv.NewInProcRunner(t))
+	env.RunAndExpectSuccess(t, "repo", "create", "filesystem", "--path", env.RepoDir)
+
+	env.RunAndExpectSuccess(t, "image", "create", mnt, "--state-file="+filepath.Join(t.TempDir(), "state.json"))
+	source := env.RunAndExpectSuccess(t, "image", "list")[0]
+
+	// browsing leaves the cache file out, but not the index cache
+	cacheInImage := source + "/2/" + filepath.ToSlash(cacheRel)
+	require.Empty(t, env.RunAndExpectSuccess(t, "image", "ls", cacheInImage+"/server-contents/ab"))
+	require.Equal(t, []string{"x1.sndx"}, env.RunAndExpectSuccess(t, "image", "ls", cacheInImage+"/indexes"))
+
+	// with the source detached, nothing keeps the restored disk offline
+	src.Detach()
+
+	dst := vhdxtest.NewBlank(t)
+	out := env.RunAndExpectSuccess(t, "image", "restore", source, "--target", blockdev.DiskPath(dst.Number()))
+	t.Logf("restore:\n%s", strings.Join(out, "\n"))
+	require.Contains(t, strings.Join(out, "\n"), "deleted 1 of the 1 files that the image left out")
+
+	restored := dst.Mount()
+
+	_, err := os.Stat(filepath.Join(restored, cacheRel, "server-contents", "ab", "abcdef.f"))
+	require.ErrorIs(t, err, os.ErrNotExist, "the cache file is deleted")
+
+	for _, name := range []string{filepath.Join(cacheRel, "indexes", "x1.sndx"), "other.txt"} {
+		got, err := os.ReadFile(filepath.Join(restored, name))
+		require.NoError(t, err, name)
+		require.Equal(t, files[name], string(got), name)
+	}
+
+	// delete-excluded deletes them from a copy restored by other means
+	stale := filepath.Join(restored, cacheRel, "server-contents", "ab", "abcdef.f")
+	require.NoError(t, os.WriteFile(stale, make([]byte, 4096), 0o600))
+
+	out = env.RunAndExpectSuccess(t, "image", "delete-excluded", source, "2", restored)
+	require.Contains(t, strings.Join(out, "\n"), "deleted 1 of the 1 files")
+
+	_, err = os.Stat(stale)
+	require.ErrorIs(t, err, os.ErrNotExist)
+
+	chk, err := exec.CommandContext(t.Context(), "chkdsk", restored, "/scan").CombinedOutput()
+	require.NoError(t, err, "chkdsk:\n%s", chk)
+	require.Contains(t, string(chk), "found no problems")
+}

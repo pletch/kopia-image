@@ -426,6 +426,7 @@ func (s *Session) openShadowVolume(ctx context.Context, pp *PartitionPlan, state
 		FreeBytes:       image.TotalLength(free),
 		UnstableExtents: vol.UnfrozenExtents,
 		Excluded:        vol.Excluded,
+		ExcludedFiles:   vol.ExcludedFiles,
 		Bitmap:          vol.Bitmap,
 	}, nil
 }

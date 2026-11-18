@@ -53,6 +53,11 @@ type Options struct {
 	// ShowProtected lists the credential stores that are hidden unless the
 	// process runs as an administrator: see protectedPaths.
 	ShowProtected bool
+
+	// Excluded are files to leave out, relative to the volume root with
+	// backslash separators: the files the image read as zeros, see
+	// image.ReadExcludedFiles.
+	Excluded []string
 }
 
 // Volume is an NTFS volume image opened for reading.
@@ -70,6 +75,9 @@ type Volume struct {
 
 	// hideProtected leaves the credential stores out of listings.
 	hideProtected bool
+
+	// excluded are the paths of Options.Excluded as childPath forms them.
+	excluded map[string]bool
 }
 
 // Open opens the NTFS volume in an image object. The volume reads the
@@ -82,6 +90,14 @@ func Open(ctx context.Context, rep repo.Repository, oid object.ID, name string, 
 	}
 
 	v := &Volume{name: name, cr: cr, opt: opt, hideProtected: !opt.ShowProtected && !processIsAdmin()}
+
+	if len(opt.Excluded) > 0 {
+		v.excluded = make(map[string]bool, len(opt.Excluded))
+
+		for _, p := range opt.Excluded {
+			v.excluded[strings.ToLower(strings.ReplaceAll(p, `\`, "/"))] = true
+		}
+	}
 
 	var ntfs *parser.NTFSContext
 
@@ -217,6 +233,11 @@ func (v *Volume) newEntry(info *parser.FileInfo, parentPath string) (fs.Entry, b
 	path := childPath(parentPath, fileName)
 
 	if v.hideProtected && isProtectedPath(path) {
+		return nil, false
+	}
+
+	// read as zeros, and deleted by a restore
+	if v.excluded[path] {
 		return nil, false
 	}
 

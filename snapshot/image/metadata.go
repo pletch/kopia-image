@@ -104,8 +104,14 @@ type Volume struct {
 
 	// Excluded are the folders whose files were read as zeros because the
 	// programs using them recreate their contents, such as kopia's caches.
-	// The files are still in the image, full of zeros.
+	// The files are in the image full of zeros; restoring the image deletes
+	// them.
 	Excluded []ExcludedFolder `json:"excluded,omitempty"`
+
+	// ExcludedFilesID is the list of the excluded files, also stored as the
+	// volume's .excluded entry: restoring the image deletes them, and
+	// browsing it leaves them out. See ReadExcludedFiles.
+	ExcludedFilesID object.ID `json:"excludedFilesObjectId,omitempty"`
 
 	Stats VolumeStats `json:"stats"`
 }
