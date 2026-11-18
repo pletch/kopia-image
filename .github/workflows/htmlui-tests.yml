@@ -26,6 +26,10 @@ permissions:
 jobs:
   end-to-end-test:
     name: E2E Test
+    # disabled: GitHub assigns no macOS runner to this fork's jobs, which
+    # fail after 15 minutes in the queue, and this fork builds no macOS
+    # releases. Move it to another runner to enable it again.
+    if: false
     runs-on: macos-latest
     steps:
     - name: Check out repository

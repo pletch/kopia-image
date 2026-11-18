@@ -23,7 +23,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # this fork builds no macOS releases
+        os: [ubuntu-latest]
     name: Lint
     runs-on: ${{ matrix.os }}
     permissions:
