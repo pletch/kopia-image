@@ -98,7 +98,69 @@ func exclusionRules(root string, v *VolumeInfo, opt SessionOptions, logf func(st
 		}
 	}
 
-	return rules
+	if opt.ExcludeCommonCaches {
+		specs := CommonCaches()
+
+		for i := range specs {
+			rules = append(rules, specs[i].Rules(volumeContext(root, v), false)...)
+		}
+	}
+
+	return expandAnyFolders(root, rules)
+}
+
+// expandAnyFolders replaces each rule whose folder has "*" names with a rule
+// for each plain folder of the volume they match.
+func expandAnyFolders(root string, rules []ExcludeRule) []ExcludeRule {
+	var out []ExcludeRule
+
+	for _, r := range rules {
+		if !strings.Contains(r.Dir, "*") {
+			out = append(out, r)
+			continue
+		}
+
+		for _, dir := range matchFolders(root, "", strings.Split(r.Dir, `\`)) {
+			expanded := r
+			expanded.Dir = dir
+			out = append(out, expanded)
+		}
+	}
+
+	return out
+}
+
+// matchFolders returns the plain folders below prefix that match the folder
+// names parts, where "*" matches any name.
+func matchFolders(root, prefix string, parts []string) []string {
+	if len(parts) == 0 {
+		return []string{prefix}
+	}
+
+	if parts[0] != "*" {
+		next := joinVolumePath(prefix, parts[0])
+		if !isPlainDir(root + next) {
+			return nil
+		}
+
+		return matchFolders(root, next, parts[1:])
+	}
+
+	entries, err := os.ReadDir(root + prefix)
+	if err != nil {
+		return nil
+	}
+
+	var out []string
+
+	for _, e := range entries {
+		// junctions and other reparse points are not folders here
+		if e.Type() == fs.ModeDir {
+			out = append(out, matchFolders(root, joinVolumePath(prefix, e.Name()), parts[1:])...)
+		}
+	}
+
+	return out
 }
 
 func volumeContext(root string, v *VolumeInfo) *VolumeContext {

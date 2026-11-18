@@ -154,6 +154,10 @@ type SessionOptions struct {
 	// them.
 	ExcludeFilesNotToBackup bool
 
+	// ExcludeCommonCaches reads the caches of CommonCaches, such as
+	// browsers' cached files, as zeros. A restore deletes them.
+	ExcludeCommonCaches bool
+
 	// KopiaCacheDirs are more kopia cache directories by absolute path, such
 	// as the cache of the running kopia.
 	KopiaCacheDirs []string

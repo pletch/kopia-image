@@ -147,3 +147,62 @@ func TestExclusionRules_options(t *testing.T) {
 	require.Equal(t, []string{`FilesNotToBackup\Temporary Files Users\alice\AppData\Local\Temp`},
 		sources(SessionOptions{ExcludeFilesNotToBackup: true}))
 }
+
+func TestExpandAnyFolders(t *testing.T) {
+	tmp := t.TempDir()
+	root := tmp + `\`
+
+	const userData = `Users\alice\AppData\Local\Google\Chrome\User Data`
+
+	mkdirs(t, tmp,
+		userData+`\Default\Cache\Cache_Data`,
+		userData+`\Profile 1\Cache`,
+		userData+`\Crashpad`, // no Cache: no rule
+		`elsewhere\Cache`,
+	)
+
+	// a junction named like a profile is not a profile
+	junction(t, filepath.Join(tmp, userData, "Link"), filepath.Join(tmp, "elsewhere"))
+
+	got := expandAnyFolders(root, []ExcludeRule{
+		{Source: "chrome", Dir: userData + `\*\Cache`, Recursive: true},
+		{Source: "plain", Dir: `elsewhere`},
+		{Source: "missing", Dir: `nothing\*\Cache`},
+	})
+
+	var dirs []string
+	for _, r := range got {
+		dirs = append(dirs, r.Source+" "+r.Dir)
+	}
+
+	require.ElementsMatch(t, []string{
+		"chrome " + userData + `\Default\Cache`,
+		"chrome " + userData + `\Profile 1\Cache`,
+		"plain elsewhere",
+	}, dirs)
+
+	for _, r := range got {
+		if r.Source == "chrome" {
+			require.True(t, r.Recursive)
+		}
+	}
+}
+
+func TestExclusionRules_commonCaches(t *testing.T) {
+	tmp := t.TempDir()
+	mkdirs(t, tmp, `Users\alice\AppData\Local\Microsoft\Edge\User Data\Default\Cache`)
+
+	v := &VolumeInfo{MountPoints: []string{`X:\`}}
+
+	var dirs []string
+
+	for _, r := range exclusionRules(tmp+`\`, v, SessionOptions{ExcludeCommonCaches: true}, t.Logf) {
+		require.NotContains(t, r.Dir, "*", "every * folder is expanded")
+
+		dirs = append(dirs, r.Source+" "+r.Dir)
+	}
+
+	// the profile's Edge cache; rules for folders that do not exist match no files
+	require.Contains(t, dirs, `common cache\Edge Users\alice\AppData\Local\Microsoft\Edge\User Data\Default\Cache`)
+	require.NotContains(t, dirs, `common cache\Windows Update Windows\SoftwareDistribution\Download`, "%SystemRoot% is not on this volume")
+}

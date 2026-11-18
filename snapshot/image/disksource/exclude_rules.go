@@ -1,6 +1,7 @@
 package disksource
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/kopia/kopia/snapshot/image"
@@ -11,7 +12,48 @@ const (
 	SourceKopiaCache         = "kopia cache"
 	SourceFilesNotToSnapshot = "FilesNotToSnapshot"
 	SourceFilesNotToBackup   = "FilesNotToBackup"
+	SourceCommonCache        = "common cache"
 )
+
+// chromiumBrowsers are the folders of Chromium-based browsers' user data
+// below a profile's AppData\Local.
+var chromiumBrowsers = map[string]string{
+	"Chrome":   `Google\Chrome\User Data`,
+	"Edge":     `Microsoft\Edge\User Data`,
+	"Brave":    `BraveSoftware\Brave-Browser\User Data`,
+	"Chromium": `Chromium\User Data`,
+	"Vivaldi":  `Vivaldi\User Data`,
+}
+
+// CommonCaches returns the caches that most Windows computers have and that
+// their programs recreate, as Disk Cleanup and clearing a browser's cached
+// files show: the caches of Chromium-based browsers and Firefox, Windows
+// Update's downloads and the Delivery Optimization cache. A restore deletes
+// them. Browser profiles are matched by "*" folder names.
+func CommonCaches() []FileSpec {
+	var specs []FileSpec
+
+	for name, userData := range chromiumBrowsers {
+		local := `$UserProfile$\AppData\Local\` + userData
+
+		for _, dir := range []string{`*\Cache`, `*\Code Cache`, `*\GPUCache`, `ShaderCache`, `GrShaderCache`, `GraphiteDawnCache`} {
+			specs = append(specs, FileSpec{
+				Source:    SourceCommonCache + `\` + name,
+				Path:      local + `\` + dir + `\*`,
+				Recursive: true,
+				AnyFolder: true,
+			})
+		}
+	}
+
+	slices.SortFunc(specs, func(a, b FileSpec) int { return strings.Compare(a.Path, b.Path) })
+
+	return append(specs,
+		FileSpec{Source: SourceCommonCache + `\Firefox`, Path: `$UserProfile$\AppData\Local\Mozilla\Firefox\Profiles\*\cache2\*`, Recursive: true, AnyFolder: true},
+		FileSpec{Source: SourceCommonCache + `\Windows Update`, Path: `%SystemRoot%\SoftwareDistribution\Download\*`, Recursive: true},
+		FileSpec{Source: SourceCommonCache + `\Delivery Optimization`, Path: `%SystemRoot%\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache\*`, Recursive: true},
+	)
+}
 
 // FilesNotToBackupSubset are the entries of the FilesNotToBackup registry
 // list, which Windows and programs use to tell file backups what to skip,
@@ -84,6 +126,11 @@ type FileSpec struct {
 	Source    string
 	Path      string
 	Recursive bool
+
+	// AnyFolder lets folder names in Path be "*", which matches every
+	// plain folder at that level, as for browser profiles. Specs from the
+	// registry never do.
+	AnyFolder bool
 }
 
 // ParseFileSpec parses an entry of a registry list. Source names the list
@@ -164,7 +211,7 @@ func (fs *FileSpec) Rules(vc *VolumeContext, safeAsZeros bool) []ExcludeRule {
 
 	for _, full := range dirs {
 		dir, pattern := splitPattern(full)
-		if !validRuleDir(dir) || pattern == "" {
+		if !validRuleDir(dir, fs.AnyFolder) || pattern == "" {
 			continue
 		}
 
@@ -197,14 +244,21 @@ func splitPattern(p string) (dir, pattern string) {
 }
 
 // validRuleDir reports whether a rule folder is a plain volume path: no
-// wildcards, no "." or "..", and not in System Volume Information.
-func validRuleDir(dir string) bool {
+// wildcards except "*" folder names when anyFolder is set, no "." or "..",
+// and not in System Volume Information.
+func validRuleDir(dir string, anyFolder bool) bool {
 	if dir == "" {
 		return true
 	}
 
-	if strings.ContainsAny(dir, "*?") || !image.IsVolumeRelativePath(dir) {
+	if !image.IsVolumeRelativePath(dir) {
 		return false
+	}
+
+	for part := range strings.SplitSeq(dir, `\`) {
+		if strings.ContainsAny(part, "*?") && (!anyFolder || part != "*") {
+			return false
+		}
 	}
 
 	first, _, _ := strings.Cut(dir, `\`)

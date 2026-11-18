@@ -170,3 +170,45 @@ func TestFilesNotToBackupSubset(t *testing.T) {
 		require.Empty(t, FilesNotToBackupSubset[i].Rules(vc, false))
 	}
 }
+
+func TestCommonCaches(t *testing.T) {
+	vc := &VolumeContext{
+		MountPoints: []string{`C:\`},
+		Profiles:    []string{`Users\alice`},
+		Expand:      func(s string) string { return strings.ReplaceAll(s, "%SystemRoot%", `C:\Windows`) },
+	}
+
+	dirs := map[string]string{}
+
+	for _, spec := range CommonCaches() {
+		for _, r := range spec.Rules(vc, false) {
+			require.False(t, r.SafeAsZeros)
+			require.True(t, r.Recursive)
+			require.Empty(t, r.Pattern)
+
+			dirs[r.Dir] = r.Source
+		}
+	}
+
+	require.Equal(t, `common cache\Chrome`, dirs[`Users\alice\AppData\Local\Google\Chrome\User Data\*\Cache`])
+	require.Equal(t, `common cache\Edge`, dirs[`Users\alice\AppData\Local\Microsoft\Edge\User Data\*\Code Cache`])
+	require.Equal(t, `common cache\Brave`, dirs[`Users\alice\AppData\Local\BraveSoftware\Brave-Browser\User Data\GrShaderCache`])
+	require.Equal(t, `common cache\Firefox`, dirs[`Users\alice\AppData\Local\Mozilla\Firefox\Profiles\*\cache2`])
+	require.Equal(t, `common cache\Windows Update`, dirs[`Windows\SoftwareDistribution\Download`])
+	require.Equal(t, `common cache\Delivery Optimization`, dirs[`Windows\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache`])
+	require.Len(t, dirs, 5*6+3)
+}
+
+func TestAnyFolder(t *testing.T) {
+	vc := &VolumeContext{MountPoints: []string{`C:\`}}
+
+	rules := func(path string, anyFolder bool) []ExcludeRule {
+		fs := FileSpec{Source: "s", Path: path, Recursive: true, AnyFolder: anyFolder}
+		return fs.Rules(vc, false)
+	}
+
+	require.Equal(t, `a\*\b`, rules(`C:\a\*\b\*`, true)[0].Dir)
+	require.Empty(t, rules(`C:\a\*\b\*`, false), "registry specs have no wildcard folders")
+	require.Empty(t, rules(`C:\a\Profile*\b\*`, true), "only whole names")
+	require.Empty(t, rules(`C:\a\?\b\*`, true))
+}
