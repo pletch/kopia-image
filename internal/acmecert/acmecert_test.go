@@ -156,9 +156,13 @@ func TestManager_RenewsInBackground(t *testing.T) {
 	// the same tls.Config keeps working and starts serving the renewed certificate.
 	cfg := m.TLSConfig()
 
+	// certmagic keeps the backoff after a failed renewal for the process,
+	// by domain, and every test uses the same domain: a renewal that failed
+	// in an earlier test, such as one canceled when its manager closed,
+	// delays renewals here by certmagic's first retry interval, a minute.
 	require.Eventually(t, func() bool {
 		return !bytes.Equal(initial.Raw, servedLeaf(t, cfg, acmetest.Domain, roots).Raw)
-	}, 30*time.Second, 100*time.Millisecond)
+	}, 2*time.Minute, 100*time.Millisecond)
 
 	require.Greater(t, testCA.Orders(), 1)
 }
