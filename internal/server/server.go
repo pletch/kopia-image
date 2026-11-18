@@ -164,6 +164,7 @@ func (s *Server) SetupHTMLUIAPIHandlers(m *mux.Router) {
 	m.HandleFunc("/api/v1/images/status", s.handleUI(handleImagesStatus)).Methods(http.MethodGet)
 	m.HandleFunc("/api/v1/images/disks", s.handleUI(handleImagesDisks)).Methods(http.MethodGet)
 	m.HandleFunc("/api/v1/images/drivers", s.handleUI(handleImagesDrivers)).Methods(http.MethodGet)
+	m.HandleFunc("/api/v1/images/files", s.handleUI(handleImageFiles)).Methods(http.MethodGet)
 	m.HandleFunc("/api/v1/images/schedule/run", s.handleUI(handleImagesScheduleRun)).Methods(http.MethodPost)
 
 	m.HandleFunc("/api/v1/mounts", s.handleUI(handleMountCreate)).Methods(http.MethodPost)

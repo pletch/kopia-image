@@ -68,6 +68,24 @@ type ImageVolume struct {
 	FreeBytes       int64            `json:"freeBytes,omitempty"`
 }
 
+// ImageFilesResponse lists a folder of an image snapshot.
+type ImageFilesResponse struct {
+	// Path is the folder, from the snapshot root, with "/" between names.
+	Path    string           `json:"path"`
+	Entries []ImageFileEntry `json:"entries"`
+
+	// Truncated is set when the folder has more entries than are listed.
+	Truncated bool `json:"truncated,omitempty"`
+}
+
+// ImageFileEntry is a file or folder of an image snapshot.
+type ImageFileEntry struct {
+	Name    string    `json:"name"`
+	Dir     bool      `json:"dir"`
+	Size    int64     `json:"size"`
+	ModTime time.Time `json:"mtime"`
+}
+
 // ImagePartition is a GPT partition of an imaged disk.
 type ImagePartition struct {
 	Number   int    `json:"number"`

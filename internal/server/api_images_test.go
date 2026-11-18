@@ -196,6 +196,53 @@ func TestImagesList(t *testing.T) {
 	require.ElementsMatch(t, []any{local.ID, other.ID}, []any{resp.Images[0].ID, resp.Images[1].ID})
 }
 
+func TestImageFiles(t *testing.T) {
+	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
+
+	localHost := env.Repository.ClientOptions().Hostname
+	man := mustCreateRawImage(t, env, localHost, "0f6ab3f2-1c3d-4e5f-8a9b-0c1d2e3f4a51", bytes.Repeat([]byte{1}, 1<<20))
+	require.NoError(t, env.RepositoryWriter.Flush(ctx))
+
+	cli := startImageServer(t, env, &fakeImageHost{dir: testutil.TempDirectory(t)})
+	root := man.RootObjectID().String()
+
+	var resp serverapi.ImageFilesResponse
+
+	require.NoError(t, cli.Get(ctx, "images/files?root="+root, nil, &resp))
+	require.Empty(t, resp.Path)
+
+	var names []string
+
+	for _, e := range resp.Entries {
+		names = append(names, e.Name)
+	}
+
+	// the root holds the volume image and the image's metadata, folders first
+	require.Contains(t, names, "p1-D.img")
+	require.Contains(t, names, "image.json")
+	require.Contains(t, names, "layout.json")
+
+	sawFile := false
+
+	for _, e := range resp.Entries {
+		if e.Dir {
+			require.False(t, sawFile, "folders are listed before files")
+		} else {
+			sawFile = true
+		}
+
+		if e.Name == "p1-D.img" {
+			require.Equal(t, int64(1<<20), e.Size)
+		}
+	}
+
+	require.Error(t, cli.Get(ctx, "images/files?root="+root+"&path=p1-D.img", nil, &resp), "a file is not a folder")
+	require.ErrorIs(t, cli.Get(ctx, "images/files?root="+root+"&path=missing", errNotFoundForTest, &resp), errNotFoundForTest)
+	require.Error(t, cli.Get(ctx, "images/files?root=not-an-id", nil, &resp))
+}
+
+var errNotFoundForTest = errors.New("not found")
+
 func TestImagesStatus(t *testing.T) {
 	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
 

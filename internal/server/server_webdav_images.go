@@ -50,6 +50,12 @@ func (s *Server) webdavSnapshotRoot(ctx context.Context, rep repo.Repository, oi
 	return root
 }
 
+// imageBrowseRoot returns the browsable root of a snapshot for the Files tab
+// of the Disk Images page, from the same cache as WebDAV shares.
+func (s *Server) imageBrowseRoot(ctx context.Context, rep repo.Repository, oid object.ID) fs.Directory {
+	return s.webdavSnapshotRoot(ctx, rep, oid)
+}
+
 // get returns the cached root of a snapshot, opening it if needed, and the
 // roots that left the cache, whose volumes the caller must release.
 func (c *imageRootCache) get(ctx context.Context, rep repo.Repository, oid object.ID) (root fs.Directory, evicted []fs.Directory) {

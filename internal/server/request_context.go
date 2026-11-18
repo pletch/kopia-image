@@ -7,6 +7,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"github.com/kopia/kopia/fs"
 	"github.com/kopia/kopia/internal/auth"
 	"github.com/kopia/kopia/internal/mount"
 	"github.com/kopia/kopia/internal/uitask"
@@ -37,6 +38,7 @@ type serverInterface interface {
 	SetRepository(ctx context.Context, rep repo.Repository) error
 	InitRepositoryAsync(ctx context.Context, mode string, initializer InitRepositoryFunc, wait bool) (string, error)
 	rootContext() context.Context
+	imageBrowseRoot(ctx context.Context, rep repo.Repository, oid object.ID) fs.Directory
 }
 
 type requestContext struct {
