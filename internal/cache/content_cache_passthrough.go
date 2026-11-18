@@ -33,6 +33,8 @@ func (c passthroughContentCache) Sync(_ context.Context, blobPrefix blob.ID) err
 	return nil
 }
 
+func (c passthroughContentCache) Invalidate(_ context.Context, _ string, _ blob.ID) {}
+
 func (c passthroughContentCache) CacheStorage() Storage {
 	return nil
 }

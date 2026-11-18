@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/aes"
 	cryptorand "crypto/rand"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/kopia/kopia/internal/blobparam"
+	"github.com/kopia/kopia/internal/cache"
 	"github.com/kopia/kopia/internal/contentlog"
 	"github.com/kopia/kopia/internal/contentlog/logparam"
 	"github.com/kopia/kopia/internal/contentparam"
@@ -116,11 +118,50 @@ func (sm *SharedManager) getContentDataReadLocked(ctx context.Context, pp *pendi
 			// should never happen
 			return errors.Wrap(err, "error appending pending content data to buffer")
 		}
-	} else if err := sm.getCacheForContentID(bi.ContentID).GetContent(ctx, contentCacheKeyForInfo(bi), bi.PackBlobID, int64(bi.PackOffset), int64(bi.PackedLength), &payload); err != nil {
+
+		return sm.decryptContentAndVerify(payload.Bytes(), bi, output)
+	}
+
+	cc := sm.getCacheForContentID(bi.ContentID)
+
+	if err := cc.GetContent(ctx, contentCacheKeyForInfo(bi), bi.PackBlobID, int64(bi.PackOffset), int64(bi.PackedLength), &payload); err != nil {
 		return errors.Wrapf(err, "error getting cached content from blob %q", bi.PackBlobID)
 	}
 
-	return sm.decryptContentAndVerify(payload.Bytes(), bi, output)
+	err := sm.decryptContentAndVerify(payload.Bytes(), bi, output)
+	if err == nil {
+		return nil
+	}
+
+	return sm.getContentFromStorage(ctx, cc, bi, output, err)
+}
+
+// getContentFromStorage reads a content from its pack blob in storage,
+// bypassing the cache, after the copy read through the cache failed
+// verification with cacheErr. A cache entry can be damaged on disk without
+// failing its own check: whole cached pack blobs are not verified when a
+// content is read from them, and a disk image restores cache files whose data
+// was left out as zeros. When the stored content verifies, the cached copies
+// are dropped.
+func (sm *SharedManager) getContentFromStorage(ctx context.Context, cc cache.ContentCache, bi Info, output *gather.WriteBuffer, cacheErr error) error {
+	var payload gather.WriteBuffer
+	defer payload.Close()
+
+	if err := sm.st.GetBlob(ctx, bi.PackBlobID, int64(bi.PackOffset), int64(bi.PackedLength), &payload); err != nil {
+		return stderrors.Join(cacheErr, errors.Wrapf(err, "error getting content from blob %q", bi.PackBlobID))
+	}
+
+	output.Reset()
+
+	if err := sm.decryptContentAndVerify(payload.Bytes(), bi, output); err != nil {
+		return err
+	}
+
+	log(ctx).Warnf("cached copy of content %v failed verification and was read from storage instead: %v", bi.ContentID, cacheErr)
+
+	cc.Invalidate(ctx, contentCacheKeyForInfo(bi), bi.PackBlobID)
+
+	return nil
 }
 
 func (sm *SharedManager) preparePackDataContent(ctx context.Context, mp format.MutableParameters, pp *pendingPackInfo) (index.Builder, error) {

@@ -19,6 +19,10 @@ type ContentCache interface {
 	GetContent(ctx context.Context, contentID string, blobID blob.ID, offset, length int64, output *gather.WriteBuffer) error
 	PrefetchBlob(ctx context.Context, blobID blob.ID) error
 	CacheStorage() Storage
+
+	// Invalidate removes the cached copies of a content and of the blob
+	// holding it, such as a copy that failed verification.
+	Invalidate(ctx context.Context, contentID string, blobID blob.ID)
 }
 
 // Options encapsulates all content cache options.
@@ -165,6 +169,11 @@ func (c *contentCacheImpl) PrefetchBlob(ctx context.Context, blobID blob.ID) err
 	}
 
 	return c.fetchBlobInternal(ctx, blobID, &blobData)
+}
+
+func (c *contentCacheImpl) Invalidate(ctx context.Context, contentID string, blobID blob.ID) {
+	c.pc.deleteInvalidBlob(ctx, BlobIDCacheKey(blobID))
+	c.pc.deleteInvalidBlob(ctx, ContentIDCacheKey(contentID))
 }
 
 func (c *contentCacheImpl) CacheStorage() Storage {
