@@ -12,13 +12,24 @@ What this fork adds
 
 ### A lighter KopiaUI built with Wails
 
-The [`app-wails/`](app-wails) directory is a replacement for the Electron-based KopiaUI shell, built with [Wails v3](https://v3.wails.io/). It uses the WebView2 runtime that ships with Windows, or WebKitGTK on Linux, and runs the same `kopia server` and the same web UI, with:
+The [`app-wails/`](app-wails) directory is a replacement for the Electron-based KopiaUI shell, built with [Wails v3](https://v3.wails.io/). It uses the WebView2 runtime that ships with Windows, or WebKitGTK on Linux, and runs the same `kopia server` with this fork's web UI, with:
 
-* a tray icon that starts the `kopia` server and opens repository windows
+* a tray icon that starts the `kopia` server, and a single window with a repository selector in its sidebar (one server per repository keeps running behind it)
 * native desktop notifications (Windows toasts, or the freedesktop notification service on Linux), including more detailed notices for failed snapshots
-* remembered window size and position
+* remembered window size, position and active repository
 * an error page when the server fails to start, instead of a blank window
+* snapshots that run at background priority, so that they yield to whatever you are doing
+* on Windows, snapshots mounted as native drives through [WinFsp](https://winfsp.dev/) when it is installed (the installer offers it), falling back to WebDAV otherwise
+* a UAC prompt for each action that needs administrator rights, such as creating disk images or recovery media, rather than running KopiaUI elevated
 * a small per-user NSIS installer on Windows (no administrator rights needed), and a `.deb` on Linux; both share the repository configuration (`%APPDATA%\kopia` or `~/.config/kopia`) with upstream KopiaUI and the CLI
+
+The web UI comes from this fork's [htmlui](https://github.com/pletch/htmlui) and is served by `kopia server` too, so the browser sees the same changes:
+
+* a left sidebar instead of the top navigation bar, and a dark "linear" theme, the default when the system prefers dark mode; KopiaUI's title bar follows the theme's colors
+* reworked Snapshots, History, Policies and Tasks tables, with the new data and stored size of each snapshot
+* a **Disk Images** page, described [below](#block-level-disk-images-for-windows-kopia-image); file sources are listed under **File Snapshots**
+
+![File Snapshots in the dark "linear" theme, with the sidebar and the New Data and Stored columns](.github/readme/file-snapshots.png)
 
 **It uses less memory in most scenarios.** Closing the window shuts WebView2 down completely, whereas Electron keeps its main, GPU and helper processes running. Measured on Windows 11 (private memory, UI shell only; the `kopia.exe` server adds about 140 MB to both):
 
@@ -33,9 +44,17 @@ With a window open the two are about the same, since both render the page with C
 
 Upstream Kopia backs up files and folders only. This fork can also take block-level images of whole Windows GPT disks, for bare-metal restore after a failed drive or ransomware. Images go into the same repository as your file snapshots, encrypted and deduplicated, and work with every storage backend and with a repository server.
 
-* **Full images, deduplicated uploads.** Every image is a complete, independent copy of the disk. NTFS volumes are read from a Volume Shadow Copy, with free space, `pagefile.sys`, `hiberfil.sys` and similar files stored as zeros. Only 4 MiB chunks the repository doesn't already have are uploaded, so a nightly image usually uploads a few gigabytes or less. Any image can be restored on its own, with no incremental chains to break.
-* **Restore to a disk or file:** a parallel chunk restore to `\\.\PhysicalDriveN` on Windows, `/dev/sdX` on Linux, or a raw image file. The partition table is recreated with the original GUIDs. Each image also contains a `restore.sh` for a Linux rescue system.
-* **Restore single files:** browse NTFS volume images file by file and restore single files or folders, downloading only the chunks needed. Image snapshots can also be opened with the web UI's Mount button and over WebDAV, where each NTFS volume appears as a folder.
+* **Full images, deduplicated uploads.** Every image is a complete, independent copy of the disk. NTFS volumes are read from a Volume Shadow Copy, with free space, `pagefile.sys`, `hiberfil.sys` and similar files stored as zeros. Only the 4 MiB chunks the repository doesn't already have are uploaded, and any image can be restored on its own, with no incremental chains to break. How much a nightly image adds depends on how scattered the day's writes are: a 4 KiB change makes its whole 4 MiB chunk new, so a busy developer machine adds tens of gigabytes before compression, a quieter one much less. `kopia image compare` shows where it comes from.
+* **Leaves out what is recreated anyway.** Files that their programs rebuild are read as zeros, so their churn doesn't enlarge images:
+  * kopia's own caches;
+  * Windows' `FilesNotToSnapshot` list, which Windows and installed programs maintain (Outlook's mailbox caches, Office's document cache, Windows Update's folder);
+  * the safe part of Windows' `FilesNotToBackup` list: temporary files of every profile and of Windows, crash reports and dumps, the BITS queue and event trace buffers;
+  * the caches of Chrome, Edge, Brave, Chromium, Vivaldi and Firefox, Windows Update's downloads and the Delivery Optimization cache.
+
+  Each image lists the files it left out, and a restore deletes them, so programs start with no cache instead of a cache full of zeros. Files with other names (hard links) and anything reached through a junction are always imaged. Each source can be turned off (`--exclude-common-caches=false` and so on), and `kopia image create --dry-run` lists what would be left out, by source and folder, without needing a repository.
+* **Restore to a disk or file:** a parallel chunk restore to `\\.\PhysicalDriveN` on Windows, `/dev/sdX` on Linux, or a raw image file. The partition table is recreated with the original GUIDs, and the files the image left out are deleted from the restored volumes. Each image also contains a `restore.sh` for a Linux rescue system.
+* **Recovery media and a guided restore.** `kopia image recovery-media create` builds a bootable USB stick, a Hyper-V virtual disk or a folder from the computer's own Windows Recovery Environment, with kopia, the repository connection and the storage, network and USB drivers of this computer or others. It boots into `kopia image recover`, which walks through choosing an image and a target disk and restores it. `recovery-media status` says when the media no longer matches the computer, and `recovery-media kit` prints what someone needs to restore it. Images that a restore must clean up need recovery media built with kopia `0.23.1-wails.29` or newer; older media refuses them instead of leaving zero-filled files behind.
+* **Restore single files:** browse NTFS volume images file by file and restore single files or folders, downloading only the chunks needed. Image snapshots can also be opened with the web UI's Mount button and over WebDAV, where each NTFS volume appears as a folder. Unless kopia runs as an administrator, browsing hides the credential stores that only administrators can read on the original disk (registry hives, DPAPI keys and the like).
 * **Check without restoring.** `image check` confirms every chunk is indexed and stored, and reads back a sample of chunks. `--ntfs` also checks each NTFS file system:
   * the boot sector matches its backup;
   * every MFT record in use is intact;
@@ -43,23 +62,31 @@ Upstream Kopia backs up files and folders only. This fork can also take block-le
   * every file's parent folder exists.
 
   This reads only file system metadata: about 7 seconds for a 1 TB system volume with 2.3 million files.
-* **Scheduled images and checks:** Task Scheduler tasks that run as SYSTEM. They wake the computer, keep it awake while running and retry on failure. They also clean up shadow copies left over after a crash or power loss, and record each run's result for monitoring.
+* **Scheduled images and checks:** Task Scheduler tasks that run as SYSTEM. They wake the computer, keep it awake while running and retry on failure. They also clean up shadow copies left over after a crash or power loss, and record each run's result for monitoring. A run can be paused, resumed or stopped, and shows its progress.
+* **Measure what an image adds.** `kopia image compare <old> <new>` compares two images of a disk chunk by chunk: how many chunks are new, how much data really changed, how much smaller chunks would have made the image, and which folders caused it.
+* **A Disk Images page** in KopiaUI and the web UI: the images of each disk with a partition map, Mount & Browse, a Files tab, the schedule with its tasks and progress, a Retention tab to set how many images of each disk are kept, the recovery media's status and the drivers stored with the images. Actions that need administrator rights ask through UAC.
+
+  ![The Disk Images page: a partition map of the selected image, and the images of the disk with their size, read, new and stored data](.github/readme/disk-images.png)
+
+  ![The Retention tab: how many images of the disk to keep, each setting next to its effective value and where it comes from](.github/readme/disk-images-retention.png)
 
 ```
-kopia image create C: --dry-run                 # preview the partitions and the zeroed space
+kopia image create C: --dry-run                 # preview the partitions, the zeroed space and what is left out
 kopia image create C:                           # image the disk holding C:
 kopia image list
 kopia image check --ntfs                        # latest image of each source, with file system checks
+kopia image compare <old-id> <new-id>           # where an image's new data comes from
 kopia image ls <snapshot-id>/p3-C/Users -l
 kopia image restore-files <snapshot-id>/p3-C/Users/tim/Documents C:\Recovered
 kopia image restore <snapshot-id> --target \\.\PhysicalDrive2 --dry-run
 kopia image schedule install C: --at 02:00 --check-day Sun --check-ntfs
+kopia image recovery-media create --usb 3       # erase USB disk 3 and make it bootable recovery media
 ```
 
-Run `kopia image create` and `kopia image schedule` as administrator. Images use the source `user@host:image:disk:<GUID>`, so retention is set with `kopia policy set` as usual. MBR disks, dynamic disks, Storage Spaces and ReFS volumes are refused. BitLocker volumes are imaged decrypted, like everything else on the disk including the Windows account database, and are protected only by the repository's encryption. Scheduled runs use a copy of kopia in `C:\ProgramData\kopia\image`, so run `kopia image schedule install` again after upgrading. See [Disk Images](site/content/docs/Advanced/Disk%20Images/_index.md) for the details.
+Run `kopia image create`, `kopia image schedule` and `kopia image recovery-media create` as administrator. Images use the source `user@host:image:disk:<GUID>`, so retention is a policy like any other: set it on the Retention tab or with `kopia policy set`. MBR disks, dynamic disks, Storage Spaces and ReFS volumes are refused. BitLocker volumes are imaged decrypted, like everything else on the disk including the Windows account database, and are protected only by the repository's encryption. Scheduled runs use a copy of kopia in `C:\ProgramData\kopia\image`: the installer offers to update it, or run `kopia image schedule update` after upgrading. See [Disk Images](site/content/docs/Advanced/Disk%20Images/_index.md) for the details.
 
 > [!WARNING]
-> Disk images are new. Restores have been tested on virtual disks, but a restored system disk has not yet been boot-tested. Test a restore on spare hardware or a virtual machine before relying on images.
+> Disk images are new. Restores and recovery media have been tested on virtual disks and in Hyper-V with Secure Boot, but not yet on a physical USB stick, and a restored system disk has not yet been boot-tested. Test a restore on spare hardware or a virtual machine before relying on images.
 
 ### Upstream pull requests not yet merged
 
@@ -153,7 +180,13 @@ When the server uses `--tls-cert-file` and `--tls-key-file`, it picks up renewed
 
 * **Reconnect after sleep:** fixes a gRPC `readLoop` deadlock and reconnects to a repository server cleanly after Windows resumes from sleep.
 * **Better failed-snapshot notifications** in the Electron KopiaUI as well (see [app/NOTIFICATIONS.md](app/NOTIFICATIONS.md)).
-* **Named snapshot drives on Windows:** a snapshot mounted as a drive letter, from KopiaUI or `kopia mount`, appears in Explorer under its source and snapshot time (or "Kopia - All Snapshots") instead of "DavWWWRoot".
+* **Named snapshot drives on Windows:** a snapshot mounted as a drive letter, from KopiaUI or `kopia mount`, appears in Explorer under its source and snapshot time (or "Kopia - All Snapshots") instead of "DavWWWRoot". A drive mounted through WinFsp can be read only by the user who mounted it.
+* **Snapshots leave last access times alone on Windows.** Where NTFS keeps last access times, upstream kopia's every listing of a folder made NTFS write to the disk, which, every 30 minutes on a large tree, changed thousands of places of the disk that disk images then had to store again. Folders and files are now read without updating them.
+* **New data and stored size per snapshot:** every file snapshot and image records how much new data it added, before and after compression, also through a repository server, and the web UI shows both.
+* **Fixes not (yet) proposed upstream:**
+  * a deleted snapshot manifest no longer comes back when its deletion was saved within the same clock tick as the manifest, which on Windows' coarse clock left stray checkpoint snapshots behind;
+  * a content read through a damaged cache entry is fetched from storage again instead of failing until the cache is cleared;
+  * `kopia image ls` browses images again (it had been shadowed by an alias of `image list`).
 
 Installing
 ---
