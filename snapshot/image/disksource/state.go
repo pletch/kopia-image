@@ -138,6 +138,17 @@ func (s *ShadowState) save() error {
 	return errors.Wrap(os.Rename(tmp, s.path), "unable to save image state")
 }
 
+// SessionOptions configure OpenSession.
+type SessionOptions struct {
+	// ExcludeKopiaCaches reads the files of the kopia caches on NTFS volumes
+	// as zeros, see KopiaCacheFolders.
+	ExcludeKopiaCaches bool
+
+	// KopiaCacheDirs are more kopia cache directories by absolute path, such
+	// as the cache of the running kopia.
+	KopiaCacheDirs []string
+}
+
 // Session holds the resources of imaging one disk: open devices and shadow
 // copies. Close releases them.
 type Session struct {

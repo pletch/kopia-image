@@ -58,6 +58,7 @@ type commandImageCreate struct {
 	description   string
 	statePath     string
 	drivers       bool
+	excludeCaches bool
 
 	// req records the outcome of a run that KopiaUI started without a
 	// window; loc tells where.
@@ -79,6 +80,7 @@ func (c *commandImageCreate) setup(svc appServices, parent commandParent) {
 	cmd.Flag("dry-run", "Print the partition plan and the size of the zeroed space without imaging").BoolVar(&c.dryRun)
 	cmd.Flag("description", "Free-form snapshot description").StringVar(&c.description)
 	cmd.Flag("drivers", "Store this computer's storage, network and USB drivers with the images, for recovery media built on other computers").Default("true").BoolVar(&c.drivers)
+	cmd.Flag("exclude-kopia-caches", "Read the files of kopia's caches as zeros, so that their changes do not enlarge images; after a restore, kopia refetches what it needs").Default("true").BoolVar(&c.excludeCaches)
 	cmd.Flag("state-file", "Override the file that records shadow copies to remove after a crash").Hidden().StringVar(&c.statePath)
 	c.req.flag(cmd)
 	cmd.Action(svc.noRepositoryAction(c.req.recording("create", &c.loc, c.runWithWriter)))
@@ -342,7 +344,10 @@ func (c *commandImageCreate) imageDisk(ctx context.Context, rep repo.RepositoryW
 		return nil, nil, errors.Wrapf(err, "unable to get the policy of %v", src)
 	}
 
-	session, err := disksource.OpenSession(ctx, plan, state, logf)
+	session, err := disksource.OpenSession(ctx, plan, state, disksource.SessionOptions{
+		ExcludeKopiaCaches: c.excludeCaches,
+		KopiaCacheDirs:     c.ownCacheDirs(),
+	}, logf)
 	if err != nil {
 		return nil, nil, errors.Wrap(err, "unable to prepare the disk")
 	}
@@ -425,6 +430,18 @@ func (c *commandImageCreate) descriptionFor(plan *disksource.Plan) string {
 	return "Image of disk " + plan.Layout.DiskGUID + " (" + strings.Join(letters, " ") + ")"
 }
 
+// ownCacheDirs returns the cache directory of the repository connection this
+// kopia uses, which may be outside the folders where caches are looked for,
+// such as the scheduled task's cache in ProgramData.
+func (c *commandImageCreate) ownCacheDirs() []string {
+	lc, err := repo.LoadConfigFromFile(c.svc.repositoryConfigFileName())
+	if err != nil || lc.Caching == nil || lc.Caching.CacheDirectory == "" {
+		return nil
+	}
+
+	return []string{lc.Caching.CacheDirectory}
+}
+
 func (c *commandImageCreate) printDryRun(plan *disksource.Plan, session *disksource.Session) {
 	c.out.printStdout("Dry run of disk %v; nothing was written.\n", plan.DiskNumber)
 
@@ -432,9 +449,10 @@ func (c *commandImageCreate) printDryRun(plan *disksource.Plan, session *disksou
 
 	for i := range volumes {
 		v := &volumes[i]
-		zeroed := v.FreeBytes + image.TotalLength(v.UnstableExtents)
-		c.out.printStdout("  %v: %v, %v read, %v zeroed\n",
-			image.VolumeEntryName(v.PartitionNumber, v.Label), units.BytesString(v.Size), units.BytesString(v.Size-zeroed), units.BytesString(zeroed))
+		excluded := image.ExcludedBytes(v.Excluded)
+		zeroed := v.FreeBytes + image.TotalLength(v.UnstableExtents) + excluded
+		c.out.printStdout("  %v: %v, %v read, %v zeroed, of which %v in kopia's caches\n",
+			image.VolumeEntryName(v.PartitionNumber, v.Label), units.BytesString(v.Size), units.BytesString(v.Size-zeroed), units.BytesString(zeroed), units.BytesString(excluded))
 	}
 }
 

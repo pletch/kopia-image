@@ -66,6 +66,7 @@ type VolumeSource struct {
 	SerialNumber    string
 	FreeBytes       int64
 	UnstableExtents []Extent
+	Excluded        []ExcludedFolder
 
 	// Bitmap, when set, is stored next to the image as the .bitmap entry.
 	Bitmap []byte
@@ -257,6 +258,7 @@ func (opt *CreateOptions) writeVolumes(ctx context.Context, rep repo.RepositoryW
 			SerialNumber:    v.SerialNumber,
 			FreeBytes:       v.FreeBytes,
 			UnstableExtents: v.UnstableExtents,
+			Excluded:        v.Excluded,
 			Stats:           stats,
 		})
 

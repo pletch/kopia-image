@@ -30,7 +30,7 @@ func PrepareDisk(uint32) (*Plan, error) {
 }
 
 // OpenSession is not supported on this platform.
-func OpenSession(context.Context, *Plan, *ShadowState, func(string, ...any)) (*Session, error) {
+func OpenSession(context.Context, *Plan, *ShadowState, SessionOptions, func(string, ...any)) (*Session, error) {
 	return nil, ErrNotSupported
 }
 

@@ -66,6 +66,10 @@ type ImageVolume struct {
 	Kind            image.VolumeKind `json:"kind"`
 	Size            int64            `json:"size"`
 	FreeBytes       int64            `json:"freeBytes,omitempty"`
+
+	// ExcludedBytes is the size of the files read as zeros because the
+	// programs using them recreate them, such as kopia's caches.
+	ExcludedBytes int64 `json:"excludedBytes,omitempty"`
 }
 
 // ImageFilesResponse lists a folder of an image snapshot.

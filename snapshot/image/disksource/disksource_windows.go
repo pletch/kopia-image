@@ -297,7 +297,7 @@ func mountPoints(guidPath string) []string {
 // OpenSession creates the shadow copies for a plan, recording them in state,
 // and returns the volume sources to image. Closing the session closes the
 // devices and removes the shadow copies.
-func OpenSession(ctx context.Context, plan *Plan, state *ShadowState, logf func(string, ...any)) (s *Session, err error) {
+func OpenSession(ctx context.Context, plan *Plan, state *ShadowState, opt SessionOptions, logf func(string, ...any)) (s *Session, err error) {
 	s = &Session{}
 
 	defer func() {
@@ -337,7 +337,7 @@ func OpenSession(ctx context.Context, plan *Plan, state *ShadowState, logf func(
 			continue
 		}
 
-		vs, err := s.openShadowVolume(ctx, pp, state, logf)
+		vs, err := s.openShadowVolume(ctx, pp, state, opt, logf)
 		if err != nil {
 			return nil, errors.Wrapf(err, "partition %v", pp.Partition.Number)
 		}
@@ -348,7 +348,7 @@ func OpenSession(ctx context.Context, plan *Plan, state *ShadowState, logf func(
 	return s, nil
 }
 
-func (s *Session) openShadowVolume(ctx context.Context, pp *PartitionPlan, state *ShadowState, logf func(string, ...any)) (image.VolumeSource, error) {
+func (s *Session) openShadowVolume(ctx context.Context, pp *PartitionPlan, state *ShadowState, opt SessionOptions, logf func(string, ...any)) (image.VolumeSource, error) {
 	logf("Creating a shadow copy of %v", describeVolume(pp.Volume))
 
 	id, err := createShadowCopy(ctx, pp.Volume.GUIDPath)
@@ -391,6 +391,10 @@ func (s *Session) openShadowVolume(ctx context.Context, pp *PartitionPlan, state
 		return image.VolumeSource{}, errors.Wrap(err, "unable to examine the shadow copy")
 	}
 
+	if opt.ExcludeKopiaCaches {
+		excludeKopiaCaches(vol, dev.Path()+`\`, pp.Volume, opt.KopiaCacheDirs, logf)
+	}
+
 	free, err := vol.FreeExtents()
 	if err != nil {
 		return image.VolumeSource{}, errors.Wrap(err, "free space")
@@ -401,7 +405,7 @@ func (s *Session) openShadowVolume(ctx context.Context, pp *PartitionPlan, state
 		return image.VolumeSource{}, errors.Wrap(err, "zero mask")
 	}
 
-	logf("%v: %v of %v bytes are free or unstable and read as zeros; unstable files: %v",
+	logf("%v: %v of %v bytes are free, unstable or excluded and read as zeros; unstable files: %v",
 		describeVolume(pp.Volume), image.TotalLength(mask), dev.Size(), vol.UnfrozenFiles)
 
 	return image.VolumeSource{
@@ -421,8 +425,32 @@ func (s *Session) openShadowVolume(ctx context.Context, pp *PartitionPlan, state
 		SerialNumber:    fmt.Sprintf("%016x", vol.Data.SerialNumber),
 		FreeBytes:       image.TotalLength(free),
 		UnstableExtents: vol.UnfrozenExtents,
+		Excluded:        vol.Excluded,
 		Bitmap:          vol.Bitmap,
 	}, nil
+}
+
+// excludeKopiaCaches reads the files of the kopia caches on a volume as
+// zeros. Leaving them in only makes the image larger, so failures are
+// reported and imaging goes on.
+func excludeKopiaCaches(vol *ntfs.Volume, root string, v *VolumeInfo, extra []string, logf func(string, ...any)) {
+	folders := KopiaCacheFolders(root, v.MountPoints, extra)
+	if len(folders) == 0 {
+		return
+	}
+
+	if err := vol.Exclude(root, folders); err != nil {
+		logf("%v: some files of kopia's caches are imaged: %v", describeVolume(v), err)
+	}
+
+	var files int64
+
+	for _, f := range vol.Excluded {
+		files += f.Files
+	}
+
+	logf("%v: %v files of kopia's caches in %v folders, %v bytes, are read as zeros",
+		describeVolume(v), files, len(vol.Excluded), image.ExcludedBytes(vol.Excluded))
 }
 
 type maskedReadCloser struct {

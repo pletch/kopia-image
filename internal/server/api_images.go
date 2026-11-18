@@ -163,6 +163,7 @@ func convertImageSnapshot(ctx context.Context, rc requestContext, m *snapshot.Ma
 			Kind:            v.Kind,
 			Size:            v.Size,
 			FreeBytes:       v.FreeBytes,
+			ExcludedBytes:   image.ExcludedBytes(v.Excluded),
 		})
 	}
 

@@ -2,6 +2,7 @@ package ntfs
 
 import (
 	"encoding/binary"
+	"slices"
 
 	"github.com/pkg/errors"
 	"golang.org/x/sys/windows"
@@ -42,6 +43,11 @@ type Volume struct {
 	// allocated byte extents.
 	UnfrozenFiles   []string
 	UnfrozenExtents []image.Extent
+
+	// Excluded are the folders whose files are read as zeros, see Exclude,
+	// and ExcludedExtents the allocated byte extents of those files.
+	Excluded        []image.ExcludedFolder
+	ExcludedExtents []image.Extent
 }
 
 // FreeExtents returns the byte extents of the free clusters.
@@ -52,16 +58,16 @@ func (v *Volume) FreeExtents() ([]image.Extent, error) {
 }
 
 // ZeroMask returns the extents to read as zeros when imaging the volume: the
-// free clusters and the clusters of unfrozen files.
+// free clusters and the clusters of unfrozen and excluded files.
 func (v *Volume) ZeroMask() ([]image.Extent, error) {
 	free, err := v.FreeExtents()
 	if err != nil {
 		return nil, err
 	}
 
-	mask, err := image.NormalizeExtents(append(free, v.UnfrozenExtents...))
+	mask, err := image.NormalizeExtents(slices.Concat(free, v.UnfrozenExtents, v.ExcludedExtents))
 
-	return mask, errors.Wrap(err, "invalid unfrozen file extents")
+	return mask, errors.Wrap(err, "invalid unfrozen or excluded file extents")
 }
 
 // Probe reads the geometry, allocation bitmap and unfrozen file extents of
@@ -201,7 +207,14 @@ func FileExtents(path string, clusterSize int64) ([]image.Extent, error) {
 	}
 	defer windows.CloseHandle(h) //nolint:errcheck
 
+	return handleExtents(h, path, clusterSize)
+}
+
+// handleExtents returns the allocated byte extents of the default data stream
+// of the file open as h.
+func handleExtents(h windows.Handle, path string, clusterSize int64) ([]image.Extent, error) {
 	var (
+		err     error
 		extents []image.Extent
 		in      [8]byte
 		vcn     int64

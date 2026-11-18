@@ -102,6 +102,11 @@ type Volume struct {
 	// freeze, such as pagefile.sys, which were read as zeros.
 	UnstableExtents []Extent `json:"unstableExtents,omitempty"`
 
+	// Excluded are the folders whose files were read as zeros because the
+	// programs using them recreate their contents, such as kopia's caches.
+	// The files are still in the image, full of zeros.
+	Excluded []ExcludedFolder `json:"excluded,omitempty"`
+
 	Stats VolumeStats `json:"stats"`
 }
 
@@ -203,4 +208,27 @@ func volumeEntryPrefix(partitionNumber int, label string) string {
 	}
 
 	return "p" + strconv.Itoa(partitionNumber) + "-" + safe
+}
+
+// ExcludedFolder is a folder of a volume whose files were read as zeros.
+type ExcludedFolder struct {
+	// Path is relative to the volume root, e.g.
+	// `Users\me\AppData\Local\kopia\0123456789abcdef\server-contents`.
+	Path string `json:"path"`
+
+	// Files is the number of files read as zeros, and Bytes the size of
+	// their clusters.
+	Files int64 `json:"files"`
+	Bytes int64 `json:"bytes"`
+}
+
+// ExcludedBytes returns the size of the clusters of the excluded folders.
+func ExcludedBytes(folders []ExcludedFolder) int64 {
+	var n int64
+
+	for _, f := range folders {
+		n += f.Bytes
+	}
+
+	return n
 }

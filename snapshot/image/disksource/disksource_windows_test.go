@@ -146,7 +146,7 @@ func TestImageAndRestoreVHDX(t *testing.T) {
 	guard, err := disksource.Acquire(statePath, t.Logf)
 	require.NoError(t, err)
 
-	session, err := disksource.OpenSession(t.Context(), plan, guard.State, t.Logf)
+	session, err := disksource.OpenSession(t.Context(), plan, guard.State, disksource.SessionOptions{}, t.Logf)
 	require.NoError(t, err)
 	require.Len(t, guard.State.Records(), 1, "the shadow copy is recorded")
 
@@ -240,4 +240,96 @@ func verifyBrowsedFiles(ctx context.Context, t *testing.T, rep repo.Repository, 
 	chunks := (v.Size + image.DefaultChunkSize - 1) / image.DefaultChunkSize
 	t.Logf("browsing every file fetched %v of %v image chunks", vol.Fetches(), chunks)
 	require.Less(t, vol.Fetches(), chunks)
+}
+
+// TestExcludeKopiaCachesVHDX images a volume holding a kopia cache: the
+// cache's files are restored as zeros, except the committed index cache, and
+// everything else is restored as it was.
+func TestExcludeKopiaCachesVHDX(t *testing.T) {
+	src := vhdxtest.New(t)
+	mnt := src.FormatAndMount()
+
+	cache := filepath.Join(mnt, "Users", "someone", "AppData", "Local", "kopia", "0123456789abcdef")
+	require.NoError(t, os.MkdirAll(filepath.Join(cache, "server-contents", "ab"), 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Join(cache, "indexes"), 0o700))
+
+	random := func(n int) []byte {
+		b := make([]byte, n)
+		_, err := rand.Read(b)
+		require.NoError(t, err)
+
+		return b
+	}
+
+	cached := random(3 << 20)
+	index := random(64 << 10)
+	other := random(1 << 20)
+
+	require.NoError(t, os.WriteFile(filepath.Join(cache, "server-contents", "ab", "abcdef.f"), cached, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(cache, "indexes", "x1.sndx"), index, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(mnt, "other.bin"), other, 0o600))
+
+	disks, err := disksource.DisksForVolumes([]string{vhdxtest.VolumeGUIDPath(t, mnt)})
+	require.NoError(t, err)
+
+	plan, err := disksource.PrepareDisk(disks[0])
+	require.NoError(t, err)
+
+	guard, err := disksource.Acquire(filepath.Join(t.TempDir(), "state.json"), t.Logf)
+	require.NoError(t, err)
+
+	session, err := disksource.OpenSession(t.Context(), plan, guard.State, disksource.SessionOptions{ExcludeKopiaCaches: true}, t.Logf)
+	require.NoError(t, err)
+
+	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
+
+	sourcePath, err := image.DiskSourcePath(plan.Layout.DiskGUID)
+	require.NoError(t, err)
+
+	_, md, err := image.Create(ctx, env.RepositoryWriter, &image.CreateOptions{
+		Source:    snapshot.SourceInfo{Host: "test", UserName: "test", Path: sourcePath},
+		Layout:    plan.Layout,
+		Volumes:   session.Volumes(),
+		NewBuffer: blockdev.AlignedBuffer,
+		Logf:      t.Logf,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, session.Close())
+	require.NoError(t, guard.Close())
+
+	require.Equal(t, []image.ExcludedFolder{{
+		Path:  `Users\someone\AppData\Local\kopia\0123456789abcdef\server-contents`,
+		Files: 1,
+		Bytes: 3 << 20,
+	}}, md.Volumes[0].Excluded)
+
+	dst := vhdxtest.New(t)
+
+	dstLayout, err := blockdev.ReadLayout(dst.Number())
+	require.NoError(t, err)
+
+	part, ok := dstLayout.Partition(vhdxtest.DataPartition)
+	require.True(t, ok)
+
+	writeImageToDisk(ctx, t, env.Repository, md.Volumes[0].ObjectID, dst.Number(), part.Offset)
+
+	dst.Reattach()
+	restored := dst.Mount()
+	restoredCache := filepath.Join(restored, "Users", "someone", "AppData", "Local", "kopia", "0123456789abcdef")
+
+	read := func(path string) []byte {
+		b, err := os.ReadFile(path)
+		require.NoError(t, err)
+
+		return b
+	}
+
+	require.Equal(t, make([]byte, len(cached)), read(filepath.Join(restoredCache, "server-contents", "ab", "abcdef.f")), "the cache file is restored as zeros")
+	require.Equal(t, index, read(filepath.Join(restoredCache, "indexes", "x1.sndx")), "the index cache is imaged")
+	require.Equal(t, other, read(filepath.Join(restored, "other.bin")))
+
+	out, err := exec.CommandContext(t.Context(), "chkdsk", restored, "/scan").CombinedOutput()
+	t.Logf("chkdsk:\n%s", out)
+	require.NoError(t, err, "chkdsk found problems in the restored volume")
 }
