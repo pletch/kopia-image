@@ -32,3 +32,15 @@ func TestImageCreateUnsupportedPlatform(t *testing.T) {
 	_, stderr = env.RunAndExpectSuccessWithErrOut(t, "image", "list")
 	require.Contains(t, strings.Join(stderr, "\n"), "No image snapshots found")
 }
+
+// TestImageLsBrowses checks that "kopia image ls" is the command that browses
+// an image, not an alias of "kopia image list", which takes no arguments.
+func TestImageLsBrowses(t *testing.T) {
+	env := testenv.NewCLITest(t, testenv.RepoFormatNotImportant, testenv.NewInProcRunner(t))
+	env.RunAndExpectSuccess(t, "repo", "create", "filesystem", "--path", env.RepoDir)
+
+	_, stderr := env.RunAndExpectFailure(t, "image", "ls", "0123456789abcdef0123456789abcdef/p3-C")
+	msg := strings.Join(stderr, "\n")
+	require.Contains(t, msg, "unable to load snapshot")
+	require.NotContains(t, msg, "unexpected")
+}

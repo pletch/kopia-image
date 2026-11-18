@@ -18,7 +18,7 @@ type commandImageList struct {
 }
 
 func (c *commandImageList) setup(svc appServices, parent commandParent) {
-	cmd := parent.Command("list", "List image snapshots with their statistics.").Alias("ls")
+	cmd := parent.Command("list", "List image snapshots with their statistics.")
 	cmd.Flag("all", "List images of all hosts, not only this one").BoolVar(&c.all)
 	cmd.Action(svc.repositoryReaderAction(c.run))
 	c.out.setup(svc)
