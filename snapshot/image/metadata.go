@@ -20,8 +20,21 @@ const (
 	bitmapEntrySuffix = ".bitmap"
 )
 
-// FormatVersion is the version of the image snapshot format described by Metadata.
-const FormatVersion = 1
+// Versions of the image snapshot format described by Metadata.
+const (
+	// FormatVersion is written when restoring an image takes only writing
+	// its volumes.
+	FormatVersion = 1
+
+	// FormatVersionDeletesExcluded is written when a restore must also
+	// delete excluded files whose programs would not recognize them holding
+	// zeros (see ExcludedFolder.SafeAsZeros). kopia versions that read only
+	// FormatVersion refuse such images instead of leaving the zeros.
+	FormatVersionDeletesExcluded = 2
+
+	// MaxFormatVersion is the newest version this kopia reads.
+	MaxFormatVersion = FormatVersionDeletesExcluded
+)
 
 // DefaultChunkSize is the fixed chunk size of image objects. Every chunk i of
 // an image covers bytes [i*ChunkSize, (i+1)*ChunkSize) of its volume.
@@ -130,8 +143,8 @@ type VolumeStats struct {
 // Validate checks the metadata for internal consistency and against the layout
 // of the imaged disk.
 func (m *Metadata) Validate(layout *Layout) error {
-	if m.FormatVersion != FormatVersion {
-		return errors.Errorf("unsupported image format version %v", m.FormatVersion)
+	if m.FormatVersion < FormatVersion || m.FormatVersion > MaxFormatVersion {
+		return errors.Errorf("unsupported image format version %v; this kopia reads versions %v to %v", m.FormatVersion, FormatVersion, MaxFormatVersion)
 	}
 
 	if m.ChunkSize <= 0 || m.ChunkSize%layout.SectorSize != 0 {
@@ -226,6 +239,27 @@ type ExcludedFolder struct {
 	// their clusters.
 	Files int64 `json:"files"`
 	Bytes int64 `json:"bytes"`
+
+	// SafeAsZeros is set when the programs using the files detect them
+	// holding zeros and recreate them, as kopia does with its caches, so a
+	// restore that does not delete them still works. Images with other
+	// excluded folders have FormatVersionDeletesExcluded.
+	SafeAsZeros bool `json:"safeAsZeros,omitempty"`
+}
+
+// RequiredFormatVersion returns the format version an image with these
+// volumes must have: FormatVersionDeletesExcluded when a restore must delete
+// some excluded files, otherwise FormatVersion.
+func RequiredFormatVersion(volumes []Volume) int {
+	for i := range volumes {
+		for _, f := range volumes[i].Excluded {
+			if !f.SafeAsZeros {
+				return FormatVersionDeletesExcluded
+			}
+		}
+	}
+
+	return FormatVersion
 }
 
 // ExcludedBytes returns the size of the clusters of the excluded folders.

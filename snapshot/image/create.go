@@ -175,6 +175,8 @@ func Create(ctx context.Context, rep repo.RepositoryWriter, options *CreateOptio
 		return nil, nil, errors.Wrap(err, "unable to flush images")
 	}
 
+	md.FormatVersion = RequiredFormatVersion(md.Volumes)
+
 	newBytes, storedBytes := repo.NewDataOf(rep).Since(newDataBefore)
 	md.NewDataBytes = &newBytes
 	md.UploadedBytes = storedBytes

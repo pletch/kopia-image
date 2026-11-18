@@ -15,14 +15,16 @@ import (
 // Exclude reads the files below the folders dirs as zeros and lists them in
 // ExcludedFiles, so that restoring the image can delete them. root is the volume
 // root path ending in a backslash, normally a shadow copy device; dirs are
-// relative to it. Folders that do not exist are skipped.
+// relative to it. Folders that do not exist are skipped. safeAsZeros says
+// whether the programs using the files recover from them holding zeros, see
+// image.ExcludedFolder.
 //
 // Files with more than one name are skipped, as their other names may be
 // outside the folders, and so are reparse points, whose targets may be: only
 // regular files and directories below the folders are excluded. Files that
 // cannot be opened are skipped too, so the error returned lists what could
 // not be excluded, and what was excluded stays excluded.
-func (v *Volume) Exclude(root string, dirs []string) error {
+func (v *Volume) Exclude(root string, dirs []string, safeAsZeros bool) error {
 	var errs []error
 
 	for _, dir := range dirs {
@@ -32,6 +34,7 @@ func (v *Volume) Exclude(root string, dirs []string) error {
 		}
 
 		if folder.Files > 0 {
+			folder.SafeAsZeros = safeAsZeros
 			v.Excluded = append(v.Excluded, folder)
 			v.ExcludedExtents = append(v.ExcludedExtents, extents...)
 			v.ExcludedFiles = append(v.ExcludedFiles, files...)

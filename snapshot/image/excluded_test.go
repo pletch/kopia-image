@@ -1,12 +1,15 @@
 package image
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/kopia/kopia/fs"
 	"github.com/kopia/kopia/internal/repotesting"
+	"github.com/kopia/kopia/repo/object"
 	"github.com/kopia/kopia/snapshot/snapshotfs"
 )
 
@@ -63,6 +66,7 @@ func TestCreate_excludedFiles(t *testing.T) {
 	}
 
 	require.NotEmpty(t, ntfs.ExcludedFilesID)
+	require.Equal(t, FormatVersionDeletesExcluded, md.FormatVersion, "the folder is not marked safe as zeros")
 	require.Empty(t, raw.ExcludedFilesID, "volumes without exclusions have no list")
 	require.Equal(t, []ExcludedFolder{{Path: "cache", Files: 2, Bytes: 8192}}, ntfs.Excluded)
 
@@ -95,4 +99,49 @@ func TestCreate_excludedFiles(t *testing.T) {
 			require.Equal(t, ntfs.ExcludedFilesID, md2.Volumes[i].ExcludedFilesID)
 		}
 	}
+}
+
+func TestRequiredFormatVersion(t *testing.T) {
+	require.Equal(t, FormatVersion, RequiredFormatVersion(nil))
+	require.Equal(t, FormatVersion, RequiredFormatVersion([]Volume{{}, {Excluded: []ExcludedFolder{{Path: "kopia", SafeAsZeros: true}}}}))
+	require.Equal(t, FormatVersionDeletesExcluded, RequiredFormatVersion([]Volume{
+		{Excluded: []ExcludedFolder{{Path: "kopia", SafeAsZeros: true}}},
+		{Excluded: []ExcludedFolder{{Path: "Temp"}}},
+	}))
+}
+
+func TestMetadataValidate_formatVersion(t *testing.T) {
+	for v, ok := range map[int]bool{0: false, FormatVersion: true, FormatVersionDeletesExcluded: true, MaxFormatVersion + 1: false} {
+		md := testMetadata(t)
+		md.FormatVersion = v
+
+		if ok {
+			require.NoError(t, md.Validate(testLayout()), v)
+		} else {
+			require.ErrorContains(t, md.Validate(testLayout()), "unsupported image format version", v)
+		}
+	}
+}
+
+func TestWriteRestoreScript_excluded(t *testing.T) {
+	md := testMetadata(t)
+	md.FormatVersion = FormatVersionDeletesExcluded
+
+	oid, err := object.ParseID("k0123456789abcdef0123456789abcdef")
+	require.NoError(t, err)
+
+	md.Volumes[1].ExcludedFilesID = oid
+	md.Volumes[1].Excluded = []ExcludedFolder{{Path: "Temp", Files: 1, Bytes: 4096}}
+
+	var sb strings.Builder
+
+	require.NoError(t, WriteRestoreScript(&sb, testLayout(), md))
+
+	script := sb.String()
+	n := md.Volumes[1].PartitionNumber
+
+	require.Contains(t, script, fmt.Sprintf("echo '%v: the files that the image left out, such as caches, hold zeros. Mount partition %v and delete them with:'", md.Volumes[1].EntryName, n))
+	require.Contains(t, script, fmt.Sprintf("echo '  kopia image delete-excluded <snapshot ID of this image> %v <mount point>'", n))
+	require.Contains(t, script, "echo 'or delete the files listed by: kopia show k0123456789abcdef0123456789abcdef'")
+	require.NotContains(t, script, md.Volumes[0].EntryName+": the files")
 }

@@ -153,7 +153,7 @@ func TestMetadata_Validate_invalid(t *testing.T) {
 		mutate func(m *Metadata)
 		want   string
 	}{
-		{"version", func(m *Metadata) { m.FormatVersion = 2 }, "version"},
+		{"version", func(m *Metadata) { m.FormatVersion = MaxFormatVersion + 1 }, "version"},
 		{"chunk size", func(m *Metadata) { m.ChunkSize = 1000 }, "chunk size"},
 		{"disk guid", func(m *Metadata) { m.DiskGUID = "11111111-2222-4333-8444-555555555555" }, "does not match"},
 		{"no volumes", func(m *Metadata) { m.Volumes = nil }, "no volumes"},

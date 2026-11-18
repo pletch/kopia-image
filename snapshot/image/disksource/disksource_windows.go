@@ -440,7 +440,8 @@ func excludeKopiaCaches(vol *ntfs.Volume, root string, v *VolumeInfo, extra []st
 		return
 	}
 
-	if err := vol.Exclude(root, folders); err != nil {
+	// kopia discards and refetches cache files that hold zeros
+	if err := vol.Exclude(root, folders, true); err != nil {
 		logf("%v: some files of kopia's caches are imaged: %v", describeVolume(v), err)
 	}
 

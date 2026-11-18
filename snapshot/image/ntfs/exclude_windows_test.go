@@ -51,11 +51,12 @@ func TestExclude(t *testing.T) {
 
 	v := &ntfs.Volume{Data: ntfs.VolumeData{ClusterSize: clusterSize}}
 
-	require.NoError(t, v.Exclude(root, []string{rel(cache), rel(filepath.Join(tmp, "missing"))}))
+	require.NoError(t, v.Exclude(root, []string{rel(cache), rel(filepath.Join(tmp, "missing"))}, true))
 
 	require.Len(t, v.Excluded, 1)
 	f := v.Excluded[0]
 	require.Equal(t, rel(cache), f.Path)
+	require.True(t, f.SafeAsZeros)
 	require.Equal(t, int64(3), f.Files, "big.bin, nested.bin and tiny.txt")
 	require.Equal(t, image.TotalLength(v.ExcludedExtents), f.Bytes)
 

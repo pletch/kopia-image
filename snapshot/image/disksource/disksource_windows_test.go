@@ -299,10 +299,12 @@ func TestExcludeKopiaCachesVHDX(t *testing.T) {
 	require.NoError(t, guard.Close())
 
 	require.Equal(t, []image.ExcludedFolder{{
-		Path:  `Users\someone\AppData\Local\kopia\0123456789abcdef\server-contents`,
-		Files: 1,
-		Bytes: 3 << 20,
+		Path:        `Users\someone\AppData\Local\kopia\0123456789abcdef\server-contents`,
+		Files:       1,
+		Bytes:       3 << 20,
+		SafeAsZeros: true,
 	}}, md.Volumes[0].Excluded)
+	require.Equal(t, image.FormatVersion, md.FormatVersion, "kopia's caches need no newer kopia to restore")
 
 	dst := vhdxtest.New(t)
 

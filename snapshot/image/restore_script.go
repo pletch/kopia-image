@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/pkg/errors"
+
+	"github.com/kopia/kopia/repo/object"
 )
 
 // WriteRestoreScript writes restore.sh: a bash script that recreates
@@ -60,6 +62,8 @@ func WriteRestoreScript(w io.Writer, layout *Layout, md *Metadata) error {
 
 	sb.WriteString("\nsync\necho 'Restore complete.'\n")
 
+	writeRestoreScriptExcluded(&sb, md)
+
 	_, err := io.WriteString(w, sb.String())
 
 	return errors.Wrap(err, "unable to write restore script")
@@ -110,4 +114,28 @@ esac
 // shellQuote quotes s as a single POSIX shell word.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// writeRestoreScriptExcluded tells how to delete the files that the image
+// left out, which the script restores holding zeros, as kopia image restore
+// does by itself.
+func writeRestoreScriptExcluded(sb *strings.Builder, md *Metadata) {
+	for i := range md.Volumes {
+		v := &md.Volumes[i]
+		if v.ExcludedFilesID == object.EmptyID {
+			continue
+		}
+
+		lines := []string{
+			fmt.Sprintf("%v: the files that the image left out, such as caches, hold zeros. Mount partition %v and delete them with:", v.EntryName, v.PartitionNumber),
+			fmt.Sprintf("  kopia image delete-excluded <snapshot ID of this image> %v <mount point>", v.PartitionNumber),
+			fmt.Sprintf("or delete the files listed by: kopia show %v", v.ExcludedFilesID),
+		}
+
+		sb.WriteString("\n")
+
+		for _, l := range lines {
+			fmt.Fprintf(sb, "echo %v\n", shellQuote(l))
+		}
+	}
 }
