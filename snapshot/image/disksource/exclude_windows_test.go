@@ -114,3 +114,36 @@ func TestExcludeFiles(t *testing.T) {
 	require.Equal(t, image.FormatVersionDeletesExcluded, image.RequiredFormatVersion([]image.Volume{{Excluded: vol.Excluded}}))
 	require.NotEmpty(t, logged)
 }
+
+func TestExclusionRules_options(t *testing.T) {
+	tmp := t.TempDir()
+	mkdirs(t, tmp, `Users\alice\AppData\Local\Temp`, `Users\alice\AppData\Local\kopia\0123456789abcdef\server-contents`)
+
+	saved := readFilesNotToSnapshot
+	t.Cleanup(func() { readFilesNotToSnapshot = saved })
+
+	readFilesNotToSnapshot = func() ([]FileSpec, error) {
+		return []FileSpec{{Source: `FilesNotToSnapshot\X`, Path: `$UserProfile$\x.ost`}}, nil
+	}
+
+	// a volume mounted where %SystemRoot% is not: only its profiles count
+	v := &VolumeInfo{MountPoints: []string{`X:\`}}
+
+	sources := func(opt SessionOptions) []string {
+		var out []string
+
+		for _, r := range exclusionRules(tmp+`\`, v, opt, t.Logf) {
+			out = append(out, r.Source+" "+r.Dir)
+		}
+
+		return out
+	}
+
+	require.Empty(t, sources(SessionOptions{}))
+	require.Equal(t, []string{`kopia cache Users\alice\AppData\Local\kopia\0123456789abcdef\server-contents`},
+		sources(SessionOptions{ExcludeKopiaCaches: true}))
+	require.Equal(t, []string{`FilesNotToSnapshot\X Users\alice`},
+		sources(SessionOptions{ExcludeFilesNotToSnapshot: true}))
+	require.Equal(t, []string{`FilesNotToBackup\Temporary Files Users\alice\AppData\Local\Temp`},
+		sources(SessionOptions{ExcludeFilesNotToBackup: true}))
+}

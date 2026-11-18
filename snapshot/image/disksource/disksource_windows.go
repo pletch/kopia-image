@@ -391,7 +391,7 @@ func (s *Session) openShadowVolume(ctx context.Context, pp *PartitionPlan, state
 		return image.VolumeSource{}, errors.Wrap(err, "unable to examine the shadow copy")
 	}
 
-	if opt.ExcludeKopiaCaches || opt.ExcludeFilesNotToSnapshot {
+	if opt.ExcludeKopiaCaches || opt.ExcludeFilesNotToSnapshot || opt.ExcludeFilesNotToBackup {
 		excludeFiles(vol, dev.Path()+`\`, pp.Volume, opt, logf)
 	}
 

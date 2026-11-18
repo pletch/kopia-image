@@ -128,3 +128,45 @@ func TestRelativeToVolume(t *testing.T) {
 		require.Equal(t, tc.want, got, tc.path)
 	}
 }
+
+func TestFilesNotToBackupSubset(t *testing.T) {
+	vc := &VolumeContext{
+		MountPoints: []string{`C:\`},
+		Profiles:    []string{`Users\alice`, `Windows\System32\config\systemprofile`},
+		Expand: func(s string) string {
+			return strings.NewReplacer("%SystemRoot%", `C:\Windows`, "%ProgramData%", `C:\ProgramData`).Replace(s)
+		},
+	}
+
+	var got []ExcludeRule
+
+	for i := range FilesNotToBackupSubset {
+		got = append(got, FilesNotToBackupSubset[i].Rules(vc, false)...)
+	}
+
+	const src = SourceFilesNotToBackup + `\`
+
+	require.Equal(t, []ExcludeRule{
+		{Source: src + "Temporary Files", Dir: `Users\alice\AppData\Local\Temp`, Recursive: true},
+		{Source: src + "Temporary Files", Dir: `Windows\System32\config\systemprofile\AppData\Local\Temp`, Recursive: true},
+		{Source: src + "Temporary Files", Dir: `Windows\Temp`, Recursive: true},
+		{Source: src + "WER", Dir: `ProgramData\Microsoft\Windows\WER`, Recursive: true},
+		{Source: src + "Kernel Dumps", Dir: `Windows\Minidump`, Recursive: true},
+		{Source: src + "Kernel Dumps", Dir: `Windows`, Pattern: "memory.dmp"},
+		{Source: src + "BITS_metadata", Dir: `ProgramData\Microsoft\Network\Downloader`, Recursive: true},
+		{Source: src + "ETW", Dir: `Windows\System32\LogFiles\WMI\RtBackup`},
+	}, got)
+
+	// none is safe as zeros: a restore must delete them
+	for _, r := range got {
+		require.False(t, r.SafeAsZeros, r.Dir)
+	}
+
+	// on a data volume, only the profiles there count
+	vc.MountPoints = []string{`D:\`}
+	vc.Profiles = nil
+
+	for i := range FilesNotToBackupSubset {
+		require.Empty(t, FilesNotToBackupSubset[i].Rules(vc, false))
+	}
+}

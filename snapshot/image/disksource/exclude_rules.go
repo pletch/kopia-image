@@ -10,7 +10,29 @@ import (
 const (
 	SourceKopiaCache         = "kopia cache"
 	SourceFilesNotToSnapshot = "FilesNotToSnapshot"
+	SourceFilesNotToBackup   = "FilesNotToBackup"
 )
+
+// FilesNotToBackupSubset are the entries of the FilesNotToBackup registry
+// list, which Windows and programs use to tell file backups what to skip,
+// that are safe to delete after a restore: temporary files, crash reports
+// and dumps, the BITS transfer queue and real-time event trace buffers.
+// They are built in rather than read from the registry, where a value's
+// name does not vouch for its paths. %TEMP% names the running account's
+// folder only, so the temporary files are those of every profile and of
+// Windows. Left out are entries whose files Windows needs, such as the
+// Distributed Transaction Coordinator's log and netlogon.chg, files that are
+// imaged as zeros anyway, such as pagefile.sys, and Windows Update's folder,
+// which FilesNotToSnapshot names.
+var FilesNotToBackupSubset = []FileSpec{
+	{Source: SourceFilesNotToBackup + `\Temporary Files`, Path: `$UserProfile$\AppData\Local\Temp\*`, Recursive: true},
+	{Source: SourceFilesNotToBackup + `\Temporary Files`, Path: `%SystemRoot%\Temp\*`, Recursive: true},
+	{Source: SourceFilesNotToBackup + `\WER`, Path: `%ProgramData%\Microsoft\Windows\WER\*`, Recursive: true},
+	{Source: SourceFilesNotToBackup + `\Kernel Dumps`, Path: `%SystemRoot%\Minidump\*`, Recursive: true},
+	{Source: SourceFilesNotToBackup + `\Kernel Dumps`, Path: `%SystemRoot%\memory.dmp`},
+	{Source: SourceFilesNotToBackup + `\BITS_metadata`, Path: `%ProgramData%\Microsoft\Network\Downloader\*`, Recursive: true},
+	{Source: SourceFilesNotToBackup + `\ETW`, Path: `%SystemRoot%\System32\LogFiles\WMI\RtBackup\*`},
+}
 
 // Tokens of the Windows registry lists of files to leave out of backups and
 // shadow copies: every user profile, and the root of every volume.

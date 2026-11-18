@@ -149,6 +149,11 @@ type SessionOptions struct {
 	// registry list) as zeros. A restore deletes them.
 	ExcludeFilesNotToSnapshot bool
 
+	// ExcludeFilesNotToBackup reads the files of FilesNotToBackupSubset,
+	// such as temporary files and crash dumps, as zeros. A restore deletes
+	// them.
+	ExcludeFilesNotToBackup bool
+
 	// KopiaCacheDirs are more kopia cache directories by absolute path, such
 	// as the cache of the running kopia.
 	KopiaCacheDirs []string

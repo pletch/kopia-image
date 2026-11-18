@@ -87,14 +87,22 @@ func exclusionRules(root string, v *VolumeInfo, opt SessionOptions, logf func(st
 			logf("Unable to read the files that Windows leaves out of shadow copies: %v", err)
 		}
 
-		vc := &VolumeContext{MountPoints: v.MountPoints, Profiles: profiles(root), Expand: expandEnv}
-
 		for i := range specs {
-			rules = append(rules, specs[i].Rules(vc, false)...)
+			rules = append(rules, specs[i].Rules(volumeContext(root, v), false)...)
+		}
+	}
+
+	if opt.ExcludeFilesNotToBackup {
+		for i := range FilesNotToBackupSubset {
+			rules = append(rules, FilesNotToBackupSubset[i].Rules(volumeContext(root, v), false)...)
 		}
 	}
 
 	return rules
+}
+
+func volumeContext(root string, v *VolumeInfo) *VolumeContext {
+	return &VolumeContext{MountPoints: v.MountPoints, Profiles: profiles(root), Expand: expandEnv}
 }
 
 // readFilesNotToSnapshot reads the FilesNotToSnapshot list; tests replace it.
