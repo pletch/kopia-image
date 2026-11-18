@@ -35,7 +35,7 @@ func TestExclude(t *testing.T) {
 	writeRandomFile(t, filepath.Join(cache, "sub", "nested.bin"), 300<<10)
 	require.NoError(t, os.WriteFile(filepath.Join(cache, "tiny.txt"), []byte("resident"), 0o600))
 
-	// a file with another name, and a junction: neither is excluded
+	// a file with another name, and a junction to a file: neither is excluded
 	writeRandomFile(t, filepath.Join(cache, "linked.bin"), 200<<10)
 	require.NoError(t, os.Link(filepath.Join(cache, "linked.bin"), filepath.Join(outside, "linked.bin")))
 
@@ -51,11 +51,25 @@ func TestExclude(t *testing.T) {
 
 	v := &ntfs.Volume{Data: ntfs.VolumeData{ClusterSize: clusterSize}}
 
-	require.NoError(t, v.Exclude(root, []string{rel(cache), rel(filepath.Join(tmp, "missing"))}, true))
+	folder := image.ExcludedFolder{Source: "test", Path: rel(cache), Recursive: true, SafeAsZeros: true}
+
+	require.NoError(t, v.ExcludeFiles(root, folder, []string{
+		rel(filepath.Join(cache, "big.bin")),
+		rel(filepath.Join(cache, "sub", "nested.bin")),
+		rel(filepath.Join(cache, "tiny.txt")),
+		rel(filepath.Join(cache, "linked.bin")),
+		rel(filepath.Join(cache, "junction")),
+		rel(filepath.Join(cache, "missing.bin")),
+	}))
+
+	// nothing to exclude: no folder is recorded
+	require.NoError(t, v.ExcludeFiles(root, image.ExcludedFolder{Path: "none"}, []string{rel(filepath.Join(cache, "missing.bin"))}))
 
 	require.Len(t, v.Excluded, 1)
 	f := v.Excluded[0]
 	require.Equal(t, rel(cache), f.Path)
+	require.Equal(t, "test", f.Source)
+	require.True(t, f.Recursive)
 	require.True(t, f.SafeAsZeros)
 	require.Equal(t, int64(3), f.Files, "big.bin, nested.bin and tiny.txt")
 	require.Equal(t, image.TotalLength(v.ExcludedExtents), f.Bytes)

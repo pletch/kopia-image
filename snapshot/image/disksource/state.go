@@ -144,6 +144,11 @@ type SessionOptions struct {
 	// as zeros, see KopiaCacheFolders.
 	ExcludeKopiaCaches bool
 
+	// ExcludeFilesNotToSnapshot reads the files that Windows and installed
+	// programs leave out of backup shadow copies (the FilesNotToSnapshot
+	// registry list) as zeros. A restore deletes them.
+	ExcludeFilesNotToSnapshot bool
+
 	// KopiaCacheDirs are more kopia cache directories by absolute path, such
 	// as the cache of the running kopia.
 	KopiaCacheDirs []string

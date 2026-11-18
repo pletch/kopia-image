@@ -299,7 +299,9 @@ func TestExcludeKopiaCachesVHDX(t *testing.T) {
 	require.NoError(t, guard.Close())
 
 	require.Equal(t, []image.ExcludedFolder{{
+		Source:      disksource.SourceKopiaCache,
 		Path:        `Users\someone\AppData\Local\kopia\0123456789abcdef\server-contents`,
+		Recursive:   true,
 		Files:       1,
 		Bytes:       3 << 20,
 		SafeAsZeros: true,

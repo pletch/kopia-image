@@ -181,28 +181,6 @@ func defaultCaches(root, cacheParent string) []string {
 	return out
 }
 
-// relativeToVolume returns an absolute path relative to the volume mounted at
-// mountPoints, using the longest mount point that contains it.
-func relativeToVolume(path string, mountPoints []string) (string, bool) {
-	p := strings.ToLower(filepath.Clean(path))
-
-	best := -1
-
-	for _, mp := range mountPoints {
-		m := strings.ToLower(strings.TrimSuffix(filepath.Clean(mp), `\`) + `\`)
-
-		if (strings.HasPrefix(p, m) || p+`\` == m) && len(m) > best {
-			best = len(m)
-		}
-	}
-
-	if best < 0 {
-		return "", false
-	}
-
-	return filepath.Clean(path)[min(best, len(filepath.Clean(path))):], true
-}
-
 // isPlainDir reports whether path is a directory and not a reparse point.
 func isPlainDir(path string) bool {
 	fi, err := os.Lstat(path)

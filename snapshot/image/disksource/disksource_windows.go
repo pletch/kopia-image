@@ -391,8 +391,8 @@ func (s *Session) openShadowVolume(ctx context.Context, pp *PartitionPlan, state
 		return image.VolumeSource{}, errors.Wrap(err, "unable to examine the shadow copy")
 	}
 
-	if opt.ExcludeKopiaCaches {
-		excludeKopiaCaches(vol, dev.Path()+`\`, pp.Volume, opt.KopiaCacheDirs, logf)
+	if opt.ExcludeKopiaCaches || opt.ExcludeFilesNotToSnapshot {
+		excludeFiles(vol, dev.Path()+`\`, pp.Volume, opt, logf)
 	}
 
 	free, err := vol.FreeExtents()
@@ -429,30 +429,6 @@ func (s *Session) openShadowVolume(ctx context.Context, pp *PartitionPlan, state
 		ExcludedFiles:   vol.ExcludedFiles,
 		Bitmap:          vol.Bitmap,
 	}, nil
-}
-
-// excludeKopiaCaches reads the files of the kopia caches on a volume as
-// zeros. Leaving them in only makes the image larger, so failures are
-// reported and imaging goes on.
-func excludeKopiaCaches(vol *ntfs.Volume, root string, v *VolumeInfo, extra []string, logf func(string, ...any)) {
-	folders := KopiaCacheFolders(root, v.MountPoints, extra)
-	if len(folders) == 0 {
-		return
-	}
-
-	// kopia discards and refetches cache files that hold zeros
-	if err := vol.Exclude(root, folders, true); err != nil {
-		logf("%v: some files of kopia's caches are imaged: %v", describeVolume(v), err)
-	}
-
-	var files int64
-
-	for _, f := range vol.Excluded {
-		files += f.Files
-	}
-
-	logf("%v: %v files of kopia's caches in %v folders, %v bytes, are read as zeros",
-		describeVolume(v), files, len(vol.Excluded), image.ExcludedBytes(vol.Excluded))
 }
 
 type maskedReadCloser struct {

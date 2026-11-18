@@ -231,9 +231,19 @@ func volumeEntryPrefix(partitionNumber int, label string) string {
 
 // ExcludedFolder is a folder of a volume whose files were read as zeros.
 type ExcludedFolder struct {
+	// Source says why the files were left out: "kopia cache", or the
+	// registry list and value name, e.g. `FilesNotToSnapshot\OutlookOST`.
+	Source string `json:"source,omitempty"`
+
 	// Path is relative to the volume root, e.g.
 	// `Users\me\AppData\Local\kopia\0123456789abcdef\server-contents`.
 	Path string `json:"path"`
+
+	// Pattern selects the files of the folder by name, with * and ?
+	// wildcards; an empty pattern selects every file. Recursive includes
+	// the folder's subfolders.
+	Pattern   string `json:"pattern,omitempty"`
+	Recursive bool   `json:"recursive,omitempty"`
 
 	// Files is the number of files read as zeros, and Bytes the size of
 	// their clusters.

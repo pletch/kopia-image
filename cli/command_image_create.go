@@ -59,6 +59,7 @@ type commandImageCreate struct {
 	statePath     string
 	drivers       bool
 	excludeCaches bool
+	excludeFNTS   bool
 
 	// req records the outcome of a run that KopiaUI started without a
 	// window; loc tells where.
@@ -81,6 +82,7 @@ func (c *commandImageCreate) setup(svc appServices, parent commandParent) {
 	cmd.Flag("description", "Free-form snapshot description").StringVar(&c.description)
 	cmd.Flag("drivers", "Store this computer's storage, network and USB drivers with the images, for recovery media built on other computers").Default("true").BoolVar(&c.drivers)
 	cmd.Flag("exclude-kopia-caches", "Read the files of kopia's caches as zeros, so that their changes do not enlarge images; after a restore, kopia refetches what it needs").Default("true").BoolVar(&c.excludeCaches)
+	cmd.Flag("exclude-files-not-to-snapshot", "Read the files that Windows and programs leave out of backup shadow copies (FilesNotToSnapshot, e.g. Outlook mailbox caches) as zeros; a restore deletes them").Default("true").BoolVar(&c.excludeFNTS)
 	cmd.Flag("state-file", "Override the file that records shadow copies to remove after a crash").Hidden().StringVar(&c.statePath)
 	c.req.flag(cmd)
 	cmd.Action(svc.noRepositoryAction(c.req.recording("create", &c.loc, c.runWithWriter)))
@@ -345,8 +347,9 @@ func (c *commandImageCreate) imageDisk(ctx context.Context, rep repo.RepositoryW
 	}
 
 	session, err := disksource.OpenSession(ctx, plan, state, disksource.SessionOptions{
-		ExcludeKopiaCaches: c.excludeCaches,
-		KopiaCacheDirs:     c.ownCacheDirs(),
+		ExcludeKopiaCaches:        c.excludeCaches,
+		ExcludeFilesNotToSnapshot: c.excludeFNTS,
+		KopiaCacheDirs:            c.ownCacheDirs(),
 	}, logf)
 	if err != nil {
 		return nil, nil, errors.Wrap(err, "unable to prepare the disk")

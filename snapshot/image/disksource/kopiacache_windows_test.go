@@ -76,24 +76,3 @@ func TestKopiaCacheFolders(t *testing.T) {
 		`caches\k1\own-writes`,
 	}, got)
 }
-
-func TestRelativeToVolume(t *testing.T) {
-	for _, tc := range []struct {
-		path   string
-		mounts []string
-		want   string
-		ok     bool
-	}{
-		{`C:\Users\me\x`, []string{`C:\`}, `Users\me\x`, true},
-		{`c:\users\me\x\`, []string{`C:\`}, `users\me\x`, true},
-		{`D:\mnt\data\cache`, []string{`D:\mnt\data\`, `E:\`}, `cache`, true},
-		{`D:\mnt\database`, []string{`D:\mnt\data\`}, ``, false},
-		{`C:\`, []string{`C:\`}, ``, true},
-		{`E:\x`, []string{`C:\`}, ``, false},
-		{`E:\x`, nil, ``, false},
-	} {
-		got, ok := relativeToVolume(tc.path, tc.mounts)
-		require.Equal(t, tc.ok, ok, tc.path)
-		require.Equal(t, tc.want, got, tc.path)
-	}
-}
