@@ -140,7 +140,7 @@ func (f *fileWithMetadata) Close() error {
 }
 
 func (fsf *filesystemFile) Open(ctx context.Context) (fs.Reader, error) {
-	f, err := os.Open(fsf.fullPath())
+	f, err := openPreservingAccessTime(fsf.fullPath(), false)
 	if err != nil {
 		return nil, errors.Wrap(err, "unable to open local file")
 	}

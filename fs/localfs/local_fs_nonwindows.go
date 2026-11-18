@@ -37,3 +37,8 @@ func platformSpecificDeviceInfo(fi os.FileInfo) fs.DeviceInfo {
 func trailingSeparator(_ *filesystemDirectory) string {
 	return ""
 }
+
+// openPreservingAccessTime opens a file or directory for reading.
+func openPreservingAccessTime(path string, _ bool) (*os.File, error) {
+	return os.Open(path) //nolint:gosec,wrapcheck
+}
