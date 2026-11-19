@@ -109,7 +109,8 @@ var (
 // ParseDeviceDrivers parses the output of "pnputil /enum-devices /connected"
 // and returns the published names, in lower case, of the third-party drivers
 // that hardware devices use. Like ParseDriverList, it recognizes fields by
-// their values: a device's instance ID comes first, its driver is oemN.inf.
+// their values: a device's instance ID comes first, its driver is the first
+// oemN.inf, and any later oemN.inf names its extension drivers.
 // It returns nil when the output lists no device, as when pnputil does not
 // know the command.
 func ParseDeviceDrivers(out string) map[string]bool {
@@ -146,7 +147,9 @@ func ParseDeviceDrivers(out string) map[string]bool {
 		switch {
 		case instanceID == "":
 			instanceID = value
-		case publishedNameRE.MatchString(value):
+		// the device's driver comes first; extension drivers, which
+		// customize it, follow and are not needed to reach the device
+		case driver == "" && publishedNameRE.MatchString(value):
 			driver = value
 		}
 	}

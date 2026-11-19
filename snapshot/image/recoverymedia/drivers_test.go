@@ -104,6 +104,35 @@ func TestStartScript(t *testing.T) {
 	require.Equal(t, "[LaunchApps]\r\n%SYSTEMROOT%\\System32\\cmd.exe, /c X:\\kopia\\start.cmd\r\n", WinpeshlINI())
 }
 
+// pnputilDevicesExtension is from a laptop whose Wi-Fi adapter has an
+// extension driver.
+const pnputilDevicesExtension = "Microsoft PnP Utility\r\n" +
+	"\r\n" +
+	"Instance ID:                SWD\\Wintun\\{37217669-42DA-4657-A55B-0D995D328250}\r\n" +
+	"Device Description:         Tailscale Tunnel\r\n" +
+	"Class Name:                 Net\r\n" +
+	"Class GUID:                 {4d36e972-e325-11ce-bfc1-08002be10318}\r\n" +
+	"Manufacturer Name:          WireGuard LLC\r\n" +
+	"Status:                     Started\r\n" +
+	"Driver Name:                oem3.inf\r\n" +
+	"\r\n" +
+	"Instance ID:                PCI\\VEN_8086&DEV_51F0&SUBSYS_00948086&REV_01\\3&11583659&3&A3\r\n" +
+	"Device Description:         Intel(R) Wi-Fi 6E AX211 160MHz\r\n" +
+	"Class Name:                 Net\r\n" +
+	"Class GUID:                 {4d36e972-e325-11ce-bfc1-08002be10318}\r\n" +
+	"Manufacturer Name:          Intel Corporation\r\n" +
+	"Status:                     Started\r\n" +
+	"Driver Name:                oem100.inf\r\n" +
+	"Extension Driver Names:     oem111.inf\r\n" +
+	"\r\n" +
+	"Instance ID:                BTH\\MS_BTHPAN\\6&2108ecab&0&2\r\n" +
+	"Device Description:         Bluetooth Device (Personal Area Network)\r\n" +
+	"Class Name:                 Net\r\n" +
+	"Class GUID:                 {4d36e972-e325-11ce-bfc1-08002be10318}\r\n" +
+	"Manufacturer Name:          Microsoft\r\n" +
+	"Status:                     Started\r\n" +
+	"Driver Name:                bthpan.inf\r\n"
+
 const pnputilDevices = "Microsoft PnP Utility\r\n" +
 	"\r\n" +
 	"Instance ID:                PCI\\VEN_10EC&DEV_8125&SUBSYS_87D71043&REV_05\\01000000684CE00000\r\n" +
@@ -132,6 +161,10 @@ const pnputilDevices = "Microsoft PnP Utility\r\n" +
 
 func TestParseDeviceDrivers(t *testing.T) {
 	require.Equal(t, map[string]bool{"oem40.inf": true, "oem3.inf": true}, ParseDeviceDrivers(pnputilDevices))
+
+	// a laptop's Wi-Fi adapter with an extension driver, next to a virtual
+	// adapter: the adapter's driver is the first oemN.inf, not the extension
+	require.Equal(t, map[string]bool{"oem100.inf": true}, ParseDeviceDrivers(pnputilDevicesExtension))
 
 	// a computer whose hardware uses no third-party driver
 	require.Equal(t, map[string]bool{}, ParseDeviceDrivers("Microsoft PnP Utility\r\n\r\nInstance ID: USB\\ROOT_HUB30\\4&1\r\nDriver Name: usbhub3.inf\r\n"))
