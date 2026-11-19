@@ -38,6 +38,7 @@ const (
 	mediaFolder = "folder"
 	mediaVHDX   = "vhdx"
 	mediaUSB    = "usb"
+	mediaISO    = "iso"
 )
 
 type commandImageRecoveryMedia struct {
@@ -59,6 +60,7 @@ type commandImageRecoveryMediaCreate struct {
 	usb           string
 	outputDir     string
 	vhdx          string
+	iso           string
 	connectFrom   string
 	embedPassword bool
 	caCertFiles   []string
@@ -86,6 +88,7 @@ func (c *commandImageRecoveryMediaCreate) setup(svc advancedAppServices, parent 
 	cmd.Flag("usb", `USB disk to erase and make bootable: its number or \\.\PhysicalDriveN (default: choose from a list)`).StringVar(&c.usb)
 	cmd.Flag("output-dir", "Write the media's files to this folder, to copy onto any FAT32 USB stick").StringVar(&c.outputDir)
 	cmd.Flag("vhdx", "Write a bootable virtual disk for Hyper-V, to test the media").StringVar(&c.vhdx)
+	cmd.Flag("iso", "Write an ISO file, to keep and write to a USB stick with a tool such as Rufus when needed; it does not boot as a DVD or in a virtual machine").StringVar(&c.iso)
 	cmd.Flag("connect-from", "Repository connection file to put on the media, such as one with read-only access (default: the current one)").StringVar(&c.connectFrom)
 	cmd.Flag("embed-password", "Put the repository password on the media; anyone with the media can then read every image").BoolVar(&c.embedPassword)
 	cmd.Flag("ca-cert", "PEM file of a certificate authority for the recovery system to trust; repeatable").StringsVar(&c.caCertFiles)
@@ -232,23 +235,26 @@ func (c *commandImageRecoveryMediaCreate) prepareStateDir() error {
 func (c *commandImageRecoveryMediaCreate) validateTarget(ctx context.Context, rep repo.Repository) (*mediaTarget, error) {
 	n := 0
 
-	for _, s := range []string{c.usb, c.outputDir, c.vhdx} {
+	for _, s := range []string{c.usb, c.outputDir, c.vhdx, c.iso} {
 		if s != "" {
 			n++
 		}
 	}
 
 	if n > 1 {
-		return nil, errors.New("pass only one of --usb, --output-dir or --vhdx")
+		return nil, errors.New("pass only one of --usb, --output-dir, --vhdx or --iso")
 	}
 
 	if n == 0 {
-		usb, err := c.pickUSB()
-		if err != nil {
+		if err := c.pickTarget(); err != nil {
 			return nil, err
 		}
+	}
 
-		c.usb = usb
+	if c.embedPassword && c.iso != "" {
+		if err := c.confirmPasswordInISO(); err != nil {
+			return nil, err
+		}
 	}
 
 	switch {
@@ -268,6 +274,16 @@ func (c *commandImageRecoveryMediaCreate) validateTarget(ctx context.Context, re
 		}
 
 		return &mediaTarget{kind: mediaVHDX, path: c.vhdx}, nil
+	case c.iso != "":
+		if !strings.EqualFold(filepath.Ext(c.iso), ".iso") {
+			return nil, errors.Errorf("%v does not end with .iso", c.iso)
+		}
+
+		if _, err := os.Stat(c.iso); err == nil {
+			return nil, errors.Errorf("%v already exists", c.iso)
+		}
+
+		return &mediaTarget{kind: mediaISO, path: c.iso}, nil
 	default:
 		return c.validateUSB(ctx, rep)
 	}
@@ -596,6 +612,8 @@ func (c *commandImageRecoveryMediaCreate) write(ctx context.Context, built *reco
 		err = recoverymedia.WriteFolder(built.MediaDir, t.path)
 	case mediaVHDX:
 		err = recoverymedia.WriteVHDX(ctx, built.MediaDir, t.path, c.workDir)
+	case mediaISO:
+		err = recoverymedia.WriteISO(ctx, built.MediaDir, t.path)
 	default:
 		err = recoverymedia.WriteUSB(ctx, built.MediaDir, t.num, t.disk.Size, c.workDir)
 	}
@@ -611,8 +629,11 @@ func (c *commandImageRecoveryMediaCreate) printSummary(built *recoverymedia.Buil
 		c.out.printStdout("  driver not added: %v\n", f)
 	}
 
-	if t.kind == mediaFolder {
+	switch t.kind {
+	case mediaFolder:
 		c.out.printStdout("Copy the folder's contents to a FAT32 USB stick. ")
+	case mediaISO:
+		c.out.printStdout("Write the ISO file to a USB stick with a tool such as Rufus when needed, and keep a copy away from the computers it restores. It does not boot as a DVD or in a virtual machine: test the media with --vhdx. ")
 	}
 
 	c.out.printStdout("Boot from the media to test it, and keep %v with it.\n", recoverymedia.KitFileName)
@@ -1096,12 +1117,13 @@ func (c *commandImageRecoveryMediaKit) run(ctx context.Context, rep repo.Reposit
 	return errors.Wrap(os.WriteFile(c.output, []byte(kit), 0o600), "unable to write the kit") //nolint:mnd
 }
 
-// pickUSB asks which USB disk to make recovery media when no target is
-// given, as when the media is created from the Images page of KopiaUI.
-func (c *commandImageRecoveryMediaCreate) pickUSB() (string, error) {
+// pickTarget asks where to write the media when no target is given: to a
+// USB disk, which it erases, or to an ISO file to write to one later. It
+// sets c.usb or c.iso.
+func (c *commandImageRecoveryMediaCreate) pickTarget() error {
 	disks, err := imagerestore.ListDisks()
 	if err != nil {
-		return "", errors.Wrap(err, "unable to list the disks")
+		return errors.Wrap(err, "unable to list the disks")
 	}
 
 	disks = slices.DeleteFunc(disks, func(d imagerestore.DiskInfo) bool {
@@ -1109,30 +1131,85 @@ func (c *commandImageRecoveryMediaCreate) pickUSB() (string, error) {
 	})
 
 	if len(disks) == 0 {
-		return "", errors.Errorf("no USB disk of %v or more is attached: insert a USB stick, or pass --output-dir or --vhdx", units.BytesString(int64(minRecoveryUSBBytes)))
+		c.out.printStdout("No USB disk of %v or more is attached.\n", units.BytesString(int64(minRecoveryUSBBytes)))
+	} else {
+		c.out.printStdout("USB disks:\n")
 	}
-
-	c.out.printStdout("USB disks:\n")
 
 	for i := range disks {
 		c.out.printStdout("  %v. %v\n     holds %v\n", i+1, disks[i].Describe(), strings.Join(disks[i].DescribeVolumes(), "; "))
 	}
 
+	c.out.printStdout("  i. Save an ISO file instead, to write to a USB stick with a tool such as Rufus when needed\n")
+
 	for {
-		c.out.printStdout("USB disk to make recovery media, which erases it (number from the list, or q to quit): ")
+		if len(disks) == 0 {
+			c.out.printStdout("Type i to save an ISO file, or q to quit: ")
+		} else {
+			c.out.printStdout("USB disk to make recovery media, which erases it (number from the list), i for an ISO file, or q to quit: ")
+		}
 
 		a, err := readLine(c.svc)
 		if err != nil {
-			return "", err
+			return err
 		}
 
 		a = strings.TrimSpace(a)
-		if strings.EqualFold(a, "q") {
-			return "", errors.New("canceled; nothing was written")
+
+		switch {
+		case strings.EqualFold(a, "q"):
+			return errors.New("canceled; nothing was written")
+		case strings.EqualFold(a, "i"):
+			return c.pickISO()
 		}
 
 		if n, err := strconv.Atoi(a); err == nil && n >= 1 && n <= len(disks) {
-			return disks[n-1].Path, nil
+			c.usb = disks[n-1].Path
+			return nil
 		}
 	}
+}
+
+// pickISO asks where to save the ISO file.
+func (c *commandImageRecoveryMediaCreate) pickISO() error {
+	def := ""
+	if home, err := os.UserHomeDir(); err == nil {
+		computer, _ := os.Hostname()
+		def = filepath.Join(home, "Documents", "kopia-recovery-"+computer+"-"+clock.Now().Format("2006-01-02")+".iso")
+	}
+
+	c.out.printStdout("ISO file to write [%v]: ", def)
+
+	a, err := readLine(c.svc)
+	if err != nil {
+		return err
+	}
+
+	c.iso = strings.Trim(strings.TrimSpace(a), `"`)
+	if c.iso == "" {
+		c.iso = def
+	}
+
+	if c.iso == "" {
+		return errors.New("no ISO file given")
+	}
+
+	return nil
+}
+
+// confirmPasswordInISO asks before putting the password in an ISO file,
+// which is easily copied and synchronized to other places.
+func (c *commandImageRecoveryMediaCreate) confirmPasswordInISO() error {
+	c.out.printStdout("--embed-password puts the repository password in the ISO file: anyone with a copy of the file can read every image. Type yes to continue: ")
+
+	a, err := readLine(c.svc)
+	if err != nil {
+		return err
+	}
+
+	if !strings.EqualFold(strings.TrimSpace(a), "yes") {
+		return errors.New("canceled; nothing was written")
+	}
+
+	return nil
 }

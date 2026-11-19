@@ -238,7 +238,33 @@ func (w *workspace) copyBootFiles(res *BuildResult) error {
 		sdi = filepath.Join(mnt, `Windows\Boot\DVD\EFI\boot.sdi`)
 	}
 
-	return CopyFile(sdi, filepath.Join(media, MediaBootSDI))
+	if err := CopyFile(sdi, filepath.Join(media, MediaBootSDI)); err != nil {
+		return err
+	}
+
+	return w.copyEFIBootImage()
+}
+
+// copyEFIBootImage copies the image's DVD boot image, which only an ISO file
+// uses, or this computer's when the image has none.
+func (w *workspace) copyEFIBootImage() error {
+	var found []string
+
+	if windir, err := windows.GetWindowsDirectory(); err == nil {
+		host, _ := filepath.Glob(filepath.Join(windir, EFIBootImagePattern))
+		found = host
+	}
+
+	if ours, _ := filepath.Glob(filepath.Join(w.mountDir(), "Windows", EFIBootImagePattern)); len(ours) > 0 {
+		found = ours
+	}
+
+	if len(found) == 0 {
+		w.logf("Neither the recovery image nor this computer has a DVD boot image: the media cannot be written as an ISO file\n")
+		return nil
+	}
+
+	return CopyFile(found[0], filepath.Join(w.mediaDir(), MediaEFIBootImage))
 }
 
 func (w *workspace) finishMedia(opt *BuildOptions, res *BuildResult) error {

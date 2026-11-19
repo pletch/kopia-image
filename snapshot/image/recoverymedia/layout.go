@@ -19,7 +19,16 @@ const (
 	MediaBCD         = `EFI\Microsoft\Boot\BCD`
 	MediaBootSDI     = `boot\boot.sdi`
 	MediaBootWIM     = `sources\boot.wim`
+
+	// MediaEFIBootImage is the El Torito boot image of an ISO file: a FAT
+	// image holding the boot manager, which firmware starts from a DVD.
+	MediaEFIBootImage = `EFI\Microsoft\Boot\efisys.bin`
 )
+
+// EFIBootImagePattern matches, under a Windows folder, the boot images of
+// Microsoft's DVDs, one folder per language. The noprompt variant boots
+// without asking to press a key.
+const EFIBootImagePattern = `Boot\DVD\EFI\*\efisys_noprompt.bin`
 
 // FileCopy is a file or folder copied from the mounted WinRE image to the media.
 type FileCopy struct {

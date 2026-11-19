@@ -19,6 +19,9 @@ func WriteFolder(string, string) error { return ErrNotSupported }
 // WriteVHDX is supported only on Windows.
 func WriteVHDX(context.Context, string, string, string) error { return ErrNotSupported }
 
+// WriteISO is supported only on Windows.
+func WriteISO(context.Context, string, string) error { return ErrNotSupported }
+
 // WriteUSB is supported only on Windows.
 func WriteUSB(context.Context, string, uint32, int64, string) error { return ErrNotSupported }
 
