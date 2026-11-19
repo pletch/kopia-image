@@ -87,10 +87,16 @@
     },
     // Opens a console window that builds recovery media for this window's
     // repository, after the UAC prompt, adding the drivers stored with the
-    // images of the computers named in driverHosts, if any. Resolves to
+    // images of the computers named in driverHosts, if any, or of every
+    // computer with options.allDrivers. With options.iso a save dialog asks
+    // where to save an ISO file instead of erasing a USB disk. Resolves to
     // "started" or "canceled".
-    createRecoveryMediaElevated: function (driverHosts) {
-      return postElevated("create-recovery-media", { driverHosts: driverHosts || [] });
+    createRecoveryMediaElevated: function (driverHosts, options) {
+      return postElevated("create-recovery-media", {
+        driverHosts: driverHosts || [],
+        allDrivers: !!(options && options.allDrivers),
+        iso: !!(options && options.iso),
+      });
     },
     // Lists the connected repositories as {id, description, active}, active
     // marking the one this window shows.

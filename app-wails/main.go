@@ -118,6 +118,9 @@ type shell struct {
 
 	// runDetached is nil except in tests: runElevatedDetached is used.
 	runDetached func(exe string, args []string) error
+
+	// saveISO is nil except in tests: a save dialog is shown.
+	saveISO isoSaveDialog
 }
 
 func main() {

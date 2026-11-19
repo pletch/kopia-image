@@ -3,9 +3,12 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 )
 
 // errElevationCanceled is returned when the person declines the
@@ -50,18 +53,34 @@ func validateDriverHosts(hosts []string) error {
 	return nil
 }
 
+// recoveryMediaRequest is what the web UI asks recovery media to be built
+// with.
+type recoveryMediaRequest struct {
+	// DriverHosts are the computers whose drivers the media gets.
+	DriverHosts []string `json:"driverHosts"`
+
+	// AllDrivers adds the drivers of every computer whose images store
+	// them, including computers imaged later than the page was loaded.
+	AllDrivers bool `json:"allDrivers"`
+
+	// ISO saves the media as an ISO file, which a save dialog names, rather
+	// than erasing a USB disk.
+	ISO bool `json:"iso"`
+}
+
 // startRecoveryMedia opens an administrator console that runs
 // "kopia image recovery-media create" for a repository, adding the drivers
-// stored with the images of driverHosts. The command lists the USB disks,
-// asks which one to erase and shows its progress; building the media needs
-// an administrator, which KopiaUI does not run as. It returns
-// errElevationCanceled when the person declines the prompt.
-func (s *shell) startRecoveryMedia(repoID string, driverHosts []string) error {
+// stored with the images of the requested computers. Unless an ISO file is
+// asked for, the command lists the USB disks, asks which one to erase and
+// shows its progress; building the media needs an administrator, which
+// KopiaUI does not run as. It returns errElevationCanceled when the person
+// declines the prompt or cancels the save dialog.
+func (s *shell) startRecoveryMedia(repoID string, req *recoveryMediaRequest) error {
 	if s.server(repoID) == nil {
 		return fmt.Errorf("unknown repository %q", repoID)
 	}
 
-	if err := validateDriverHosts(driverHosts); err != nil {
+	if err := validateDriverHosts(req.DriverHosts); err != nil {
 		return err
 	}
 
@@ -70,11 +89,90 @@ func (s *shell) startRecoveryMedia(repoID string, driverHosts []string) error {
 		"image", "recovery-media", "create",
 	}
 
-	for _, h := range driverHosts {
-		args = append(args, "--drivers-from", h)
+	if req.AllDrivers {
+		args = append(args, "--drivers-from", "all")
+	} else {
+		for _, h := range req.DriverHosts {
+			args = append(args, "--drivers-from", h)
+		}
+	}
+
+	if req.ISO {
+		path, err := s.isoSaveDialog()(defaultISOName())
+		if err != nil {
+			return err
+		}
+
+		if path == "" {
+			return errElevationCanceled
+		}
+
+		if err := validateISOPath(path); err != nil {
+			return err
+		}
+
+		args = append(args, "--iso", path)
 	}
 
 	return s.elevatedConsole()(s.kopiaPath, args)
+}
+
+// isoSaveDialog asks where to save an ISO file, suggesting a name, and
+// returns "" when the person cancels.
+type isoSaveDialog func(name string) (string, error)
+
+func (s *shell) isoSaveDialog() isoSaveDialog {
+	if s.saveISO != nil {
+		return s.saveISO
+	}
+
+	return func(name string) (string, error) {
+		d := s.app.Dialog.SaveFile().
+			SetMessage("Save the recovery media as").
+			SetFilename(name).
+			AddFilter("ISO files (*.iso)", "*.iso").
+			CanCreateDirectories(true)
+
+		if home, err := os.UserHomeDir(); err == nil {
+			d.SetDirectory(filepath.Join(home, "Documents"))
+		}
+
+		if w := s.app.Window.Current(); w != nil {
+			d.AttachToWindow(w)
+		}
+
+		path, err := d.PromptForSingleSelection()
+		if err != nil {
+			return "", fmt.Errorf("unable to ask where to save the ISO file: %w", err)
+		}
+
+		if path != "" && !strings.EqualFold(filepath.Ext(path), ".iso") {
+			path += ".iso"
+		}
+
+		return path, nil
+	}
+}
+
+func defaultISOName() string {
+	computer, _ := os.Hostname()
+
+	return "kopia-recovery-" + computer + "-" + time.Now().Format("2006-01-02") + ".iso"
+}
+
+// validateISOPath checks the ISO file's path, which reaches the
+// administrator command line: an absolute .iso path that does not exist.
+func validateISOPath(path string) error {
+	if !filepath.IsAbs(path) || filepath.VolumeName(path) == "" || !strings.EqualFold(filepath.Ext(path), ".iso") ||
+		strings.HasPrefix(path, "-") || strings.ContainsAny(path, "\"\x00\r\n") {
+		return fmt.Errorf("%w: %q is not a path for an ISO file", errInvalidMedia, path)
+	}
+
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("%w: %v already exists; choose another name", errInvalidMedia, path)
+	}
+
+	return nil
 }
 
 // startImage starts "kopia image create" as administrator, after the UAC

@@ -299,6 +299,51 @@ func TestServeShim_createImageAndRecoveryMedia(t *testing.T) {
 		t.Fatalf("ran %q, want %q", consoles, want)
 	}
 
+	// the drivers of every computer, saved as an ISO file named in a dialog
+	iso := filepath.Join(t.TempDir(), "media.iso")
+	sh.saveISO = func(name string) (string, error) {
+		if !strings.HasPrefix(name, "kopia-recovery-") || !strings.HasSuffix(name, ".iso") {
+			t.Errorf("suggested name %q", name)
+		}
+
+		return iso, nil
+	}
+
+	if rec := post("create-recovery-media", `{"driverHosts":["LAPTOP"],"allDrivers":true,"iso":true}`); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"started"`) {
+		t.Fatalf("create-recovery-media as ISO: got %v: %s", rec.Code, rec.Body)
+	}
+
+	if want := []string{sh.kopiaPath, "--config-file", cfg, "image", "recovery-media", "create", "--drivers-from", "all", "--iso", iso}; len(consoles) != 3 || !slices.Equal(consoles[2], want) {
+		t.Fatalf("ran %q, want %q", consoles, want)
+	}
+
+	// a canceled save dialog runs nothing
+	sh.saveISO = func(string) (string, error) { return "", nil }
+
+	if rec := post("create-recovery-media", `{"iso":true}`); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"canceled"`) {
+		t.Fatalf("canceled save dialog: got %v: %s", rec.Code, rec.Body)
+	}
+
+	// an ISO path reaches the administrator command line only as such
+	existing := filepath.Join(t.TempDir(), "old.iso")
+	if err := os.WriteFile(existing, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, p := range []string{"media.iso", `-x.iso`, `C:\media.img`, `C:\a"b.iso`, existing} {
+		sh.saveISO = func(string) (string, error) { return p, nil }
+
+		if rec := post("create-recovery-media", `{"iso":true}`); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid recovery media options") {
+			t.Fatalf("%v: got %v: %s", p, rec.Code, rec.Body)
+		}
+	}
+
+	if len(consoles) != 3 {
+		t.Fatalf("invalid ISO paths ran %q", consoles[3:])
+	}
+
+	consoles = consoles[:2]
+
 	// computer names reach the administrator command line only as such
 	for _, body := range []string{
 		`{"driverHosts":["--config-file=x"]}`, `{"driverHosts":["-x"]}`, `{"driverHosts":["a b"]}`,
