@@ -189,6 +189,13 @@ func handleImagesStatus(ctx context.Context, rc requestContext) (any, *apiError)
 		resp.Schedule, resp.ScheduleError = readImageStatusFile(schedule.SettingsPath(stateDir), schedule.ReadSettings)
 		resp.LastRequest, _ = readImageStatusFile(schedule.RequestPath(stateDir), schedule.ReadRequest)
 
+		// images are created by another process: once a run ends, read the
+		// repository again, so that the images, the drivers they store and
+		// their sizes show without waiting for the next periodic refresh
+		if r := resp.LastRun; r != nil && !r.EndTime.IsZero() && !rc.srv.refreshedSince(r.EndTime) {
+			rc.srv.Refresh()
+		}
+
 		// a file not updated for a minute belongs to a run that ended without
 		// removing it
 		if p, _ := readImageStatusFile(disksource.ProgressPathIn(stateDir), disksource.ReadRunProgress); p != nil && clock.Now().Sub(p.UpdatedAt) < imageProgressStale {

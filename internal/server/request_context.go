@@ -27,6 +27,7 @@ type serverInterface interface {
 	snapshotAllSourceManagers() map[snapshot.SourceInfo]*sourceManager
 	taskManager() *uitask.Manager
 	Refresh()
+	refreshedSince(t time.Time) bool
 	getMountController(ctx context.Context, rep repo.Repository, oid object.ID, createIfNotFound bool, webdavURL string) (mount.Controller, error)
 	deleteMount(oid object.ID)
 	listMounts() map[object.ID]mount.Controller

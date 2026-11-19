@@ -123,6 +123,10 @@ type Server struct {
 	// +checklocks:nextRefreshTimeLock
 	nextRefreshTime time.Time
 
+	// lastRefreshStart is when the last refresh began reading the repository.
+	// +checklocks:nextRefreshTimeLock
+	lastRefreshStart time.Time
+
 	grpcServerState
 }
 
@@ -473,6 +477,15 @@ func (s *Server) refreshAsync() {
 	go s.Refresh()
 }
 
+// refreshedSince reports whether a refresh began reading the repository at or
+// after t, so that it sees what other processes wrote to it before t.
+func (s *Server) refreshedSince(t time.Time) bool {
+	s.nextRefreshTimeLock.Lock()
+	defer s.nextRefreshTimeLock.Unlock()
+
+	return !s.lastRefreshStart.Before(t)
+}
+
 // Refresh refreshes the state of the server in response to external signal (e.g. SIGHUP).
 func (s *Server) Refresh() {
 	s.refreshMutex.Lock()
@@ -499,7 +512,8 @@ func (s *Server) refresh(ctx context.Context) error {
 	}
 
 	s.nextRefreshTimeLock.Lock()
-	s.nextRefreshTime = clock.Now().Add(s.options.RefreshInterval)
+	s.lastRefreshStart = clock.Now()
+	s.nextRefreshTime = s.lastRefreshStart.Add(s.options.RefreshInterval)
 	s.nextRefreshTimeLock.Unlock()
 
 	if err := rep.Refresh(ctx); err != nil {

@@ -663,3 +663,65 @@ func TestImagesDrivers(t *testing.T) {
 	require.Len(t, images.Images, 1)
 	require.Equal(t, []image.Driver{driver}, images.Images[0].Drivers)
 }
+
+func TestImagesStatus_refreshesAfterRun(t *testing.T) {
+	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
+
+	host := &fakeImageHost{dir: testutil.TempDirectory(t)}
+	cli := startImageServer(t, env, host)
+
+	resp, err := serverapi.ImageDrivers(ctx, cli)
+	require.NoError(t, err)
+	require.Empty(t, resp.Hosts)
+
+	// "kopia image create" runs in another process, with its own connection
+	dir := testutil.TempDirectory(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "netwtw6e.inf"), []byte("[Version]"), 0o600))
+
+	path, err := image.DiskSourcePath("0f6ab3f2-1c3d-4e5f-8a9b-0c1d2e3f4a51")
+	require.NoError(t, err)
+
+	data := bytes.Repeat([]byte{1, 2, 3, 4}, 1<<18)
+	driver := image.Driver{Class: "Net", INF: "netwtw6e.inf", Version: "24.80.0.2", Entry: "oem100"}
+	start := clock.Now()
+
+	other := env.MustOpenAnother(t)
+
+	man, _, err := image.Create(ctx, other, &image.CreateOptions{
+		Source: snapshot.SourceInfo{Host: "laptop", UserName: "u", Path: path},
+		Layout: &image.Layout{
+			DiskGUID:   "0f6ab3f2-1c3d-4e5f-8a9b-0c1d2e3f4a51",
+			SectorSize: 512,
+			DiskSize:   1 << 30,
+			Partitions: []image.Partition{{
+				Number: 1, TypeGUID: image.PartitionTypeBasicData, UniqueGUID: "11111111-2222-4333-8444-555555555551",
+				Offset: 1 << 20, Length: int64(len(data)), Name: "data",
+			}},
+		},
+		Volumes: []image.VolumeSource{{
+			PartitionNumber: 1, Label: "D", Kind: image.VolumeKindRaw, Size: int64(len(data)),
+			Open: func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(data)), nil },
+		}},
+		Drivers: []image.DriverSource{{Driver: driver, Dir: dir}},
+	})
+	require.NoError(t, err)
+	require.NoError(t, other.Flush(ctx))
+
+	// the run records its end; the page reads the status while it polls
+	require.NoError(t, disksource.WriteRunStatus(filepath.Join(host.dir, "image-last-run.json"), &disksource.RunStatus{
+		Volumes: []string{"C:"}, StartTime: start, EndTime: clock.Now(), Success: true,
+	}))
+
+	_, err = serverapi.ImageStatus(ctx, cli)
+	require.NoError(t, err)
+
+	resp, err = serverapi.ImageDrivers(ctx, cli)
+	require.NoError(t, err)
+	require.Len(t, resp.Hosts, 1)
+	require.Equal(t, man.ID, resp.Hosts[0].ImageID)
+	require.Equal(t, []image.Driver{driver}, resp.Hosts[0].Drivers)
+
+	images, err := serverapi.ListImages(ctx, cli, true)
+	require.NoError(t, err)
+	require.Len(t, images.Images, 1)
+}
