@@ -7,6 +7,8 @@ import (
 	"sync"
 
 	"github.com/kopia/kopia/repo"
+	"github.com/kopia/kopia/repo/content"
+	"github.com/kopia/kopia/repo/manifest"
 	"github.com/kopia/kopia/snapshot"
 	"github.com/kopia/kopia/snapshot/image"
 )
@@ -23,6 +25,17 @@ type imageSpaceCache struct {
 
 	// running is held by the calculation in progress.
 	running sync.Mutex
+
+	// contents are the contents of each image, and sources the source of
+	// each image in contents; sizes the stored size of each content. Images
+	// and contents do not change, so a set of images that gained an image
+	// reads only the new image and the sizes of its new contents.
+	// +checklocks:running
+	contents map[manifest.ID][]content.ID
+	// +checklocks:running
+	sources map[manifest.ID]snapshot.SourceInfo
+	// +checklocks:running
+	sizes map[content.ID]int64
 }
 
 type imageSpaceEntry struct {
@@ -80,7 +93,7 @@ func (c *imageSpaceCache) get(ctx context.Context, rep repo.Repository, src snap
 			return
 		}
 
-		space, err := image.CalculateSpace(ctx, rep, mans)
+		space, err := c.calculateLocked(ctx, rep, src, mans)
 
 		c.mu.Lock()
 		defer c.mu.Unlock()
@@ -91,6 +104,53 @@ func (c *imageSpaceCache) get(ctx context.Context, rep repo.Repository, src snap
 	}()
 
 	return nil
+}
+
+// calculateLocked calculates the space of a source's images, reusing what
+// earlier calculations read.
+//
+// +checklocks:c.running
+func (c *imageSpaceCache) calculateLocked(ctx context.Context, rep repo.Repository, src snapshot.SourceInfo, mans []*snapshot.Manifest) (*image.Space, error) {
+	if c.contents == nil {
+		c.contents = map[manifest.ID][]content.ID{}
+		c.sources = map[manifest.ID]snapshot.SourceInfo{}
+		c.sizes = map[content.ID]int64{}
+	}
+
+	current := map[manifest.ID]bool{}
+
+	var all []content.ID
+
+	for _, m := range mans {
+		current[m.ID] = true
+
+		ids, ok := c.contents[m.ID]
+		if !ok {
+			var err error
+
+			if ids, err = image.Contents(ctx, rep, m); err != nil {
+				return nil, err //nolint:wrapcheck
+			}
+
+			c.contents[m.ID], c.sources[m.ID] = ids, src
+		}
+
+		all = append(all, ids...)
+	}
+
+	// forget deleted images of the source
+	for id, s := range c.sources {
+		if s == src && !current[id] {
+			delete(c.contents, id)
+			delete(c.sources, id)
+		}
+	}
+
+	if err := image.StoredSizes(ctx, rep, all, c.sizes); err != nil {
+		return nil, err //nolint:wrapcheck
+	}
+
+	return image.SpaceOf(mans, c.contents, c.sizes), nil
 }
 
 func (c *imageSpaceCache) wanted(src snapshot.SourceInfo, key string) bool {
