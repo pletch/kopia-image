@@ -114,6 +114,16 @@ type Options struct {
 	// past the space reserved for it.
 	ExpectedLength int64
 
+	// Limit, when positive, is how much of the object to write: the rest
+	// must be zeros up to DataEnd, such as the free end of an NTFS volume
+	// restored to a shorter partition, and WriteObject fails if it is not.
+	Limit int64
+
+	// DataEnd, when positive, is where the data that Limit must not cut
+	// ends: past it the object holds nothing to keep, such as the backup
+	// boot sector after the last cluster of an NTFS volume.
+	DataEnd int64
+
 	// TargetIsZeroed skips writing zero chunks, for targets known to read as
 	// zeros, such as new files or trimmed disks.
 	TargetIsZeroed bool
@@ -158,6 +168,14 @@ func WriteObject(ctx context.Context, rep repo.Repository, oid object.ID, w io.W
 
 	if opt.ExpectedLength > 0 && length != opt.ExpectedLength {
 		return Stats{}, errors.Wrapf(ErrUnexpectedLength, "%v is %v bytes, expected %v", oid, length, opt.ExpectedLength)
+	}
+
+	if opt.Limit <= 0 || opt.Limit > length {
+		opt.Limit = length
+	}
+
+	if opt.DataEnd <= 0 || opt.DataEnd > length {
+		opt.DataEnd = length
 	}
 
 	groups := groupChunks(chunks)
@@ -291,7 +309,14 @@ func (o *objectWriter) writeGroup(ctx context.Context, g *chunkGroup, buf []byte
 	if isZero(buf) {
 		o.mu.Lock()
 		for _, off := range g.offsets {
-			o.zeros = append(o.zeros, image.Extent{Start: off, Length: g.length})
+			if n := min(g.length, o.opt.Limit-off); n > 0 {
+				o.zeros = append(o.zeros, image.Extent{Start: off, Length: n})
+			}
+
+			// zeros past the limit are left out
+			if n := g.length - max(0, min(g.length, o.opt.Limit-off)); n > 0 {
+				o.opt.Progress(o.done.Add(n))
+			}
 		}
 		o.mu.Unlock()
 
@@ -299,8 +324,17 @@ func (o *objectWriter) writeGroup(ctx context.Context, g *chunkGroup, buf []byte
 	}
 
 	for _, off := range g.offsets {
-		if _, err := o.w.WriteAt(buf, o.base+off); err != nil {
-			return errors.Wrapf(err, "unable to write at offset %v", o.base+off)
+		n := min(g.length, o.opt.Limit-off)
+		cut, dataEnd := max(0, n), max(0, min(g.length, o.opt.DataEnd-off))
+
+		if cut < dataEnd && !isZero(buf[cut:dataEnd]) {
+			return errors.Errorf("the chunk at offset %v holds data past %v, where the object is cut", off, o.opt.Limit)
+		}
+
+		if n > 0 {
+			if _, err := o.w.WriteAt(buf[:n], o.base+off); err != nil {
+				return errors.Wrapf(err, "unable to write at offset %v", o.base+off)
+			}
 		}
 
 		o.opt.Progress(o.done.Add(g.length))

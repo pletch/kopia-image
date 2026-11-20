@@ -80,6 +80,10 @@ type commandImageRecover struct {
 	// media is the root of the recovery media in the recovery environment.
 	media string
 
+	// shrinkLimits are how far the image's NTFS volumes can shrink to fit a
+	// smaller disk; nil when that could not be read.
+	shrinkLimits imagerestore.ShrinkLimits
+
 	svc advancedAppServices
 	out textOutput
 }
@@ -172,6 +176,11 @@ func (c *commandImageRecover) recover(ctx context.Context) error {
 	}
 
 	printImageRestorePlan(&c.out, s, s.Metadata.Volumes)
+
+	// without them the image restores only to disks as large as the original
+	if c.shrinkLimits, err = s.LoadShrinkLimits(ctx, rep); err != nil {
+		c.out.printStderr("Unable to read how far the NTFS volumes can shrink: %v\n", err)
+	}
 
 	target, err := c.chooseTarget(s, recoverymedia.LocalRepositoryPath(lc))
 	if err != nil {
@@ -543,7 +552,7 @@ func (c *commandImageRecover) chooseTarget(s *imagerestore.Snapshot, repoPath st
 
 	problems := make([]string, len(disks))
 	for i := range disks {
-		problems[i] = disks[i].TargetProblem(s.Layout.MinTargetSize(), s.Layout.SectorSize, keep...)
+		problems[i] = disks[i].TargetProblem(s.MinTargetSize(c.shrinkLimits), s.Layout.SectorSize, keep...)
 	}
 
 	if t := c.chosenTargetPath(); t != "" {
@@ -573,7 +582,11 @@ func namedTarget(t string, disks []imagerestore.DiskInfo, problems []string) (*r
 }
 
 func (c *commandImageRecover) askTarget(s *imagerestore.Snapshot, disks []imagerestore.DiskInfo, problems []string) (*recoverTarget, error) {
-	c.out.printStdout("\nDisks (the image needs %v):\n", units.BytesString(s.Layout.MinTargetSize()))
+	if shrunk := s.MinTargetSize(c.shrinkLimits); shrunk < s.Layout.MinTargetSize() {
+		c.out.printStdout("\nDisks (the image needs %v, or %v with its NTFS volumes shrunk):\n", units.BytesString(s.Layout.MinTargetSize()), units.BytesString(shrunk))
+	} else {
+		c.out.printStdout("\nDisks (the image needs %v):\n", units.BytesString(s.Layout.MinTargetSize()))
+	}
 
 	for i := range disks {
 		d := &disks[i]
@@ -680,6 +693,19 @@ func (c *commandImageRecover) confirm(t *recoverTarget) error {
 }
 
 func (c *commandImageRecover) restore(ctx context.Context, rep repo.Repository, s *imagerestore.Snapshot, t *recoverTarget) error {
+	// a disk smaller than the imaged one gets shrunk NTFS volumes, which is
+	// said before the disk is erased
+	if t.disk != nil && t.disk.Size < s.Layout.MinTargetSize() {
+		c.out.printStdout("\n")
+
+		fit, err := fitImageToTarget(&c.out, s, c.shrinkLimits, t.disk.Size)
+		if err != nil {
+			return err
+		}
+
+		s = fit
+	}
+
 	if err := c.confirm(t); err != nil {
 		return err
 	}
@@ -714,7 +740,13 @@ func (c *commandImageRecover) restore(ctx context.Context, rep repo.Repository, 
 		return errors.Wrap(err, "unable to close the restore target")
 	}
 
-	return deleteExcludedAfterRestore(ctx, &c.out, rep, s, tgt, s.Metadata.Volumes)
+	if err := deleteExcludedAfterRestore(ctx, &c.out, rep, s, tgt, s.Metadata.Volumes); err != nil {
+		return err
+	}
+
+	printResizeNotes(&c.out, s)
+
+	return nil
 }
 
 func (c *commandImageRecover) checkTarget(s *imagerestore.Snapshot, t imagerestore.Target) error {

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -84,7 +85,17 @@ func (c *commandImageRestore) run(ctx context.Context, rep repo.Repository) erro
 		}
 	}()
 
-	if err := c.checkTarget(s, t, len(volumes) == len(s.Metadata.Volumes)); err != nil {
+	fullRestore := len(volumes) == len(s.Metadata.Volumes)
+
+	if fullRestore {
+		if s, err = c.fitTarget(ctx, rep, s, t); err != nil {
+			return err
+		}
+
+		volumes = s.Metadata.Volumes
+	}
+
+	if err := c.checkTarget(s, t, fullRestore); err != nil {
 		return err
 	}
 
@@ -102,7 +113,28 @@ func (c *commandImageRestore) run(ctx context.Context, rep repo.Repository) erro
 		return errors.Wrap(err, "unable to close the restore target")
 	}
 
-	return deleteExcludedAfterRestore(ctx, &c.out, rep, s, t, volumes)
+	if err := deleteExcludedAfterRestore(ctx, &c.out, rep, s, t, volumes); err != nil {
+		return err
+	}
+
+	printResizeNotes(&c.out, s)
+
+	return nil
+}
+
+// fitTarget returns the snapshot to restore to a target smaller than the
+// imaged disk, with its NTFS volumes shrunk, or s for other targets.
+func (c *commandImageRestore) fitTarget(ctx context.Context, rep repo.Repository, s *imagerestore.Snapshot, t imagerestore.Target) (*imagerestore.Snapshot, error) {
+	if t.Size() >= s.Layout.MinTargetSize() {
+		return s, nil
+	}
+
+	limits, err := s.LoadShrinkLimits(ctx, rep)
+	if err != nil {
+		return nil, errors.Wrap(err, "unable to read how far the NTFS volumes can shrink")
+	}
+
+	return fitImageToTarget(&c.out, s, limits, t.Size())
 }
 
 // openTarget opens the restore target, read-only for a dry run so that the
@@ -181,6 +213,70 @@ func restoreImageToTarget(ctx context.Context, out *textOutput, rep repo.Reposit
 	out.printStdout("Volumes that used BitLocker are restored decrypted; re-enable BitLocker after the first boot.\n")
 
 	return nil
+}
+
+// fitImageToTarget returns the snapshot to restore to a target of size
+// bytes, with its NTFS volumes shrunk and the partitions after them moved
+// when the target is smaller than the imaged disk, and says what changes.
+func fitImageToTarget(out *textOutput, s *imagerestore.Snapshot, limits imagerestore.ShrinkLimits, size int64) (*imagerestore.Snapshot, error) {
+	fit, changes, err := s.FitTo(size, limits)
+	if errors.Is(err, imagerestore.ErrTargetTooSmall) {
+		return nil, errors.Errorf("the target (%v) is too small: the image needs %v, or %v with its NTFS volumes shrunk as far as their files allow",
+			units.BytesString(size), units.BytesString(s.Layout.MinTargetSize()), units.BytesString(s.MinTargetSize(limits)))
+	}
+
+	if err != nil {
+		return nil, err //nolint:wrapcheck
+	}
+
+	if len(changes) == 0 {
+		return fit, nil
+	}
+
+	out.printStdout("The target (%v) is smaller than the imaged disk (%v). To fit:\n", units.BytesString(size), units.BytesString(s.Layout.DiskSize))
+
+	for _, r := range changes {
+		name := partitionDisplayName(s, r.Partition.Number)
+
+		if r.Shrunk() {
+			out.printStdout("  %v shrinks from %v to %v\n", name, units.BytesString(r.Partition.Length), units.BytesString(r.Length))
+		}
+
+		if r.Moved() {
+			out.printStdout("  %v moves %v closer to the start of the disk\n", name, units.BytesString(r.Partition.Offset-r.Offset))
+		}
+	}
+
+	return fit, nil
+}
+
+// partitionDisplayName names a partition by its volume image, if it has one.
+func partitionDisplayName(s *imagerestore.Snapshot, number int) string {
+	for i := range s.Metadata.Volumes {
+		if v := &s.Metadata.Volumes[i]; v.PartitionNumber == number {
+			return fmt.Sprintf("partition %v (%v)", number, strings.TrimSuffix(v.EntryName, ".img"))
+		}
+	}
+
+	return fmt.Sprintf("partition %v", number)
+}
+
+// printResizeNotes says what to do after restoring to a smaller disk.
+func printResizeNotes(out *textOutput, s *imagerestore.Snapshot) {
+	for _, r := range s.Resized {
+		if r.Shrunk() {
+			out.printStdout("%v was shrunk: Windows checks it when it first starts, which can take a few minutes.\n", partitionDisplayName(s, r.Partition.Number))
+		}
+	}
+
+	for _, r := range s.Resized {
+		if r.Moved() && r.Partition.TypeGUID == image.PartitionTypeWinRecovery {
+			out.printStdout("The Windows recovery partition moved. Once Windows runs, enter \"reagentc /disable\" and then \"reagentc /enable\"\n" +
+				"in an administrator command prompt, so that Windows finds its recovery tools again; \"reagentc /info\" shows whether it does.\n")
+
+			return
+		}
+	}
 }
 
 func printImageRestorePlan(out *textOutput, s *imagerestore.Snapshot, volumes []image.Volume) {

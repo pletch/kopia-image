@@ -15,6 +15,7 @@ import (
 	"github.com/kopia/kopia/snapshot/image"
 	"github.com/kopia/kopia/snapshot/image/blockdev"
 	"github.com/kopia/kopia/snapshot/image/gpt"
+	"github.com/kopia/kopia/snapshot/image/ntfsresize"
 	"github.com/kopia/kopia/snapshot/snapshotfs"
 )
 
@@ -29,6 +30,10 @@ type Snapshot struct {
 	Manifest *snapshot.Manifest
 	Layout   *image.Layout
 	Metadata *image.Metadata
+
+	// Resized are the partitions that Layout shrinks or moves to fit a
+	// smaller target, see FitTo.
+	Resized []Resize
 }
 
 // LoadSnapshot reads and validates the layout.json and image.json of an image
@@ -179,6 +184,10 @@ type VolumeResult struct {
 func RestoreDisk(ctx context.Context, rep repo.Repository, s *Snapshot, t Target, opt DiskOptions) ([]VolumeResult, error) {
 	fullRestore := len(opt.Volumes) == len(s.Metadata.Volumes)
 
+	if !fullRestore && len(s.Resized) > 0 {
+		return nil, errors.New("only a whole disk can be restored to a smaller disk")
+	}
+
 	if fullRestore {
 		if err := gpt.Clear(t, t.SectorSize(), t.Size()); err != nil {
 			return nil, errors.Wrap(err, "unable to clear the partition table")
@@ -206,10 +215,20 @@ func restoreVolumes(ctx context.Context, rep repo.Repository, t Target, layout *
 		v := opt.Volumes[i]
 		p, _ := layout.Partition(v.PartitionNumber)
 
-		// image.json was validated, so v.Size fits the partition; requiring
-		// the object to be exactly that long keeps it inside the partition
+		// an NTFS volume restored to a shorter partition, see FitTo
+		shrink := v.Size > p.Length
+		if shrink && v.Kind != image.VolumeKindNTFS {
+			return results, errors.Errorf("%v is %v bytes, longer than partition %v, and is not NTFS", v.EntryName, v.Size, p.Number)
+		}
+
+		// image.json was validated, so v.Size fits the partition as imaged;
+		// requiring the object to be exactly that long, and writing no more
+		// than the partition on the target holds, keeps it inside the
+		// partition
 		stats, err := WriteObject(ctx, rep, v.ObjectID, t, p.Offset, Options{
 			ExpectedLength: v.Size,
+			Limit:          min(v.Size, p.Length),
+			DataEnd:        ntfsClustersEnd(&v, layout.SectorSize),
 			Parallel:       opt.Parallel,
 			TargetIsZeroed: t.IsZeroed(),
 			Zero:           t.Zero,
@@ -224,6 +243,12 @@ func restoreVolumes(ctx context.Context, rep repo.Repository, t Target, layout *
 			return results, errors.Wrapf(err, "unable to restore %v", v.EntryName)
 		}
 
+		if shrink {
+			if err := ntfsresize.Shrink(&section{t: t, offset: p.Offset, length: p.Length}, p.Length); err != nil {
+				return results, errors.Wrapf(err, "unable to shrink %v to %v bytes", v.EntryName, p.Length)
+			}
+		}
+
 		// a volume can be shorter than its partition; what the target held
 		// there before must not survive the restore
 		if tail := p.Length - v.Size; tail > 0 && !t.IsZeroed() {
@@ -236,6 +261,40 @@ func restoreVolumes(ctx context.Context, rep repo.Repository, t Target, layout *
 	}
 
 	return results, nil
+}
+
+// ntfsClustersEnd returns where the clusters of an imaged NTFS volume end:
+// the image is the whole partition, whose last sector holds the backup boot
+// sector, and whose sectors past the last whole cluster hold nothing.
+func ntfsClustersEnd(v *image.Volume, sectorSize int64) int64 {
+	if v.Kind != image.VolumeKindNTFS || v.ClusterSize <= 0 {
+		return v.Size
+	}
+
+	return (v.Size - sectorSize) / v.ClusterSize * v.ClusterSize
+}
+
+// section is a partition of a target.
+type section struct {
+	t      Target
+	offset int64
+	length int64
+}
+
+func (s *section) ReadAt(b []byte, off int64) (int, error) {
+	if off < 0 || off+int64(len(b)) > s.length {
+		return 0, errors.Errorf("read of %v bytes at %v outside the partition of %v bytes", len(b), off, s.length)
+	}
+
+	return s.t.ReadAt(b, s.offset+off) //nolint:wrapcheck
+}
+
+func (s *section) WriteAt(b []byte, off int64) (int, error) {
+	if off < 0 || off+int64(len(b)) > s.length {
+		return 0, errors.Errorf("write of %v bytes at %v outside the partition of %v bytes", len(b), off, s.length)
+	}
+
+	return s.t.WriteAt(b, s.offset+off) //nolint:wrapcheck
 }
 
 // finishFullRestore zeroes the partitions without an image, then writes,
