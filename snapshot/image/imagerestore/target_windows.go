@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	pkgerrors "github.com/pkg/errors"
 	"golang.org/x/sys/windows"
@@ -115,6 +116,38 @@ func (d *deviceTarget) Size() int64       { return d.size }
 func (d *deviceTarget) SectorSize() int64 { return d.sectorSize }
 func (d *deviceTarget) IsDevice() bool    { return true }
 func (d *deviceTarget) IsZeroed() bool    { return false }
+
+// writeRetryDelays are the waits before writing again to a disk that did not
+// complete a write in time, such as a USB disk whose adapter stalled: about a
+// minute in all before the restore fails.
+//
+//nolint:gochecknoglobals
+var writeRetryDelays = []time.Duration{
+	time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 15 * time.Second, 30 * time.Second,
+}
+
+// WriteAt writes to the drive, and again while the drive does not complete
+// writes in time: USB adapters stall now and then under sustained writes.
+func (d *deviceTarget) WriteAt(b []byte, off int64) (int, error) {
+	return retryWrite(d.File.WriteAt, b, off, isTransientWriteError, writeRetryDelays, time.Sleep)
+}
+
+// isTransientWriteError reports whether a write failed because the drive was
+// slow or briefly unavailable, rather than refused it.
+func isTransientWriteError(err error) bool {
+	for _, e := range []windows.Errno{
+		windows.ERROR_SEM_TIMEOUT, // the drive did not complete the write in time
+		windows.ERROR_IO_DEVICE,   // the drive's adapter reset
+		windows.ERROR_NOT_READY,
+		windows.ERROR_BUSY,
+	} {
+		if errors.Is(err, e) {
+			return true
+		}
+	}
+
+	return false
+}
 
 func (d *deviceTarget) Zero(off, length int64) error {
 	return writeZeros(d, off, length)
