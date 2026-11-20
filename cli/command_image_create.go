@@ -101,6 +101,8 @@ func (c *commandImageCreate) setup(svc appServices, parent commandParent) {
 // through a repository action, so that a request records a repository that
 // does not open, and counts the bytes the session uploads for the progress.
 func (c *commandImageCreate) runWithWriter(ctx context.Context) (err error) {
+	defer keepConsoleRunning()()
+
 	c.loc.statePath = c.statePath
 
 	// a dry run writes nothing, so it does not need the repository: it

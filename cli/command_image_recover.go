@@ -102,6 +102,8 @@ func (c *commandImageRecover) setup(svc advancedAppServices, parent commandParen
 }
 
 func (c *commandImageRecover) run(ctx context.Context) error {
+	defer keepConsoleRunning()()
+
 	err := c.loadInputs()
 	if err == nil {
 		err = c.recover(ctx)

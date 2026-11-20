@@ -128,6 +128,8 @@ func (c *commandImageRecoveryMediaCreate) run(ctx context.Context, rep repo.Repo
 		return recoverymedia.ErrNotSupported
 	}
 
+	defer keepConsoleRunning()()
+
 	if !recoverymedia.IsElevated() {
 		return errors.New("building recovery media needs an administrator: run kopia from an elevated prompt")
 	}
