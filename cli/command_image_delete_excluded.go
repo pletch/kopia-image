@@ -89,6 +89,11 @@ func deleteExcludedAfterRestore(ctx context.Context, out *textOutput, rep repo.R
 			continue
 		}
 
+		if t.IsDevice() {
+			out.printStdout("%v: waiting for Windows to mount the volume, up to %v, to delete the files the image left out (%v such as caches)...\n",
+				v.EntryName, restoredVolumeTimeout, units.BytesString(image.ExcludedBytes(v.Excluded)))
+		}
+
 		root, err := restoredVolumeRoot(ctx, s, t, v)
 		if err != nil {
 			out.printStdout("\n%v: the files the image left out, %v such as caches, hold zeros. Mount the volume and delete them with:\n  kopia image delete-excluded %v %v <volume root>\n(%v)\n",

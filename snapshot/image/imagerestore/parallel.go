@@ -124,6 +124,12 @@ type Options struct {
 	// boot sector after the last cluster of an NTFS volume.
 	DataEnd int64
 
+	// Unused are object ranges whose content does not matter, such as the
+	// free clusters of an NTFS volume: zero chunks there are not written,
+	// which saves writing the free space of a disk. Chunks with data are
+	// written wherever they are.
+	Unused []image.Extent
+
 	// TargetIsZeroed skips writing zero chunks, for targets known to read as
 	// zeros, such as new files or trimmed disks.
 	TargetIsZeroed bool
@@ -153,6 +159,10 @@ type Stats struct {
 	// ZeroBytes is the size of the chunks consisting of zeros, which were
 	// zeroed or skipped rather than written from fetched data.
 	ZeroBytes int64
+
+	// UnusedZeroBytes is the part of ZeroBytes in Options.Unused, which was
+	// left as the target held it.
+	UnusedZeroBytes int64
 }
 
 // WriteObject writes an object to w at offset base. Distinct chunks are
@@ -193,6 +203,7 @@ func WriteObject(ctx context.Context, rep repo.Repository, oid object.ID, w io.W
 
 	stats.FetchedBytes = w2.fetchedBytes.Load()
 	stats.ZeroBytes = image.TotalLength(w2.zeros)
+	stats.UnusedZeroBytes = w2.unusedZeroBytes
 
 	return stats, nil
 }
@@ -252,6 +263,8 @@ type objectWriter struct {
 
 	mu    sync.Mutex
 	zeros []image.Extent // object ranges of zero chunks
+
+	unusedZeroBytes int64
 }
 
 func (o *objectWriter) writeGroups(ctx context.Context, groups []*chunkGroup) error {
@@ -358,9 +371,18 @@ func (o *objectWriter) zeroRanges(ctx context.Context) error {
 		return nil
 	}
 
+	unused, err := image.NormalizeExtents(o.opt.Unused)
+	if err != nil {
+		return errors.Wrap(err, "invalid unused ranges")
+	}
+
+	toZero := subtractExtents(merged, unused)
+	o.unusedZeroBytes = image.TotalLength(merged) - image.TotalLength(toZero)
+	o.opt.Progress(o.done.Add(o.unusedZeroBytes))
+
 	var pieces []image.Extent
 
-	for _, e := range merged {
+	for _, e := range toZero {
 		for off := e.Start; off < e.End(); off += zeroRangePieceSize {
 			pieces = append(pieces, image.Extent{Start: off, Length: min(zeroRangePieceSize, e.End()-off)})
 		}
@@ -386,6 +408,36 @@ func (o *objectWriter) zeroRanges(ctx context.Context) error {
 	}
 
 	return errors.Wrap(eg.Wait(), "error zeroing free space")
+}
+
+// subtractExtents returns the parts of a not in b; both are normalized:
+// sorted, without overlaps.
+func subtractExtents(a, b []image.Extent) []image.Extent {
+	var out []image.Extent
+
+	j := 0
+
+	for _, e := range a {
+		start := e.Start
+
+		for j < len(b) && b[j].End() <= start {
+			j++
+		}
+
+		for k := j; k < len(b) && b[k].Start < e.End(); k++ {
+			if b[k].Start > start {
+				out = append(out, image.Extent{Start: start, Length: b[k].Start - start})
+			}
+
+			start = max(start, b[k].End())
+		}
+
+		if start < e.End() {
+			out = append(out, image.Extent{Start: start, Length: e.End() - start})
+		}
+	}
+
+	return out
 }
 
 func (o *objectWriter) zero(off, length int64) error {

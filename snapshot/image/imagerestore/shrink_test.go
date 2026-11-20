@@ -276,3 +276,45 @@ func TestRestoreDisk_smallerTarget(t *testing.T) {
 		require.True(t, bytes.Equal(ntfs[cl*4096:(cl+1)*4096], restored[cl*4096:(cl+1)*4096]), "cluster %v", cl)
 	}
 }
+
+func TestSubtractExtents(t *testing.T) {
+	ext := func(pairs ...int64) []image.Extent {
+		var out []image.Extent
+		for i := 0; i < len(pairs); i += 2 {
+			out = append(out, image.Extent{Start: pairs[i], Length: pairs[i+1]})
+		}
+
+		return out
+	}
+
+	require.Equal(t, ext(0, 10), subtractExtents(ext(0, 10), nil))
+	require.Empty(t, subtractExtents(ext(0, 10), ext(0, 10)))
+	require.Empty(t, subtractExtents(ext(2, 3), ext(0, 10)))
+	require.Equal(t, ext(0, 2, 5, 5), subtractExtents(ext(0, 10), ext(2, 3)))
+	require.Equal(t, ext(0, 2, 8, 2, 20, 3, 27, 3), subtractExtents(ext(0, 10, 20, 10), ext(2, 6, 23, 4)))
+	require.Equal(t, ext(4, 2, 12, 3), subtractExtents(ext(0, 6, 10, 5), ext(0, 4, 6, 6)))
+	require.Equal(t, ext(0, 5), subtractExtents(ext(0, 5), ext(5, 5)))
+}
+
+func TestWriteObject_unused(t *testing.T) {
+	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
+
+	// data, 3 chunks of zeros, data
+	data := append(append(randomBytes(5, chunk), make([]byte, 3*chunk)...), randomBytes(6, chunk)...)
+	oid := writeTestObject(ctx, t, env.RepositoryWriter, data)
+
+	disk := &memDisk{data: bytes.Repeat([]byte{0xee}, 5*chunk)}
+
+	// free space from the middle of the second chunk into the data chunk at
+	// the end, where the data is written all the same
+	unused := []image.Extent{{Start: chunk + chunk/2, Length: 3*chunk + 4096}}
+
+	stats, err := WriteObject(ctx, env.Repository, oid, disk, 0, Options{Unused: unused, Parallel: 4, Zero: disk.zero})
+	require.NoError(t, err)
+
+	require.Equal(t, data[:chunk+chunk/2], disk.data[:chunk+chunk/2], "data and zeros before the free space")
+	require.Equal(t, bytes.Repeat([]byte{0xee}, 2*chunk+chunk/2), disk.data[chunk+chunk/2:4*chunk], "free zeros are not written")
+	require.Equal(t, data[4*chunk:], disk.data[4*chunk:], "data in free space is written")
+	require.Equal(t, int64(3*chunk), stats.ZeroBytes)
+	require.Equal(t, int64(2*chunk+chunk/2), stats.UnusedZeroBytes)
+}

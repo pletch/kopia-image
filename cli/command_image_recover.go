@@ -785,7 +785,8 @@ func (c *commandImageRecover) finish(ctx context.Context) error {
 	}
 
 	if c.answers == nil {
-		c.out.printStdout("\nRemove the recovery media before the computer restarts, or it starts the recovery again.\n")
+		c.out.printStdout("\nThe restore is complete.\n")
+		c.out.printStdout("Remove the recovery media before the computer restarts, or it starts the recovery again.\n")
 
 		restart, err := c.askYesNo("Restart now? [Y/n] ", true)
 		if err != nil || !restart {

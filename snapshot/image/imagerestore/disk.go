@@ -196,7 +196,13 @@ func RestoreDisk(ctx context.Context, rep repo.Repository, s *Snapshot, t Target
 		return nil, err
 	}
 
-	results, err := restoreVolumes(ctx, rep, t, s.Layout, opt)
+	// free clusters need not be zeroed; without the bitmaps they are
+	free, err := s.freeSpace(ctx, rep)
+	if err != nil {
+		free = nil
+	}
+
+	results, err := restoreVolumes(ctx, rep, t, s.Layout, free, opt)
 	if err != nil {
 		return results, err
 	}
@@ -208,7 +214,7 @@ func RestoreDisk(ctx context.Context, rep repo.Repository, s *Snapshot, t Target
 	return results, errors.Wrap(t.Sync(), "unable to sync")
 }
 
-func restoreVolumes(ctx context.Context, rep repo.Repository, t Target, layout *image.Layout, opt DiskOptions) ([]VolumeResult, error) {
+func restoreVolumes(ctx context.Context, rep repo.Repository, t Target, layout *image.Layout, free map[int][]image.Extent, opt DiskOptions) ([]VolumeResult, error) {
 	var results []VolumeResult
 
 	for i := range opt.Volumes {
@@ -229,6 +235,7 @@ func restoreVolumes(ctx context.Context, rep repo.Repository, t Target, layout *
 			ExpectedLength: v.Size,
 			Limit:          min(v.Size, p.Length),
 			DataEnd:        ntfsClustersEnd(&v, layout.SectorSize),
+			Unused:         free[v.PartitionNumber],
 			Parallel:       opt.Parallel,
 			TargetIsZeroed: t.IsZeroed(),
 			Zero:           t.Zero,

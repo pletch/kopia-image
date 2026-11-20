@@ -43,6 +43,33 @@ type ShrinkLimits map[int]int64
 // its NTFS volumes and returns how far each volume can be shrunk. Volumes
 // without a bitmap cannot be shrunk.
 func (s *Snapshot) LoadShrinkLimits(ctx context.Context, rep repo.Repository) (ShrinkLimits, error) {
+	bitmaps, err := s.loadBitmaps(ctx, rep)
+	if err != nil {
+		return nil, err
+	}
+
+	limits := ShrinkLimits{}
+
+	for i := range s.Metadata.Volumes {
+		v := &s.Metadata.Volumes[i]
+
+		bitmap, ok := bitmaps[v.PartitionNumber]
+		if !ok {
+			continue
+		}
+
+		// the bitmap's bits past the last cluster are set, as in $Bitmap
+		p, _ := s.Layout.Partition(v.PartitionNumber)
+		clusters := ntfsClustersEnd(v, s.Layout.SectorSize) / v.ClusterSize
+		limits[v.PartitionNumber] = shrinkLimit(bitmap, clusters, v.ClusterSize, s.Layout.SectorSize, p.Length)
+	}
+
+	return limits, nil
+}
+
+// loadBitmaps reads, by partition number, the allocation bitmaps that an
+// image stores next to its NTFS volumes.
+func (s *Snapshot) loadBitmaps(ctx context.Context, rep repo.Repository) (map[int][]byte, error) {
 	root, err := snapshotfs.SnapshotRoot(rep, s.Manifest)
 	if err != nil {
 		return nil, errors.Wrap(err, "unable to open the snapshot")
@@ -53,7 +80,7 @@ func (s *Snapshot) LoadShrinkLimits(ctx context.Context, rep repo.Repository) (S
 		return nil, errors.New("snapshot root is not a directory")
 	}
 
-	limits := ShrinkLimits{}
+	out := map[int][]byte{}
 
 	for i := range s.Metadata.Volumes {
 		v := &s.Metadata.Volumes[i]
@@ -66,17 +93,42 @@ func (s *Snapshot) LoadShrinkLimits(ctx context.Context, rep repo.Repository) (S
 			return nil, err
 		}
 
-		if bitmap == nil {
+		if bitmap != nil {
+			out[v.PartitionNumber] = bitmap
+		}
+	}
+
+	return out, nil
+}
+
+// freeSpace returns, by partition number, the free clusters of the image's
+// NTFS volumes, whose content NTFS ignores. Volumes without a bitmap are
+// left out.
+func (s *Snapshot) freeSpace(ctx context.Context, rep repo.Repository) (map[int][]image.Extent, error) {
+	bitmaps, err := s.loadBitmaps(ctx, rep)
+	if err != nil {
+		return nil, err
+	}
+
+	out := map[int][]image.Extent{}
+
+	for i := range s.Metadata.Volumes {
+		v := &s.Metadata.Volumes[i]
+
+		bitmap, ok := bitmaps[v.PartitionNumber]
+		if !ok {
 			continue
 		}
 
-		// the bitmap's bits past the last cluster are set, as in $Bitmap
-		p, _ := s.Layout.Partition(v.PartitionNumber)
-		clusters := ntfsClustersEnd(v, s.Layout.SectorSize) / v.ClusterSize
-		limits[v.PartitionNumber] = shrinkLimit(bitmap, clusters, v.ClusterSize, s.Layout.SectorSize, p.Length)
+		free, err := image.FreeExtents(bitmap, ntfsClustersEnd(v, s.Layout.SectorSize)/v.ClusterSize, v.ClusterSize)
+		if err != nil {
+			return nil, errors.Wrapf(err, "invalid bitmap of %v", v.EntryName)
+		}
+
+		out[v.PartitionNumber] = free
 	}
 
-	return limits, nil
+	return out, nil
 }
 
 // shrinkLimit returns the shortest partition, a whole number of sectors, that

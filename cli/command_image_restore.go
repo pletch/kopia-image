@@ -202,9 +202,15 @@ func restoreImageToTarget(ctx context.Context, out *textOutput, rep repo.Reposit
 	for i := range results {
 		r := &results[i]
 		total += r.Stats.Bytes
-		out.printStdout("  %v: %v, fetched %v in %v of %v chunks, %v of zeros\n",
+
+		zeros := units.BytesString(r.Stats.ZeroBytes) + " of zeros"
+		if r.Stats.UnusedZeroBytes > 0 {
+			zeros += fmt.Sprintf(", %v of them free space that needs no writing", units.BytesString(r.Stats.UnusedZeroBytes))
+		}
+
+		out.printStdout("  %v: %v, fetched %v in %v of %v chunks, %v\n",
 			r.Volume.EntryName, units.BytesString(r.Stats.Bytes), units.BytesString(r.Stats.FetchedBytes),
-			r.Stats.FetchedChunks, r.Stats.Chunks, units.BytesString(r.Stats.ZeroBytes))
+			r.Stats.FetchedChunks, r.Stats.Chunks, zeros)
 	}
 
 	out.printStdout("Restored %v volume(s), %v, to %v in %v (%v).\n",
