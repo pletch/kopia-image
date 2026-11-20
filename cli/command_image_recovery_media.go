@@ -28,12 +28,11 @@ import (
 )
 
 const (
-	recoveryCacheDir          = recoverymedia.RecoveryDir + `\cache`
-	recoveryContentCacheBytes = 64 << 20
-	recoveryMetaCacheBytes    = 128 << 20
-	minRecoveryUSBBytes       = 2 << 30
-	recoveryDriversHost       = "host"
-	recoveryDriversNone       = "none"
+	recoveryCacheDir       = recoverymedia.RecoveryDir + `\cache`
+	recoveryMetaCacheBytes = 128 << 20
+	minRecoveryUSBBytes    = 2 << 30
+	recoveryDriversHost    = "host"
+	recoveryDriversNone    = "none"
 
 	mediaFolder = "folder"
 	mediaVHDX   = "vhdx"
@@ -415,17 +414,27 @@ func (c *commandImageRecoveryMediaCreate) connection(rep repo.Repository) (*repo
 	}
 
 	clone.ReadOnly = true
-	clone.Caching = &content.CachingOptions{
-		CacheDirectory:         recoveryCacheDir,
-		ContentCacheSizeBytes:  recoveryContentCacheBytes,
-		MetadataCacheSizeBytes: recoveryMetaCacheBytes,
-	}
+	clone.Caching = recoveryCaching()
 
 	if lc.Storage != nil && lc.Storage.Type != "filesystem" && c.connectFrom == "" {
 		c.out.printStderr("The media holds the storage credentials of this connection. Prefer credentials that can only read: pass --connect-from with such a connection.\n")
 	}
 
 	return &clone, nil
+}
+
+// recoveryCaching is the cache of the recovery system, on its small RAM disk
+// X:. It caches no data: a restore reads each chunk once, and the cache keeps
+// what it read in the last minutes whatever its size, which filled X: and
+// failed every later write to the cache. The metadata cache, which holds the
+// chunk lists, has a hard limit for the same reason.
+func recoveryCaching() *content.CachingOptions {
+	return &content.CachingOptions{
+		CacheDirectory:              recoveryCacheDir,
+		ContentCacheSizeBytes:       0,
+		MetadataCacheSizeBytes:      recoveryMetaCacheBytes,
+		MetadataCacheSizeLimitBytes: recoveryMetaCacheBytes,
+	}
 }
 
 // repositoryDrivers extracts the drivers that --drivers-from asks for from
