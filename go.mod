@@ -165,4 +165,4 @@ require (
 	gopkg.in/ini.v1 v1.67.3 // indirect
 )
 
-replace github.com/kopia/htmluibuild => github.com/pletch/htmluibuild v0.0.1-0.20261119231721-012f4f440c2d
+replace github.com/kopia/htmluibuild => github.com/pletch/htmluibuild v0.0.1-0.20261120012745-33f9cd00ab65
