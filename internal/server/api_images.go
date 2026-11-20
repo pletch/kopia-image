@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"github.com/kopia/kopia/internal/clock"
 	"github.com/kopia/kopia/internal/serverapi"
 	"github.com/kopia/kopia/repo"
+	"github.com/kopia/kopia/repo/manifest"
 	"github.com/kopia/kopia/snapshot"
 	"github.com/kopia/kopia/snapshot/image"
 	"github.com/kopia/kopia/snapshot/image/disksource"
@@ -109,7 +111,51 @@ func handleImagesList(ctx context.Context, rc requestContext) (any, *apiError) {
 		resp.Images = append(resp.Images, convertImageSnapshot(ctx, rc, m))
 	}
 
+	addImageSpace(rc, mans, resp) //nolint:contextcheck // the space is calculated in the background, beyond the request
+
 	return resp, nil
+}
+
+// addImageSpace adds the repository space of each listed source's images,
+// as far as it is calculated; a source's images are always listed together.
+func addImageSpace(rc requestContext, mans []*snapshot.Manifest, resp *serverapi.ImagesResponse) {
+	bySource := map[snapshot.SourceInfo][]*snapshot.Manifest{}
+
+	var order []snapshot.SourceInfo
+
+	for _, m := range mans {
+		if _, ok := bySource[m.Source]; !ok {
+			order = append(order, m.Source)
+		}
+
+		bySource[m.Source] = append(bySource[m.Source], m)
+	}
+
+	exclusive := map[manifest.ID]int64{}
+
+	for _, src := range order {
+		s := &serverapi.ImageSourceSpace{Source: src}
+
+		switch e := rc.srv.imageSpaceCache().get(rc.srv.rootContext(), rc.rep, src, bySource[src]); {
+		case e == nil:
+			s.Pending = true
+		case e.err != nil:
+			s.Error = e.err.Error()
+		default:
+			stored := e.space.StoredBytes
+			s.StoredBytes = &stored
+
+			maps.Copy(exclusive, e.space.ExclusiveBytes)
+		}
+
+		resp.Space = append(resp.Space, s)
+	}
+
+	for _, img := range resp.Images {
+		if v, ok := exclusive[img.ID]; ok {
+			img.ExclusiveBytes = &v
+		}
+	}
 }
 
 func convertImageSnapshot(ctx context.Context, rc requestContext, m *snapshot.Manifest) *serverapi.ImageSnapshot {

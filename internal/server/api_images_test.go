@@ -22,6 +22,7 @@ import (
 	"github.com/kopia/kopia/internal/servertesting"
 	"github.com/kopia/kopia/internal/testutil"
 	"github.com/kopia/kopia/repo"
+	"github.com/kopia/kopia/repo/manifest"
 	"github.com/kopia/kopia/snapshot"
 	"github.com/kopia/kopia/snapshot/image"
 	"github.com/kopia/kopia/snapshot/image/disksource"
@@ -724,4 +725,62 @@ func TestImagesStatus_refreshesAfterRun(t *testing.T) {
 	images, err := serverapi.ListImages(ctx, cli, true)
 	require.NoError(t, err)
 	require.Len(t, images.Images, 1)
+}
+
+func TestImagesList_space(t *testing.T) {
+	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
+
+	localHost := env.Repository.ClientOptions().Hostname
+	data := bytes.Repeat([]byte{1, 2, 3, 4}, 1<<18)
+
+	first := mustCreateRawImage(t, env, localHost, "0f6ab3f2-1c3d-4e5f-8a9b-0c1d2e3f4a51", data)
+	second := mustCreateRawImage(t, env, localHost, "0f6ab3f2-1c3d-4e5f-8a9b-0c1d2e3f4a51", append([]byte{9}, data[1:]...))
+	require.NoError(t, env.RepositoryWriter.Flush(ctx))
+
+	cli := startImageServer(t, env, &fakeImageHost{dir: testutil.TempDirectory(t)})
+
+	// the space is calculated in the background
+	var resp *serverapi.ImagesResponse
+
+	require.Eventually(t, func() bool {
+		var err error
+
+		resp, err = serverapi.ListImages(ctx, cli, false)
+		require.NoError(t, err)
+		require.Len(t, resp.Space, 1)
+
+		return !resp.Space[0].Pending
+	}, 30*time.Second, 50*time.Millisecond)
+
+	sp := resp.Space[0]
+	require.Empty(t, sp.Error)
+	require.Equal(t, first.Source, sp.Source)
+	require.NotNil(t, sp.StoredBytes)
+
+	byID := map[manifest.ID]*serverapi.ImageSnapshot{}
+	for _, img := range resp.Images {
+		byID[img.ID] = img
+	}
+
+	// both images use the volume's chunk list and their own files alone
+	for _, m := range []*snapshot.Manifest{first, second} {
+		require.NotNil(t, byID[m.ID].ExclusiveBytes, m.ID)
+		require.Positive(t, *byID[m.ID].ExclusiveBytes, m.ID)
+		require.Less(t, *byID[m.ID].ExclusiveBytes, *sp.StoredBytes, m.ID)
+	}
+
+	// deleting an image changes the set, which is calculated again
+	require.NoError(t, env.RepositoryWriter.DeleteManifest(ctx, second.ID))
+	require.NoError(t, env.RepositoryWriter.Flush(ctx))
+
+	require.Eventually(t, func() bool {
+		var err error
+
+		resp, err = serverapi.ListImages(ctx, cli, false)
+		require.NoError(t, err)
+
+		return len(resp.Images) == 1 && !resp.Space[0].Pending
+	}, 30*time.Second, 50*time.Millisecond)
+
+	require.Equal(t, *resp.Space[0].StoredBytes, *resp.Images[0].ExclusiveBytes)
 }

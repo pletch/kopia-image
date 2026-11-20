@@ -123,6 +123,9 @@ type Server struct {
 	// +checklocks:nextRefreshTimeLock
 	nextRefreshTime time.Time
 
+	// imageSpace keeps the repository space of each disk's images.
+	imageSpace imageSpaceCache
+
 	// lastRefreshStart is when the last refresh began reading the repository.
 	// +checklocks:nextRefreshTimeLock
 	lastRefreshStart time.Time
@@ -475,6 +478,10 @@ func (s *Server) refreshAsync() {
 	s.nextRefreshTimeLock.Unlock()
 
 	go s.Refresh()
+}
+
+func (s *Server) imageSpaceCache() *imageSpaceCache {
+	return &s.imageSpace
 }
 
 // refreshedSince reports whether a refresh began reading the repository at or

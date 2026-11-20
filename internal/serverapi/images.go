@@ -16,6 +16,23 @@ type ImagesResponse struct {
 	Images        []*ImageSnapshot `json:"images"`
 	LocalHost     string           `json:"localHost"`
 	LocalUsername string           `json:"localUsername"`
+
+	// Space is the repository space of the images of each source listed.
+	Space []*ImageSourceSpace `json:"space"`
+}
+
+// ImageSourceSpace is the repository space that the images of one source
+// (disk) take. The server calculates it in the background: until it is
+// done, Pending is set and StoredBytes is nil.
+type ImageSourceSpace struct {
+	Source snapshot.SourceInfo `json:"source"`
+
+	// StoredBytes is the size, as stored, of the contents the images use,
+	// each counted once.
+	StoredBytes *int64 `json:"storedBytes,omitempty"`
+
+	Pending bool   `json:"pending,omitempty"`
+	Error   string `json:"error,omitempty"`
 }
 
 // ImageSnapshot is a disk image snapshot with the statistics of the run
@@ -53,6 +70,11 @@ type ImageSnapshot struct {
 
 	// Drivers are the drivers of the imaged computer stored with the image.
 	Drivers []image.Driver `json:"drivers,omitempty"`
+
+	// ExclusiveBytes is the stored size of the contents that no other image
+	// of the source uses: about what deleting the image frees, once
+	// maintenance removes unused contents. It is nil until calculated.
+	ExclusiveBytes *int64 `json:"exclusiveBytes,omitempty"`
 
 	// MetadataError says why the image's statistics and volumes are
 	// missing: its image.json could not be read.
