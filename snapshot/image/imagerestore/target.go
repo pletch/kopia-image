@@ -1,15 +1,18 @@
 package imagerestore
 
 import (
-	"bytes"
 	stderrors "errors"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/pkg/errors"
+
+	"github.com/kopia/kopia/snapshot/image"
+	"github.com/kopia/kopia/snapshot/image/blockdev"
 )
 
 // Target is a disk, or a file standing in for one, that an image is restored to.
@@ -52,7 +55,7 @@ type Target interface {
 // dismounts its volumes until the target is closed.
 func OpenTarget(path string, createSize, sectorSize int64) (Target, error) {
 	if isWindowsDevicePath(path) {
-		return openDevice(path, false)
+		return openDevice(path, deviceOptions{})
 	}
 
 	fi, err := os.Stat(path)
@@ -65,7 +68,47 @@ func OpenTarget(path string, createSize, sectorSize int64) (Target, error) {
 	case fi.Mode().IsRegular():
 		return openFileTarget(path, fi.Size(), sectorSize, false)
 	default:
-		return openDevice(path, false)
+		return openDevice(path, deviceOptions{})
+	}
+}
+
+// deviceOptions configure openDevice.
+type deviceOptions struct {
+	readOnly bool
+
+	// partitions, when set, are the only partitions a partial restore
+	// writes. On Windows their volumes are locked and dismounted, also when
+	// they have a file system, and the disk's other volumes stay mounted.
+	partitions []image.Partition
+
+	// keepPaths are paths that must survive, such as the repository: a
+	// volume among partitions that holds one is refused.
+	keepPaths []string
+}
+
+// OpenPartitionsTarget opens an existing restore target to restore volumes
+// into some of the partitions of its partition table, as a partial restore
+// does. On Windows the volumes of those partitions are locked and dismounted
+// until the target is closed, and the others stay mounted; a volume that
+// holds one of keepPaths, such as the repository or Windows, is refused. On
+// Linux, as for OpenTarget, no partition of the disk may be in use. When
+// readOnly, as for a dry run, nothing is locked or written.
+func OpenPartitionsTarget(path string, sectorSize int64, readOnly bool, partitions []image.Partition, keepPaths ...string) (Target, error) {
+	opt := deviceOptions{readOnly: readOnly, partitions: partitions, keepPaths: keepPaths}
+
+	if isWindowsDevicePath(path) {
+		return openDevice(path, opt)
+	}
+
+	fi, err := os.Stat(path)
+
+	switch {
+	case err != nil:
+		return nil, errors.Wrapf(err, "unable to examine %v", path)
+	case fi.Mode().IsRegular():
+		return openFileTarget(path, fi.Size(), sectorSize, readOnly)
+	default:
+		return openDevice(path, opt)
 	}
 }
 
@@ -74,7 +117,7 @@ func OpenTarget(path string, createSize, sectorSize int64) (Target, error) {
 // is checked like OpenTarget checks it, so a disk that is in use is refused.
 func OpenTargetReadOnly(path string, sectorSize int64) (Target, error) {
 	if isWindowsDevicePath(path) {
-		return openDevice(path, true)
+		return openDevice(path, deviceOptions{readOnly: true})
 	}
 
 	fi, err := os.Stat(path)
@@ -85,7 +128,7 @@ func OpenTargetReadOnly(path string, sectorSize int64) (Target, error) {
 	case fi.Mode().IsRegular():
 		return openFileTarget(path, fi.Size(), sectorSize, true)
 	default:
-		return openDevice(path, true)
+		return openDevice(path, deviceOptions{readOnly: true})
 	}
 }
 
@@ -103,6 +146,11 @@ func CheckNewTargetPath(path string) error {
 		return errors.Wrapf(err, "unable to resolve %v", path)
 	}
 
+	// a folder that links into /dev leads there too
+	if dir, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
+		abs = filepath.Join(dir, filepath.Base(abs))
+	}
+
 	if abs == devDir || strings.HasPrefix(abs, devDir+"/") {
 		return errors.Errorf("%v does not exist; check the device name (a file is not created under %v)", path, devDir)
 	}
@@ -116,24 +164,27 @@ func isWindowsDevicePath(path string) bool {
 	return strings.HasPrefix(path, `\\.\`) || strings.HasPrefix(path, `\\?\`)
 }
 
-// HasPartitionTable reports whether a target holds an MBR or GPT signature,
-// i.e. whether restoring to it would overwrite an existing disk layout.
-func HasPartitionTable(t Target) (bool, error) {
-	sector := make([]byte, t.SectorSize())
+// dataProbeSize is how much of each end of a target HasData reads.
+const dataProbeSize = 1 << 20
 
-	if _, err := t.ReadAt(sector, 0); err != nil && !errors.Is(err, io.EOF) {
-		return false, errors.Wrap(err, "unable to read the first sector")
+// HasData reports whether a target holds anything in its first or last MiB:
+// a partition table, its backup, or a file system, encrypted volume, LVM or
+// RAID signature on the whole disk. Restoring to it would overwrite that.
+func HasData(t Target) (bool, error) {
+	n := min(t.Size(), dataProbeSize) / t.SectorSize() * t.SectorSize()
+	buf := blockdev.AlignedBuffer(int(n))
+
+	for _, off := range []int64{0, t.Size() - n} {
+		if _, err := t.ReadAt(buf, off); err != nil && !errors.Is(err, io.EOF) {
+			return false, errors.Wrapf(err, "unable to read %v bytes at offset %v", n, off)
+		}
+
+		if slices.ContainsFunc(buf, func(b byte) bool { return b != 0 }) {
+			return true, nil
+		}
 	}
 
-	if sector[510] == 0x55 && sector[511] == 0xaa {
-		return true, nil
-	}
-
-	if _, err := t.ReadAt(sector, t.SectorSize()); err != nil && !errors.Is(err, io.EOF) {
-		return false, errors.Wrap(err, "unable to read the second sector")
-	}
-
-	return bytes.HasPrefix(sector, []byte("EFI PART")), nil
+	return false, nil
 }
 
 // fileTarget is a regular file standing in for a disk.

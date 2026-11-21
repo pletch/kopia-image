@@ -3,6 +3,7 @@ package imagerestore
 import (
 	"errors"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	pkgerrors "github.com/pkg/errors"
 	"golang.org/x/sys/windows"
 
+	"github.com/kopia/kopia/snapshot/image"
 	"github.com/kopia/kopia/snapshot/image/blockdev"
 	"github.com/kopia/kopia/snapshot/image/disksource"
 )
@@ -37,8 +39,10 @@ type deviceTarget struct {
 }
 
 // openDevice opens a physical drive. When readOnly, the drive is only read
-// and its volumes stay mounted.
-func openDevice(path string, readOnly bool) (Target, error) {
+// and its volumes stay mounted. See deviceOptions for partial restores.
+func openDevice(path string, opt deviceOptions) (Target, error) {
+	readOnly := opt.readOnly
+
 	number, ok := strings.CutPrefix(strings.ToLower(path), `\\.\physicaldrive`)
 	if !ok {
 		return nil, pkgerrors.Errorf("%v is not a physical drive; use \\\\.\\PhysicalDriveN or a file path", path)
@@ -54,10 +58,9 @@ func openDevice(path string, readOnly bool) (Target, error) {
 		return nil, pkgerrors.Wrapf(err, "unable to list the volumes on %v", path)
 	}
 
-	for _, v := range volumes {
-		if len(v.MountPoints) > 0 || (v.FileSystem != "unformatted" && v.FileSystem != "RAW") {
-			return nil, pkgerrors.Errorf("%v holds the volume %v (%v, mounted at %v); remove its partitions first, e.g. with diskpart \"clean\"", path, v.GUIDPath, v.FileSystem, v.MountPoints)
-		}
+	volumes, err = volumesToLock(path, volumes, opt)
+	if err != nil {
+		return nil, err
 	}
 
 	access := uint32(windows.GENERIC_READ | windows.GENERIC_WRITE)
@@ -94,6 +97,42 @@ func openDevice(path string, readOnly bool) (Target, error) {
 	}
 
 	return d, nil
+}
+
+// volumesToLock returns the volumes of a disk that opening it locks and
+// dismounts. For a whole-disk restore that is every volume, none of which may
+// have a file system or mount point. For a partial restore it is the volumes
+// of the selected partitions, which may have one but must not hold a path to
+// keep; the disk's other volumes stay as they are.
+func volumesToLock(path string, volumes []disksource.VolumeInfo, opt deviceOptions) ([]disksource.VolumeInfo, error) {
+	if len(opt.partitions) == 0 {
+		for _, v := range volumes {
+			if len(v.MountPoints) > 0 || (v.FileSystem != "unformatted" && v.FileSystem != "RAW") {
+				return nil, pkgerrors.Errorf("%v holds the volume %v (%v, mounted at %v); remove its partitions first, e.g. with diskpart \"clean\"", path, v.GUIDPath, v.FileSystem, v.MountPoints)
+			}
+		}
+
+		return volumes, nil
+	}
+
+	var out []disksource.VolumeInfo
+
+	for _, v := range volumes {
+		if !slices.ContainsFunc(opt.partitions, func(p image.Partition) bool { return p.Offset == v.Offset && p.Length == v.Length }) {
+			continue
+		}
+
+		holder := DiskInfo{Volumes: []DiskVolume{{MountPoints: v.MountPoints}}}
+		for _, k := range opt.keepPaths {
+			if k != "" && holder.HasMountPoint(k) {
+				return nil, pkgerrors.Errorf("the volume at %v holds %v; it cannot be restored while in use", strings.Join(v.MountPoints, ", "), k)
+			}
+		}
+
+		out = append(out, v)
+	}
+
+	return out, nil
 }
 
 // parseDiskNumber parses the decimal digits after \\.\PhysicalDrive.

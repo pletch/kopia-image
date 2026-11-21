@@ -2,6 +2,7 @@ package imagerestore
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -77,4 +78,35 @@ func TestDeleteExcludedFiles_errors(t *testing.T) {
 	deleted, err := DeleteExcludedFiles(root, []string{"busy.bin", "missing.bin"})
 	require.Equal(t, 0, deleted)
 	require.ErrorContains(t, err, "unable to delete 1 of 2 files")
+}
+
+func TestDeleteExcludedFiles_notThroughLinkedFolders(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+
+	target := filepath.Join(outside, "cache", "a.bin")
+	require.NoError(t, os.MkdirAll(filepath.Dir(target), 0o700))
+	require.NoError(t, os.WriteFile(target, make([]byte, 100), 0o600))
+
+	// a folder of the volume that links elsewhere, as "Documents and
+	// Settings" does to C:\Users on a running Windows
+	link := filepath.Join(root, "linked")
+
+	if err := os.Symlink(outside, link); err != nil {
+		if runtime.GOOS != "windows" {
+			require.NoError(t, err)
+		}
+
+		// without the privilege for symbolic links, a junction
+		if out, err := exec.CommandContext(t.Context(), "cmd", "/c", "mklink", "/J", link, outside).CombinedOutput(); err != nil {
+			t.Skipf("unable to create a link: %v: %s", err, out)
+		}
+	}
+
+	deleted, err := DeleteExcludedFiles(root, []string{`linked\cache\a.bin`})
+	require.NoError(t, err)
+	require.Zero(t, deleted)
+
+	_, err = os.Stat(target)
+	require.NoError(t, err, "the file behind the link is kept")
 }

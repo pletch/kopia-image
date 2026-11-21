@@ -3,9 +3,11 @@ package imagerestore
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/binary"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -223,6 +225,20 @@ func TestRestoreDisk_smallerTarget(t *testing.T) {
 	// sector, in whole sectors
 	require.Equal(t, ShrinkLimits{3: (5571*4096 + 32*mib/10 + 512 + 511) / 512 * 512}, limits)
 
+	// a cluster size in image.json that is not the volume's would read the
+	// bitmap wrongly, so the bitmap is not used
+	md := *s.Metadata
+	md.Volumes = slices.Clone(md.Volumes)
+	md.Volumes[1].ClusterSize = 2048
+	wrong := *s
+	wrong.Metadata = &md
+
+	_, err = wrong.LoadShrinkLimits(ctx, env.Repository)
+	require.ErrorContains(t, err, "image.json says")
+
+	_, err = wrong.freeSpace(ctx, env.Repository)
+	require.ErrorContains(t, err, "image.json says")
+
 	// a disk of 56 MiB: C: loses 6 MiB
 	targetPath := filepath.Join(t.TempDir(), "disk.img")
 
@@ -265,6 +281,11 @@ func TestRestoreDisk_smallerTarget(t *testing.T) {
 	require.True(t, info.BackupBootMatches)
 	require.True(t, info.Dirty)
 	require.Equal(t, int64(5570), info.LastUsedCluster)
+
+	// both boot sectors record where the partition starts
+	for _, off := range []int64{c.Offset, c.Offset + c.Length - 512} {
+		require.Equal(t, uint32(c.Offset/512), binary.LittleEndian.Uint32(readRange(t, targetPath, off+0x1C, 4)), "boot sector at %v", off)
+	}
 
 	// the files' clusters are as imaged
 	restored := readRange(t, targetPath, c.Offset, c.Length)

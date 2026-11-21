@@ -233,4 +233,42 @@ func TestCheckNewTargetPath(t *testing.T) {
 	}
 
 	require.NoError(t, CheckNewTargetPath("/devices/disk.img"))
+
+	// a folder linking to /dev
+	link := filepath.Join(t.TempDir(), "devlink")
+	require.NoError(t, os.Symlink("/dev", link))
+	require.ErrorContains(t, CheckNewTargetPath(filepath.Join(link, "sdx-no-such-disk")), "does not exist")
+}
+
+func TestHasData(t *testing.T) {
+	const size = 4 << 20
+
+	for name, tc := range map[string]struct {
+		off  int64
+		want bool
+	}{
+		"blank":                    {-1, false},
+		"partition table":          {510, true},
+		"whole-disk signature":     {4096, true},
+		"backup at the end":        {size - 512, true},
+		"data only in the middle":  {2 << 20, false},
+		"data just past the start": {1 << 20, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "disk.img")
+
+			target, err := OpenTarget(path, size, 512)
+			require.NoError(t, err)
+
+			if tc.off >= 0 {
+				_, err = target.WriteAt([]byte{1}, tc.off)
+				require.NoError(t, err)
+			}
+
+			has, err := HasData(target)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, has)
+			require.NoError(t, target.Close())
+		})
+	}
 }

@@ -24,13 +24,16 @@ const maxDeleteErrors = 10
 // read as zeros (see image.ReadExcludedFiles), so that the programs that used
 // them recreate them instead of reading zeros. root is the path of the
 // volume's root folder; files are relative to it, with backslash
-// separators. Only regular files are deleted; files that are already gone are
-// skipped. It returns the number of files deleted.
+// separators. Only regular files are deleted, and only through plain
+// folders: a file under a symbolic link or junction, which could lead off the
+// volume, is left alone. Files that are already gone are skipped. It returns
+// the number of files deleted.
 func DeleteExcludedFiles(root string, files []string) (int, error) {
 	var (
 		deleted int
 		errs    []error
 		failed  int
+		plain   = map[string]bool{} // folders checked by plainFolders
 	)
 
 	for _, f := range files {
@@ -38,7 +41,12 @@ func DeleteExcludedFiles(root string, files []string) (int, error) {
 			return deleted, errors.Errorf("invalid excluded file path %q", f)
 		}
 
-		path := filepath.Join(root, filepath.FromSlash(strings.ReplaceAll(f, `\`, "/")))
+		rel := filepath.FromSlash(strings.ReplaceAll(f, `\`, "/"))
+		path := filepath.Join(root, rel)
+
+		if !plainFolders(root, filepath.Dir(rel), plain) {
+			continue
+		}
 
 		ok, err := deleteRegularFile(path)
 		if err != nil {
@@ -65,6 +73,29 @@ func DeleteExcludedFiles(root string, files []string) (int, error) {
 	}
 
 	return deleted, nil
+}
+
+// plainFolders reports whether every folder from root down to root/dir is a
+// plain folder, not a symbolic link, junction or other reparse point. The
+// answers are kept in plain.
+func plainFolders(root, dir string, plain map[string]bool) bool {
+	if dir == "." || dir == "" {
+		return true
+	}
+
+	if ok, seen := plain[dir]; seen {
+		return ok
+	}
+
+	ok := plainFolders(root, filepath.Dir(dir), plain)
+	if ok {
+		fi, err := os.Lstat(filepath.Join(root, dir))
+		ok = err == nil && fi.IsDir() && fi.Mode()&(fs.ModeSymlink|fs.ModeIrregular) == 0
+	}
+
+	plain[dir] = ok
+
+	return ok
 }
 
 // deleteRegularFile deletes a regular file, also a read-only one, and reports

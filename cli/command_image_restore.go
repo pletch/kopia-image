@@ -17,6 +17,7 @@ import (
 	"github.com/kopia/kopia/snapshot"
 	"github.com/kopia/kopia/snapshot/image"
 	"github.com/kopia/kopia/snapshot/image/imagerestore"
+	"github.com/kopia/kopia/snapshot/image/recoverymedia"
 )
 
 const imageRestoreProgressEvery = 5 * time.Second
@@ -30,6 +31,7 @@ type commandImageRestore struct {
 	overwrite bool
 	force     bool
 
+	svc appServices
 	out textOutput
 }
 
@@ -40,9 +42,10 @@ func (c *commandImageRestore) setup(svc appServices, parent commandParent) {
 	cmd.Flag("parallel", "Number of chunks fetched in parallel; by default 64 MiB of chunks, 64 of 1 MiB or 16 of 4 MiB").Default("0").IntVar(&c.parallel)
 	cmd.Flag("only", "Restore only these volumes (e.g. p3-C or a partition number) into the target's matching partition table").StringsVar(&c.only)
 	cmd.Flag("dry-run", "Check the snapshot and the target without writing").BoolVar(&c.dryRun)
-	cmd.Flag("overwrite", "Allow overwriting a target that already has a partition table").BoolVar(&c.overwrite)
+	cmd.Flag("overwrite", "Allow overwriting a target that is not blank: one with a partition table or other data").BoolVar(&c.overwrite)
 	cmd.Flag("force", "Restore even if another attached disk has the image's disk GUID").BoolVar(&c.force)
 	cmd.Action(svc.repositoryReaderAction(c.run))
+	c.svc = svc
 	c.out.setup(svc)
 }
 
@@ -64,7 +67,11 @@ func (c *commandImageRestore) run(ctx context.Context, rep repo.Repository) erro
 
 	printImageRestorePlan(&c.out, s, volumes)
 
-	t, err := c.openTarget(s)
+	// --only restores into the target's partition table, also when it names
+	// every volume of the image
+	fullRestore := len(c.only) == 0
+
+	t, err := c.openTarget(s, volumes, fullRestore)
 	if t == nil && err == nil {
 		c.out.printStdout("Dry run: %v would be created as a %v-byte disk image file. Nothing was written.\n", c.target, s.Layout.DiskSize)
 		return nil
@@ -81,8 +88,6 @@ func (c *commandImageRestore) run(ctx context.Context, rep repo.Repository) erro
 			log(ctx).Errorf("%v", cerr)
 		}
 	}()
-
-	fullRestore := len(volumes) == len(s.Metadata.Volumes)
 
 	if fullRestore {
 		if s, err = c.fitTarget(ctx, rep, s, t); err != nil {
@@ -101,7 +106,7 @@ func (c *commandImageRestore) run(ctx context.Context, rep repo.Repository) erro
 		return nil
 	}
 
-	if err := restoreImageToTarget(ctx, &c.out, rep, s, t, volumes, c.parallel); err != nil {
+	if err := restoreImageToTarget(ctx, &c.out, rep, s, t, volumes, !fullRestore, c.parallel); err != nil {
 		return err
 	}
 
@@ -137,7 +142,25 @@ func (c *commandImageRestore) fitTarget(ctx context.Context, rep repo.Repository
 // openTarget opens the restore target, read-only for a dry run so that the
 // target is not touched. It returns nil for a dry run to a file that does not
 // exist yet.
-func (c *commandImageRestore) openTarget(s *imagerestore.Snapshot) (imagerestore.Target, error) {
+func (c *commandImageRestore) openTarget(s *imagerestore.Snapshot, volumes []image.Volume, fullRestore bool) (imagerestore.Target, error) {
+	// a partial restore writes into some partitions of the target's table
+	if !fullRestore {
+		var parts []image.Partition
+
+		for i := range volumes {
+			if p, ok := s.Layout.Partition(volumes[i].PartitionNumber); ok {
+				parts = append(parts, p)
+			}
+		}
+
+		keep := []string{systemRoot()}
+		if lc, err := repo.LoadConfigFromFile(c.svc.repositoryConfigFileName()); err == nil {
+			keep = append(keep, recoverymedia.LocalRepositoryPath(lc))
+		}
+
+		return imagerestore.OpenPartitionsTarget(c.target, s.Layout.SectorSize, c.dryRun, parts, keep...) //nolint:wrapcheck
+	}
+
 	if !c.dryRun {
 		return imagerestore.OpenTarget(c.target, s.Layout.DiskSize, s.Layout.SectorSize) //nolint:wrapcheck
 	}
@@ -158,13 +181,13 @@ func (c *commandImageRestore) checkTarget(s *imagerestore.Snapshot, t imageresto
 		return nil
 	}
 
-	has, err := imagerestore.HasPartitionTable(t)
+	has, err := imagerestore.HasData(t)
 	if err != nil {
 		return err //nolint:wrapcheck
 	}
 
 	if has {
-		return errors.Errorf("%v already has a partition table; pass --overwrite to replace it and everything on it", t.Path())
+		return errors.Errorf("%v is not blank: it holds a partition table or other data; pass --overwrite to replace everything on it", t.Path())
 	}
 
 	return nil
@@ -172,7 +195,7 @@ func (c *commandImageRestore) checkTarget(s *imagerestore.Snapshot, t imageresto
 
 // restoreImageToTarget restores the volumes of an image to an open target,
 // printing progress and a summary.
-func restoreImageToTarget(ctx context.Context, out *textOutput, rep repo.Repository, s *imagerestore.Snapshot, t imagerestore.Target, volumes []image.Volume, parallel int) error {
+func restoreImageToTarget(ctx context.Context, out *textOutput, rep repo.Repository, s *imagerestore.Snapshot, t imagerestore.Target, volumes []image.Volume, partial bool, parallel int) error {
 	start := clock.Now()
 	progress := newImageRestoreProgress(out.printStderr)
 
@@ -182,13 +205,20 @@ func restoreImageToTarget(ctx context.Context, out *textOutput, rep repo.Reposit
 
 	results, err := imagerestore.RestoreDisk(ctx, rep, s, t, imagerestore.DiskOptions{
 		Volumes:  volumes,
+		Partial:  partial,
 		Parallel: parallel,
 		Progress: progress.update,
 	})
 
 	progress.stop()
 
-	if err != nil {
+	// the partitions are on the disk; the operating system sees them later
+	rereadErr := err
+	if !errors.Is(err, imagerestore.ErrRereadPartitions) {
+		rereadErr = nil
+	}
+
+	if err != nil && rereadErr == nil {
 		return errors.Wrapf(err, "restore to %v failed; the target is incomplete", t.Path())
 	}
 
@@ -214,6 +244,10 @@ func restoreImageToTarget(ctx context.Context, out *textOutput, rep repo.Reposit
 		len(results), units.BytesString(total), t.Path(), elapsed.Truncate(time.Second),
 		units.BytesPerSecondsString(float64(total)/max(elapsed.Seconds(), 1e-3)))
 	out.printStdout("Volumes that used BitLocker are restored decrypted; re-enable BitLocker after the first boot.\n")
+
+	if rereadErr != nil {
+		out.printStderr("Warning: %v. The restore is complete; detach and attach the disk, or restart, to see its partitions.\n", rereadErr)
+	}
 
 	return nil
 }

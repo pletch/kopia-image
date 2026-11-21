@@ -112,7 +112,7 @@ func TestRestoreDisk_newFile(t *testing.T) {
 	require.True(t, target.IsZeroed())
 	require.NoError(t, s.CheckTarget(target, false))
 
-	has, err := HasPartitionTable(target)
+	has, err := HasData(target)
 	require.NoError(t, err)
 	require.False(t, has)
 
@@ -121,7 +121,7 @@ func TestRestoreDisk_newFile(t *testing.T) {
 	require.Len(t, results, 2)
 	require.Equal(t, int64(4*chunk), results[1].Stats.ZeroBytes)
 
-	has, err = HasPartitionTable(target)
+	has, err = HasData(target)
 	require.NoError(t, err)
 	require.True(t, has)
 	require.NoError(t, target.Close())
@@ -313,7 +313,12 @@ func TestRestoreDisk_syncsVolumesBeforeWritingThePartitionTable(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, target.Close())
 
-	lastData := slices.Index(o.events, "data")
+	firstData := slices.Index(o.events, "data")
+	require.Positive(t, firstData)
+	require.Equal(t, "table", o.events[0], "the partition table is cleared first")
+	require.Contains(t, o.events[:firstData], "sync", "the cleared partition table is synced before the volumes are written: %v", o.events[:firstData+1])
+
+	lastData := firstData
 	for i, e := range o.events {
 		if e == "data" {
 			lastData = i
@@ -367,4 +372,95 @@ func TestRestoreDisk_rejectsVolumesNotOfTheSnapshot(t *testing.T) {
 			require.NoError(t, target.Close())
 		})
 	}
+}
+
+func TestRestoreDisk_interruptedPartialRestoreLeavesNoVolume(t *testing.T) {
+	ctx, env, s, contents := createImageSnapshot(t)
+
+	path := filepath.Join(t.TempDir(), "disk.img")
+
+	target, err := OpenTarget(path, s.Layout.DiskSize, 512)
+	require.NoError(t, err)
+
+	_, err = RestoreDisk(ctx, env.Repository, s, target, DiskOptions{Volumes: s.Metadata.Volumes})
+	require.NoError(t, err)
+
+	only, err := s.SelectVolumes([]string{"3"})
+	require.NoError(t, err)
+
+	// the restore of the NTFS volume fails partway through
+	p3, _ := s.Layout.Partition(3)
+
+	_, err = RestoreDisk(ctx, env.Repository, s, &failingTarget{Target: target, limit: p3.Offset + 8<<20}, DiskOptions{Volumes: only})
+	require.ErrorIs(t, err, io.ErrShortWrite)
+	require.NoError(t, target.Close())
+
+	v := only[0]
+
+	require.Equal(t, make([]byte, volumeHeadSize), readRange(t, path, p3.Offset, volumeHeadSize), "the volume's boot sector is not left in place")
+	require.Equal(t, make([]byte, 512), readRange(t, path, p3.Offset+v.Size-512, 512), "nor its backup boot sector")
+
+	// restoring it again completes it
+	target, err = OpenTarget(path, 0, 512)
+	require.NoError(t, err)
+
+	_, err = RestoreDisk(ctx, env.Repository, s, target, DiskOptions{Volumes: only})
+	require.NoError(t, err)
+	require.NoError(t, target.Close())
+
+	verifyRestoredDisk(t, path, s, contents)
+}
+
+func TestDeferringTarget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "disk.img")
+
+	target, err := OpenTarget(path, 64<<10, 512)
+	require.NoError(t, err)
+
+	d := &deferringTarget{Target: target, ranges: []deferredRange{{off: 4096, buf: make([]byte, 4096)}, {off: 16384, buf: make([]byte, 512)}}}
+
+	data := bytes.Repeat([]byte{7}, 32<<10)
+	_, err = d.WriteAt(data, 0)
+	require.NoError(t, err)
+	require.NoError(t, d.Zero(4096+512, 512))
+
+	want := slices.Clone(data)
+	clear(want[4096:8192])
+	clear(want[16384:16896])
+	require.Equal(t, want, readRange(t, path, 0, 32<<10), "deferred ranges are not written")
+
+	wantBuf := bytes.Repeat([]byte{7}, 4096)
+	clear(wantBuf[512:1024])
+	require.Equal(t, wantBuf, d.ranges[0].buf)
+	require.Equal(t, bytes.Repeat([]byte{7}, 512), d.ranges[1].buf)
+	require.NoError(t, target.Close())
+}
+
+func TestRestoreDisk_partialWithEveryVolume(t *testing.T) {
+	ctx, env, s, contents := createImageSnapshot(t)
+
+	// a blank disk has no partition table to restore into
+	path := filepath.Join(t.TempDir(), "disk.img")
+
+	target, err := OpenTarget(path, s.Layout.DiskSize, 512)
+	require.NoError(t, err)
+
+	_, err = RestoreDisk(ctx, env.Repository, s, target, DiskOptions{Volumes: s.Metadata.Volumes, Partial: true})
+	require.Error(t, err)
+
+	has, err := HasData(target)
+	require.NoError(t, err)
+	require.False(t, has, "nothing is written")
+
+	// once it has the image's table, every volume restores into it in place
+	_, err = RestoreDisk(ctx, env.Repository, s, target, DiskOptions{Volumes: s.Metadata.Volumes})
+	require.NoError(t, err)
+
+	o := &orderTarget{Target: target}
+
+	_, err = RestoreDisk(ctx, env.Repository, s, o, DiskOptions{Volumes: s.Metadata.Volumes, Partial: true})
+	require.NoError(t, err)
+	require.NoError(t, target.Close())
+
+	verifyRestoredDisk(t, path, s, contents)
 }

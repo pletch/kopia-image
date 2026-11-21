@@ -197,3 +197,16 @@ func TestWriteObject_errors(t *testing.T) {
 	_, err = WriteObject(canceled, env.Repository, oid, &memDisk{data: make([]byte, 64<<20)}, 0, Options{})
 	require.Error(t, err)
 }
+
+func TestOptions_parallelBoundedByMemory(t *testing.T) {
+	chunks := make([]object.IndirectObjectEntry, 10000)
+	for i := range chunks {
+		chunks[i] = object.IndirectObjectEntry{Start: int64(i) * MaxChunkLength, Length: MaxChunkLength}
+	}
+
+	o := Options{Parallel: 100000}.withDefaults(chunks)
+	require.Equal(t, int(maxBufferedBytes/MaxChunkLength), o.Parallel)
+
+	o = Options{Parallel: 8}.withDefaults(chunks)
+	require.Equal(t, 8, o.Parallel)
+}

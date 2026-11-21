@@ -19,6 +19,7 @@ const (
 	blkSSZGet   = unix.BLKDISCARD - 119 + 104 // _IO(0x12, 104)
 	blkRRPart   = unix.BLKDISCARD - 119 + 95  // _IO(0x12, 95)
 	blkZeroOut  = unix.BLKDISCARD - 119 + 127 // _IO(0x12, 127)
+	blkFlsBuf   = unix.BLKDISCARD - 119 + 97  // _IO(0x12, 97)
 	sysClassBlk = "/sys/class/block"
 )
 
@@ -32,8 +33,11 @@ type deviceTarget struct {
 }
 
 // openDevice opens a whole disk exclusively, also when readOnly, so that a
-// dry run reports a disk that is in use.
-func openDevice(path string, readOnly bool) (Target, error) {
+// dry run reports a disk that is in use. Exclusive access to the whole disk
+// requires every partition to be unused, also for a partial restore.
+func openDevice(path string, opt deviceOptions) (Target, error) {
+	readOnly := opt.readOnly
+
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return nil, pkgerrors.Wrapf(err, "unable to resolve %v", path)
@@ -108,6 +112,12 @@ func (d *deviceTarget) Sync() error {
 	return pkgerrors.Wrapf(d.File.Sync(), "unable to sync %v", d.Name())
 }
 
+// dropCache drops the device's cached pages, so that what is read next comes
+// from the disk.
+func (d *deviceTarget) dropCache() error {
+	return pkgerrors.Wrapf(ioctlPtr(d.File, blkFlsBuf, nil), "unable to drop the cache of %v", d.Name())
+}
+
 func (d *deviceTarget) RereadPartitions() error {
 	return pkgerrors.Wrapf(ioctlPtr(d.File, blkRRPart, nil), "unable to reread the partitions of %v", d.Name())
 }
@@ -129,7 +139,7 @@ func otherDiskGUIDs(target Target) (map[string]string, error) {
 
 	for _, e := range entries {
 		path := "/dev/" + e.Name()
-		if path == resolvedTarget {
+		if path == resolvedTarget || !isDiskName(e.Name()) {
 			continue
 		}
 

@@ -101,6 +101,28 @@ func TestImageRestoreToDiskAndFile(t *testing.T) {
 	chk, err := exec.CommandContext(t.Context(), "chkdsk", restored, "/scan").CombinedOutput()
 	require.NoError(t, err, "chkdsk:\n%s", chk)
 	require.Contains(t, string(chk), "found no problems")
+
+	// --only restores the data volume in place while it is mounted: its volume
+	// is locked and dismounted, and Windows mounts it again afterwards
+	require.NoError(t, os.WriteFile(filepath.Join(restored, "dir0", "file00.txt"), []byte("changed"), 0o600))
+
+	// reattaching it may have changed its number
+	target = blockdev.DiskPath(dst.Number())
+
+	out = env.RunAndExpectSuccess(t, "image", "restore", source, "--target", target, "--only", "2")
+	t.Logf("partial restore to disk:\n%s", strings.Join(out, "\n"))
+
+	restored = dst.Mount()
+
+	for name, data := range want {
+		got, err := os.ReadFile(filepath.Join(restored, name))
+		require.NoError(t, err, name)
+		require.Equal(t, data, string(got), name)
+	}
+
+	chk, err = exec.CommandContext(t.Context(), "chkdsk", restored, "/scan").CombinedOutput()
+	require.NoError(t, err, "chkdsk after the partial restore:\n%s", chk)
+	require.Contains(t, string(chk), "found no problems")
 }
 
 // TestImageRestoreDeletesExcludedFiles images a volume holding a kopia cache:

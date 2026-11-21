@@ -93,9 +93,17 @@ func (s *Snapshot) loadBitmaps(ctx context.Context, rep repo.Repository) (map[in
 			return nil, err
 		}
 
-		if bitmap != nil {
-			out[v.PartitionNumber] = bitmap
+		if bitmap == nil {
+			continue
 		}
+
+		// the bitmap is read with image.json's cluster size, which must be
+		// the volume's own, or used clusters would be taken for free ones
+		if err := checkNTFSGeometry(ctx, rep, v, s.Layout.SectorSize); err != nil {
+			return nil, err
+		}
+
+		out[v.PartitionNumber] = bitmap
 	}
 
 	return out, nil
@@ -152,6 +160,35 @@ func shrinkLimit(bitmap []byte, totalClusters, clusterSize, sectorSize, partitio
 
 	return min(partitionLength, (limit+sectorSize-1)/sectorSize*sectorSize)
 }
+
+// checkNTFSGeometry checks that the boot sector of an imaged NTFS volume has
+// the cluster size and cluster count that image.json gives it.
+func checkNTFSGeometry(ctx context.Context, rep repo.Repository, v *image.Volume, sectorSize int64) error {
+	r, err := rep.OpenObject(ctx, v.ObjectID)
+	if err != nil {
+		return errors.Wrapf(err, "unable to open %v", v.EntryName)
+	}
+	defer r.Close() //nolint:errcheck
+
+	sector := make([]byte, max(sectorSize, bootSectorReadSize))
+	if _, err := io.ReadFull(r, sector); err != nil {
+		return errors.Wrapf(err, "unable to read the boot sector of %v", v.EntryName)
+	}
+
+	b, err := ntfsresize.ParseBoot(sector)
+	if err != nil {
+		return errors.Wrapf(err, "invalid boot sector in %v", v.EntryName)
+	}
+
+	if clusters := ntfsClustersEnd(v, sectorSize) / v.ClusterSize; b.ClusterSize != v.ClusterSize || b.TotalClusters() != clusters {
+		return errors.Errorf("%v has %v clusters of %v bytes, image.json says %v of %v bytes", v.EntryName, b.TotalClusters(), b.ClusterSize, clusters, v.ClusterSize)
+	}
+
+	return nil
+}
+
+// bootSectorReadSize is the least read for an NTFS boot sector.
+const bootSectorReadSize = 512
 
 func readBitmapEntry(ctx context.Context, dir fs.Directory, name string) ([]byte, error) {
 	e, err := dir.Child(ctx, name)

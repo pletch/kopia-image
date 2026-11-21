@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	stderrors "errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -74,8 +75,12 @@ type commandImageRecover struct {
 	parallel     int
 
 	answers *recoverAnswers
-	info    *recoverymedia.Info
-	in      *bufio.Reader
+
+	// answersFromMedia is set when the answers were found on the recovery
+	// media rather than given with --answers.
+	answersFromMedia bool
+	info             *recoverymedia.Info
+	in               *bufio.Reader
 
 	// media is the root of the recovery media in the recovery environment.
 	media string
@@ -227,6 +232,7 @@ func (c *commandImageRecover) loadInputs() error {
 			if _, err := os.Stat(p); err == nil {
 				c.out.printStdout("Answering from %v.\n", p)
 				c.answersFile = p
+				c.answersFromMedia = true
 			}
 		}
 	}
@@ -711,7 +717,12 @@ func (c *commandImageRecover) confirm(t *recoverTarget) error {
 			return errors.New("the answers do not confirm erasing the target")
 		}
 
-		return nil
+		// test media used on a real computer must not erase a disk unasked
+		if !c.answersFromMedia || t.disk == nil || len(t.disk.Volumes) == 0 {
+			return nil
+		}
+
+		c.out.printStdout("\nThe answers on the recovery media confirm erasing only a blank disk, as tests use.\n")
 	}
 
 	if t.disk == nil {
@@ -763,15 +774,9 @@ func (c *commandImageRecover) restore(ctx context.Context, rep repo.Repository, 
 		return err
 	}
 
-	if t.disk != nil && len(t.disk.Volumes) > 0 {
-		if err := imagerestore.CleanDisk(ctx, t.path); err != nil {
-			return errors.Wrap(err, "unable to remove the disk's partitions")
-		}
-	}
-
-	tgt, err := imagerestore.OpenTarget(t.path, s.Layout.DiskSize, s.Layout.SectorSize)
+	tgt, err := eraseAndOpen(ctx, s, t)
 	if err != nil {
-		return errors.Wrap(err, "unable to open the restore target")
+		return err
 	}
 
 	closeTarget := sync.OnceValue(tgt.Close)
@@ -784,7 +789,7 @@ func (c *commandImageRecover) restore(ctx context.Context, rep repo.Repository, 
 
 	c.out.printStdout("\nRestoring to %v...\n", tgt.Path())
 
-	if err := restoreImageToTarget(ctx, &c.out, rep, s, tgt, s.Metadata.Volumes, c.parallel); err != nil {
+	if err := restoreImageToTarget(ctx, &c.out, rep, s, tgt, s.Metadata.Volumes, false, c.parallel); err != nil {
 		return err
 	}
 
@@ -800,6 +805,35 @@ func (c *commandImageRecover) restore(ctx context.Context, rep repo.Repository, 
 	printResizeNotes(&c.out, s)
 
 	return nil
+}
+
+// eraseAndOpen opens the confirmed target, after checking that a disk is
+// still the one listed and removing its partitions. The open target is
+// checked to be as large as the disk listed.
+func eraseAndOpen(ctx context.Context, s *imagerestore.Snapshot, t *recoverTarget) (imagerestore.Target, error) {
+	if t.disk != nil {
+		if err := imagerestore.CheckSameDisk(t.disk); err != nil {
+			return nil, errors.Wrap(err, "nothing was written; start again to choose the disk")
+		}
+
+		if len(t.disk.Volumes) > 0 {
+			if err := imagerestore.CleanDisk(ctx, t.path); err != nil {
+				return nil, errors.Wrap(err, "unable to remove the disk's partitions")
+			}
+		}
+	}
+
+	tgt, err := imagerestore.OpenTarget(t.path, s.Layout.DiskSize, s.Layout.SectorSize)
+	if err != nil {
+		return nil, errors.Wrap(err, "unable to open the restore target")
+	}
+
+	if t.disk != nil && (tgt.Size() != t.disk.Size || tgt.SectorSize() != t.disk.SectorSize) {
+		return nil, stderrors.Join(errors.Errorf("%v now has %v bytes in %v-byte sectors, it had %v in %v-byte sectors; start again to choose the disk",
+			tgt.Path(), tgt.Size(), tgt.SectorSize(), t.disk.Size, t.disk.SectorSize), tgt.Close())
+	}
+
+	return tgt, nil
 }
 
 func (c *commandImageRecover) checkTarget(s *imagerestore.Snapshot, t imagerestore.Target) error {

@@ -233,8 +233,22 @@ func (o Options) withDefaults(chunks []object.IndirectObjectEntry) Options {
 
 	o.Parallel = min(o.Parallel, max(1, len(chunks)))
 
+	// each fetch holds a buffer as long as the longest chunk
+	var longest int64
+	for _, c := range chunks {
+		longest = max(longest, c.Length)
+	}
+
+	if longest > 0 {
+		o.Parallel = min(o.Parallel, max(1, int(maxBufferedBytes/longest)))
+	}
+
 	return o
 }
+
+// maxBufferedBytes bounds the chunk buffers of the parallel fetches,
+// whatever --parallel asks for.
+const maxBufferedBytes = 1 << 30
 
 // chunkGroup is a distinct chunk and every object offset where it occurs.
 type chunkGroup struct {

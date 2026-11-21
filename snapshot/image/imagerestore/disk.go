@@ -3,7 +3,9 @@ package imagerestore
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"io"
+	"math"
 	"slices"
 	"strconv"
 
@@ -20,6 +22,12 @@ import (
 )
 
 const maxMetadataFileSize = 64 << 20
+
+// ErrRereadPartitions is returned by RestoreDisk when the restore is complete
+// and its partition table written and verified, but the operating system did
+// not reread the partition table: it sees the new partitions once the disk is
+// attached again or the computer restarts.
+var ErrRereadPartitions = errors.New("the operating system did not reread the partition table")
 
 // ErrDuplicateDiskGUID is returned when another attached disk has the imaged
 // disk's GUID, which confuses Windows boot when both are attached.
@@ -156,9 +164,14 @@ func (s *Snapshot) CheckTarget(t Target, allowDuplicateGUID bool) error {
 // DiskOptions configure RestoreDisk.
 type DiskOptions struct {
 	// Volumes to restore; see SelectVolumes. When it is a subset of the
-	// image's volumes, the partition table is not rewritten and the target's
-	// table must already match for the selected partitions.
+	// image's volumes, or Partial is set, the partition table is not
+	// rewritten and the target's table must already match for the selected
+	// partitions.
 	Volumes []image.Volume
+
+	// Partial restores the volumes into the target's partition table, as for
+	// a subset, also when they are all of the image's volumes.
+	Partial bool
 
 	Parallel int
 
@@ -188,18 +201,10 @@ func RestoreDisk(ctx context.Context, rep repo.Repository, s *Snapshot, t Target
 		return nil, err
 	}
 
-	fullRestore := len(opt.Volumes) == len(s.Metadata.Volumes)
+	fullRestore := !opt.Partial && len(opt.Volumes) == len(s.Metadata.Volumes)
 
 	if !fullRestore && len(s.Resized) > 0 {
 		return nil, errors.New("only a whole disk can be restored to a smaller disk")
-	}
-
-	if fullRestore {
-		if err := gpt.Clear(t, t.SectorSize(), t.Size()); err != nil {
-			return nil, errors.Wrap(err, "unable to clear the partition table")
-		}
-	} else if err := s.checkExistingTable(t, opt.Volumes); err != nil {
-		return nil, err
 	}
 
 	// free clusters need not be zeroed; without the bitmaps they are
@@ -208,16 +213,169 @@ func RestoreDisk(ctx context.Context, rep repo.Repository, s *Snapshot, t Target
 		free = nil
 	}
 
+	if !fullRestore {
+		return s.restorePartial(ctx, rep, t, free, opt)
+	}
+
+	if err := gpt.Clear(t, t.SectorSize(), t.Size()); err != nil {
+		return nil, errors.Wrap(err, "unable to clear the partition table")
+	}
+
+	// the cleared table must be on the disk before any volume data, or an
+	// interruption could leave the old table pointing at partly new data
+	if err := t.Sync(); err != nil {
+		return nil, errors.Wrap(err, "unable to sync the cleared partition table")
+	}
+
 	results, err := restoreVolumes(ctx, rep, t, s.Layout, free, opt)
 	if err != nil {
 		return results, err
 	}
 
-	if fullRestore {
-		return results, s.finishFullRestore(t, opt.Volumes)
+	return results, s.finishFullRestore(t, opt.Volumes)
+}
+
+// restorePartial restores some volumes into the partitions of the target's
+// existing partition table, which stays valid throughout. So that an
+// interrupted restore does not leave a volume that mounts with partly old
+// data, the sectors that identify each volume (see headRanges) are zeroed and
+// synced first, and written last, after the rest of the volume is synced.
+func (s *Snapshot) restorePartial(ctx context.Context, rep repo.Repository, t Target, free map[int][]image.Extent, opt DiskOptions) ([]VolumeResult, error) {
+	if err := s.checkExistingTable(t, opt.Volumes); err != nil {
+		return nil, err
+	}
+
+	d := &deferringTarget{Target: t}
+
+	for i := range opt.Volumes {
+		p, _ := s.Layout.Partition(opt.Volumes[i].PartitionNumber)
+
+		for _, e := range headRanges(&opt.Volumes[i], p, s.Layout.SectorSize) {
+			if err := t.Zero(e.Start, e.Length); err != nil {
+				return nil, errors.Wrapf(err, "unable to zero the start of partition %v", p.Number)
+			}
+
+			d.ranges = append(d.ranges, deferredRange{off: e.Start, buf: blockdev.AlignedBuffer(int(e.Length))})
+		}
+	}
+
+	if err := t.Sync(); err != nil {
+		return nil, errors.Wrap(err, "unable to sync")
+	}
+
+	results, err := restoreVolumes(ctx, rep, d, s.Layout, free, opt)
+	if err != nil {
+		return results, err
+	}
+
+	if err := t.Sync(); err != nil {
+		return results, errors.Wrap(err, "unable to sync the volumes")
+	}
+
+	for _, r := range d.ranges {
+		if _, err := t.WriteAt(r.buf, r.off); err != nil {
+			return results, errors.Wrapf(err, "unable to write %v bytes at offset %v", len(r.buf), r.off)
+		}
 	}
 
 	return results, errors.Wrap(t.Sync(), "unable to sync")
+}
+
+// volumeHeadSize is how much of the start of a volume a partial restore
+// writes last: the boot sector and its FAT backup, and the superblocks of
+// other file systems.
+const volumeHeadSize = 128 << 10
+
+// headRanges returns the target ranges that make a partition recognizable as
+// a volume: its first volumeHeadSize bytes and, for NTFS, the backup boot
+// sector in the volume's last sector.
+func headRanges(v *image.Volume, p image.Partition, sectorSize int64) []image.Extent {
+	head := min(int64(volumeHeadSize), v.Size)
+	out := []image.Extent{{Start: p.Offset, Length: head}}
+
+	if v.Kind == image.VolumeKindNTFS && v.Size-sectorSize >= head {
+		out = append(out, image.Extent{Start: p.Offset + v.Size - sectorSize, Length: sectorSize})
+	}
+
+	return out
+}
+
+// deferredRange is a range of a target whose writes are kept in buf.
+type deferredRange struct {
+	off int64
+	buf []byte
+}
+
+// deferringTarget keeps the writes and zeroing of its ranges in memory and
+// passes everything else to the target.
+type deferringTarget struct {
+	Target
+
+	ranges []deferredRange
+}
+
+func (d *deferringTarget) WriteAt(p []byte, off int64) (int, error) {
+	end := off + int64(len(p))
+
+	err := d.split(off, end, func(r *deferredRange, from, to int64) {
+		copy(r.buf[from-r.off:to-r.off], p[from-off:to-off])
+	}, func(from, to int64) error {
+		_, err := d.Target.WriteAt(p[from-off:to-off], from)
+		return err //nolint:wrapcheck
+	})
+	if err != nil {
+		return 0, err
+	}
+
+	return len(p), nil
+}
+
+func (d *deferringTarget) Zero(off, length int64) error {
+	return d.split(off, off+length, func(r *deferredRange, from, to int64) {
+		clear(r.buf[from-r.off : to-r.off])
+	}, func(from, to int64) error {
+		return d.Target.Zero(from, to-from)
+	})
+}
+
+// split calls deferred for the parts of [off, end) inside a range and pass
+// for the parts outside them, in order.
+func (d *deferringTarget) split(off, end int64, deferred func(r *deferredRange, from, to int64), pass func(from, to int64) error) error {
+	for off < end {
+		if r := d.rangeAt(off); r != nil {
+			next := min(end, r.off+int64(len(r.buf)))
+			deferred(r, off, next)
+			off = next
+
+			continue
+		}
+
+		next := end
+
+		for i := range d.ranges {
+			if r := &d.ranges[i]; r.off > off && r.off < next {
+				next = r.off
+			}
+		}
+
+		if err := pass(off, next); err != nil {
+			return err
+		}
+
+		off = next
+	}
+
+	return nil
+}
+
+func (d *deferringTarget) rangeAt(off int64) *deferredRange {
+	for i := range d.ranges {
+		if r := &d.ranges[i]; off >= r.off && off < r.off+int64(len(r.buf)) {
+			return r
+		}
+	}
+
+	return nil
 }
 
 // checkVolumes checks that volumes are volumes of the snapshot, each listed
@@ -245,7 +403,7 @@ func (s *Snapshot) checkVolumes(volumes []image.Volume) error {
 			return errors.Errorf("the snapshot has no volume for partition %v", v.PartitionNumber)
 		}
 
-		if m := &s.Metadata.Volumes[j]; m.EntryName != v.EntryName || m.ObjectID != v.ObjectID || m.Size != v.Size || m.Kind != v.Kind {
+		if m := &s.Metadata.Volumes[j]; m.EntryName != v.EntryName || m.ObjectID != v.ObjectID || m.Size != v.Size || m.Kind != v.Kind || m.ClusterSize != v.ClusterSize {
 			return errors.Errorf("%v (partition %v) is not the snapshot's volume %v", v.EntryName, v.PartitionNumber, m.EntryName)
 		}
 
@@ -300,6 +458,14 @@ func restoreVolumes(ctx context.Context, rep repo.Repository, t Target, layout *
 		if shrink {
 			if err := ntfsresize.Shrink(&section{t: t, offset: p.Offset, length: p.Length}, p.Length); err != nil {
 				return results, errors.Wrapf(err, "unable to shrink %v to %v bytes", v.EntryName, p.Length)
+			}
+		}
+
+		// a partition that FitTo moved starts at another sector than the one
+		// its boot sector records
+		if v.Kind == image.VolumeKindNTFS && p.Offset/layout.SectorSize <= math.MaxUint32 {
+			if err := ntfsresize.SetHiddenSectors(&section{t: t, offset: p.Offset, length: p.Length}, uint32(p.Offset/layout.SectorSize)); err != nil { //nolint:gosec
+				return results, errors.Wrapf(err, "unable to update the boot sector of %v", v.EntryName)
 			}
 		}
 
@@ -374,11 +540,22 @@ func (s *Snapshot) finishFullRestore(t Target, volumes []image.Volume) error {
 		return errors.Wrap(err, "unable to sync")
 	}
 
+	// read the table back from the disk, not from the operating system's cache
+	if c, ok := t.(interface{ dropCache() error }); ok {
+		if err := c.dropCache(); err != nil {
+			return err
+		}
+	}
+
 	if err := s.checkExistingTable(t, volumes); err != nil {
 		return errors.Wrap(err, "partition table verification failed")
 	}
 
-	return errors.Wrap(t.RereadPartitions(), "unable to reread the partitions")
+	if err := t.RereadPartitions(); err != nil {
+		return errors.Wrap(stderrors.Join(ErrRereadPartitions, err), "unable to reread the partitions")
+	}
+
+	return nil
 }
 
 // checkExistingTable checks that the target's partition table matches the
