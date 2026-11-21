@@ -92,6 +92,41 @@ func TestLayout_MinTargetSize(t *testing.T) {
 	require.Equal(t, int64(117<<20+100<<30+650<<20+33*512), testLayout().MinTargetSize())
 }
 
+// testLayout4K is a Storage Spaces virtual disk with 4096-byte sectors, whose
+// GPT reserves 5 sectors at the end (header plus a 4-sector entry array) and
+// 6 at the start, where 512-byte disks reserve 33 and 34.
+func testLayout4K() *Layout {
+	return &Layout{
+		DiskGUID:   testDiskGUID,
+		SectorSize: 4096,
+		DiskSize:   751619276800,
+		Partitions: []Partition{
+			{
+				Number: 1, TypeGUID: PartitionTypeMSR, UniqueGUID: "11111111-2222-4333-8444-555555555551",
+				Offset: 6 * 4096, Length: 128 << 20, Name: "Microsoft reserved partition",
+			},
+			{
+				Number: 2, TypeGUID: PartitionTypeBasicData, UniqueGUID: "11111111-2222-4333-8444-555555555552",
+				Offset: 135266304, Length: 751483990016, Name: "Basic data partition",
+			},
+		},
+	}
+}
+
+func TestLayout_4KSectors(t *testing.T) {
+	l := testLayout4K()
+	require.NoError(t, l.Validate())
+	require.Equal(t, l.DiskSize, l.MinTargetSize(), "the last partition ends where the backup GPT begins")
+
+	l = testLayout4K()
+	l.Partitions[1].Length += 4096
+	require.ErrorContains(t, l.Validate(), "beyond")
+
+	l = testLayout4K()
+	l.Partitions[0].Offset = 5 * 4096
+	require.ErrorContains(t, l.Validate(), "offset")
+}
+
 func TestLayout_Validate_invalid(t *testing.T) {
 	cases := []struct {
 		name   string

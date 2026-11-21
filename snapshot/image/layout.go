@@ -23,11 +23,32 @@ const (
 	minSectorSize = 512
 	maxSectorSize = 64 << 10
 
-	maxGPTPartitions    = 128
-	maxGPTNameUTF16Len  = 36
-	gptBackupSectors    = 33 // backup partition entry array and header at the end of the disk
-	gptPrimaryEndSector = 34 // protective MBR, primary header and entry array
+	maxGPTPartitions   = 128
+	maxGPTNameUTF16Len = 36
+	gptEntryArrayBytes = maxGPTPartitions * 128 // 128 entries of 128 bytes
 )
+
+// gptEntrySectors returns how many sectors one partition entry array takes:
+// 32 with 512-byte sectors, 4 with 4096-byte sectors.
+func (l *Layout) gptEntrySectors() int64 {
+	if l.SectorSize <= 0 {
+		return 0 // Validate rejects such layouts
+	}
+
+	return (gptEntryArrayBytes + l.SectorSize - 1) / l.SectorSize
+}
+
+// gptPrimaryBytes returns the size of the protective MBR, primary header and
+// entry array at the start of the disk.
+func (l *Layout) gptPrimaryBytes() int64 {
+	return (2 + l.gptEntrySectors()) * l.SectorSize //nolint:mnd
+}
+
+// gptBackupBytes returns the size of the backup entry array and header at the
+// end of the disk.
+func (l *Layout) gptBackupBytes() int64 {
+	return (1 + l.gptEntrySectors()) * l.SectorSize
+}
 
 // Layout is the content of layout.json: the GPT partition table of an imaged
 // disk, enough to recreate it on a restore target.
@@ -110,13 +131,13 @@ func (l *Layout) Partition(number int) (Partition, bool) {
 // MinTargetSize returns the smallest restore target, in bytes, that can hold
 // every partition at its original offset plus the backup GPT.
 func (l *Layout) MinTargetSize() int64 {
-	end := gptPrimaryEndSector * l.SectorSize
+	end := l.gptPrimaryBytes()
 
 	for _, p := range l.Partitions {
 		end = max(end, p.End())
 	}
 
-	return end + gptBackupSectors*l.SectorSize
+	return end + l.gptBackupBytes()
 }
 
 // Validate checks that the layout describes a GPT disk that a restore can
@@ -173,7 +194,7 @@ func (l *Layout) validatePartition(p Partition) error {
 		return err
 	}
 
-	if p.Offset < gptPrimaryEndSector*l.SectorSize || p.Offset%l.SectorSize != 0 {
+	if p.Offset < l.gptPrimaryBytes() || p.Offset%l.SectorSize != 0 {
 		return errors.Errorf("invalid offset %v", p.Offset)
 	}
 
@@ -181,7 +202,7 @@ func (l *Layout) validatePartition(p Partition) error {
 		return errors.Errorf("invalid length %v", p.Length)
 	}
 
-	if p.End() > l.DiskSize-gptBackupSectors*l.SectorSize {
+	if p.End() > l.DiskSize-l.gptBackupBytes() {
 		return errors.Errorf("partition ends at %v, beyond the usable end of the disk", p.End())
 	}
 
