@@ -12,13 +12,25 @@ import (
 
 	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/repo/object"
+	"github.com/kopia/kopia/snapshot/image"
 	"github.com/kopia/kopia/snapshot/image/imagerestore"
 )
 
-// DefaultCacheChunks is the default number of decoded 4 MiB chunks kept in
-// memory per open volume (256 MiB), enough to keep $MFT and directory index
-// blocks of a typical browsing session in memory.
-const DefaultCacheChunks = 64
+// defaultCacheBytes is how much decoded image data an open volume keeps in
+// memory by default, enough to keep $MFT and directory index blocks of a
+// typical browsing session: 64 chunks of 4 MiB, 256 of 1 MiB.
+const defaultCacheBytes = 256 << 20
+
+// Read-ahead: once reads run on, as when a file is copied, the chunks that
+// follow are fetched before they are asked for, each a round trip to a
+// repository server. readAheadBytes is how far ahead, at most half the cache,
+// readAheadFetches how many such fetches run at once, and readAheadStreams
+// how many files read at the same time are followed.
+const (
+	readAheadBytes   = 32 << 20
+	readAheadFetches = 16
+	readAheadStreams = 8
+)
 
 // chunkFetchTimeout bounds one chunk fetch. Reads have no context of their
 // own, and the NTFS parser holds the volume lock while it reads, so a fetch
@@ -45,6 +57,23 @@ type chunkReader struct {
 	capacity int // +checklocksignore: set at creation
 
 	fetches int64 // +checklocks:mu
+
+	// streams are the recent runs of reads, each continuing where the last
+	// one ended.
+	// +checklocks:mu
+	streams [readAheadStreams]readStream
+	// +checklocks:mu
+	nextStream int
+
+	readAheadChunks int           // +checklocksignore: set at creation
+	readAheadSlots  chan struct{} // +checklocksignore: set at creation
+}
+
+// readStream is a run of reads, each continuing where the last one ended.
+type readStream struct {
+	next       int64 // where the next read of the run starts
+	runBytes   int64 // how much the run read
+	prefetched int   // the last chunk fetched ahead for it, or -1
 }
 
 type cachedChunk struct {
@@ -64,20 +93,33 @@ func newChunkReader(ctx context.Context, rep repo.Repository, oid object.ID, cap
 		return nil, errors.Wrap(err, "unable to read the image chunk list")
 	}
 
-	if capacity <= 0 {
-		capacity = DefaultCacheChunks
+	chunkLen := int64(image.DefaultChunkSize)
+	if len(chunks) > 0 {
+		chunkLen = chunks[0].Length
 	}
 
-	return &chunkReader{
-		ctx:      ctx,
-		rep:      rep,
-		chunks:   chunks,
-		size:     size,
-		lru:      list.New(),
-		byID:     map[object.ID]*list.Element{},
-		inflight: map[object.ID]*fetch{},
-		capacity: capacity,
-	}, nil
+	if capacity <= 0 {
+		capacity = int(max(1, defaultCacheBytes/chunkLen))
+	}
+
+	c := &chunkReader{
+		ctx:             ctx,
+		rep:             rep,
+		chunks:          chunks,
+		size:            size,
+		lru:             list.New(),
+		byID:            map[object.ID]*list.Element{},
+		inflight:        map[object.ID]*fetch{},
+		capacity:        capacity,
+		readAheadChunks: int(min(readAheadBytes/chunkLen, int64(capacity/2))), //nolint:mnd
+		readAheadSlots:  make(chan struct{}, readAheadFetches),
+	}
+
+	for i := range c.streams {
+		c.streams[i].prefetched = -1
+	}
+
+	return c, nil
 }
 
 // Size returns the image size in bytes.
@@ -107,6 +149,8 @@ func (c *chunkReader) ReadAt(p []byte, off int64) (int, error) {
 
 	// the first chunk that ends after off
 	i := sort.Search(len(c.chunks), func(i int) bool { return c.chunks[i].Start+c.chunks[i].Length > off })
+
+	c.readAhead(off, end)
 
 	n := 0
 
@@ -174,6 +218,91 @@ func (c *chunkReader) chunk(ch object.IndirectObjectEntry) ([]byte, error) {
 	close(f.done)
 
 	return f.data, f.err
+}
+
+// readAhead follows the runs of reads and, once a run has read a chunk's
+// worth, fetches the chunks after the read in the background: a file copied
+// from a mounted image is read in order, chunk after chunk.
+func (c *chunkReader) readAhead(off, end int64) {
+	if c.readAheadChunks <= 0 {
+		return
+	}
+
+	c.mu.Lock()
+
+	s := c.streamAt(off)
+	s.next = end
+	s.runBytes += end - off
+
+	// the chunk holding the last byte read
+	last := sort.Search(len(c.chunks), func(i int) bool { return c.chunks[i].Start+c.chunks[i].Length >= end })
+
+	var ahead []object.IndirectObjectEntry
+
+	if last < len(c.chunks) && s.runBytes >= c.chunks[last].Length {
+		from := max(last+1, s.prefetched+1)
+		to := min(last+c.readAheadChunks, len(c.chunks)-1)
+
+		scheduled := map[object.ID]bool{}
+
+		for k := from; k <= to; k++ {
+			ch := c.chunks[k]
+
+			_, cached := c.byID[ch.Object]
+			if !cached && c.inflight[ch.Object] == nil && !scheduled[ch.Object] {
+				// with a full set of fetches ahead under way, the rest is
+				// fetched ahead on a later read
+				if !c.takeReadAheadSlot() {
+					break
+				}
+
+				scheduled[ch.Object] = true
+				ahead = append(ahead, ch)
+			}
+
+			s.prefetched = k
+		}
+	}
+
+	c.mu.Unlock()
+
+	for _, ch := range ahead {
+		go func() {
+			defer func() { <-c.readAheadSlots }()
+
+			// a failed fetch is fetched again when the read gets there
+			c.chunk(ch) //nolint:errcheck
+		}()
+	}
+}
+
+// takeReadAheadSlot reserves one of the fetches ahead that may run at once,
+// without waiting.
+func (c *chunkReader) takeReadAheadSlot() bool {
+	select {
+	case c.readAheadSlots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+// streamAt returns the run of reads that a read at off continues, or starts
+// a new one in place of the oldest.
+//
+// +checklocks:c.mu
+func (c *chunkReader) streamAt(off int64) *readStream {
+	for i := range c.streams {
+		if s := &c.streams[i]; s.runBytes > 0 && s.next == off {
+			return s
+		}
+	}
+
+	s := &c.streams[c.nextStream]
+	c.nextStream = (c.nextStream + 1) % len(c.streams)
+	*s = readStream{next: off, prefetched: -1}
+
+	return s
 }
 
 // purge drops the cached chunks.

@@ -43,7 +43,8 @@ var ErrNotNTFS = errors.New("the image is not an NTFS volume")
 
 // Options configure Open.
 type Options struct {
-	// CacheChunks is the number of 4 MiB image chunks kept in memory.
+	// CacheChunks is the number of image chunks kept in memory; by default
+	// 256 MiB of them.
 	CacheChunks int
 
 	// SkipStreams leaves out alternate data streams, which are otherwise
