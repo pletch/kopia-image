@@ -42,7 +42,20 @@ func (c *commandImageScheduleUpdate) setup(svc appServices, parent commandParent
 	c.out.setup(svc)
 }
 
-func (c *commandImageScheduleUpdate) run(_ context.Context) error {
+// shareTaskStatus lets every user read the status of tasks scheduled before
+// kopia did so at install, so that KopiaUI shows it. The tasks run the same
+// either way, so a failure only warns.
+func (c *commandImageScheduleUpdate) shareTaskStatus(ctx context.Context) {
+	for _, name := range []string{schedule.CreateTaskName, schedule.CheckTaskName} {
+		full := c.loc.taskName(name)
+
+		if err := schedule.ShareStatus(ctx, full); err != nil && !errors.Is(err, schedule.ErrTaskNotFound) {
+			c.out.printStderr("Warning: KopiaUI will not show the status of %v: %v\n", full, err)
+		}
+	}
+}
+
+func (c *commandImageScheduleUpdate) run(ctx context.Context) error {
 	if err := c.loc.resolve(); err != nil {
 		return err
 	}
@@ -81,6 +94,8 @@ func (c *commandImageScheduleUpdate) run(_ context.Context) error {
 	if err := installTaskExecutable(&c.loc, c.kopiaExe); err != nil {
 		return err
 	}
+
+	c.shareTaskStatus(ctx)
 
 	s.KopiaVersion = repo.BuildVersion
 	s.InstalledAt = clock.Now()

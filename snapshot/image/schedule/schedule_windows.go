@@ -35,9 +35,12 @@ func Install(ctx context.Context, t *Task) error {
 		return errors.Wrap(err, "unable to write the task definition")
 	}
 
-	_, err = schtasks(ctx, "/Create", "/TN", t.Name, "/XML", f.Name(), "/F")
+	if _, err := schtasks(ctx, "/Create", "/TN", t.Name, "/XML", f.Name(), "/F"); err != nil {
+		return err
+	}
 
-	return err
+	// replacing a task keeps its permissions, whatever the definition says
+	return setTaskSecurityDescriptor(t.Name, taskSecurityDescriptor)
 }
 
 // Delete removes a task. It returns ErrTaskNotFound if there is none.

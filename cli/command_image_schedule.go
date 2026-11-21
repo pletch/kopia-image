@@ -735,7 +735,23 @@ func (c *commandImageScheduleRemove) run(ctx context.Context) error {
 	}
 
 	if err := os.RemoveAll(c.loc.configDir); err != nil {
-		return errors.Wrapf(err, "unable to remove %v", c.loc.configDir)
+		// an image run that is still going holds its kopia and log files
+		left, lerr := removeAtRestart(c.loc.configDir)
+		if lerr != nil {
+			return errors.Wrapf(stderrors.Join(err, lerr), "unable to remove %v", c.loc.configDir)
+		}
+
+		if _, serr := os.Lstat(c.loc.configFile() + ".kopia-password"); !errors.Is(serr, os.ErrNotExist) {
+			return errors.Wrapf(err, "unable to remove the saved repository password in %v", c.loc.configDir)
+		}
+
+		c.out.printStdout("Removed the saved repository password. These files are in use, likely by an image run that is still going, and are removed when Windows restarts:\n")
+
+		for _, f := range left {
+			c.out.printStdout("  %v\n", f)
+		}
+
+		return nil
 	}
 
 	c.out.printStdout("Removed %v, including the saved repository password.\n", c.loc.configDir)

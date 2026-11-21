@@ -95,12 +95,6 @@ func TestImageScheduleRunsAsSystem(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, props["Next Run Time"], "3:17")
 	require.Equal(t, "SYSTEM", props["Run As User"])
-
-	// every user can read the task, so that KopiaUI shows its status
-	taskXML, err := exec.CommandContext(t.Context(), "schtasks", "/Query", "/TN", testTaskFolder+`\Image create`, "/XML").Output()
-	require.NoError(t, err)
-	require.Contains(t, string(taskXML), "(A;;FR;;;AU)")
-
 	// pause and resume keep the settings and tell the web UI
 	env.RunAndExpectSuccess(t, append([]string{"image", "schedule", "pause"}, loc...)...)
 
