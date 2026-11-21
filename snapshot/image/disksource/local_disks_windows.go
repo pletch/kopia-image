@@ -1,11 +1,13 @@
 package disksource
 
 import (
+	"errors"
 	"slices"
 	"strings"
 
 	"golang.org/x/sys/windows"
 
+	"github.com/kopia/kopia/snapshot/image"
 	"github.com/kopia/kopia/snapshot/image/blockdev"
 )
 
@@ -13,8 +15,9 @@ const maxVolumeNameLength = windows.MAX_PATH + 1
 
 // LocalDisks returns the disks that hold a fixed volume with a drive letter,
 // ordered by disk number. It needs no administrator rights. Volumes that span
-// several disks, such as on dynamic disks, are left out: kopia image cannot
-// image them.
+// several disks, such as on dynamic disks, volumes on no physical disk, such
+// as Google Drive's virtual drive, and Storage Spaces pool members are left
+// out: kopia image cannot image them.
 func LocalDisks() ([]LocalDisk, error) {
 	mask, err := windows.GetLogicalDrives()
 	if err != nil {
@@ -41,11 +44,18 @@ func LocalDisks() ([]LocalDisk, error) {
 		}
 
 		extents, err := blockdev.VolumeDiskExtents(letter)
-		if err != nil || len(extents) != 1 {
+		if err != nil {
 			continue
 		}
 
-		n := extents[0].DiskNumber
+		n, err := singleDisk(extents)
+		if err != nil {
+			continue
+		}
+
+		if _, ok := byNumber[n]; !ok && isUnsupportedDisk(n) {
+			continue
+		}
 
 		d := byNumber[n]
 		if d == nil {
@@ -77,6 +87,16 @@ func LocalDisks() ([]LocalDisk, error) {
 	slices.SortFunc(out, func(a, b LocalDisk) int { return int(a.Number) - int(b.Number) })
 
 	return out, nil
+}
+
+// isUnsupportedDisk reports whether a disk's partition table marks it as a
+// Storage Spaces pool member or a dynamic disk: imaging such a disk alone
+// captures only part of its volumes. A disk whose table cannot be read for
+// another reason is not ruled out here; image creation reports that.
+func isUnsupportedDisk(diskNumber uint32) bool {
+	_, err := blockdev.ReadLayout(diskNumber)
+
+	return errors.Is(err, image.ErrUnsupportedLayout)
 }
 
 func volumeInformation(root *uint16) (label, fileSystem string) {

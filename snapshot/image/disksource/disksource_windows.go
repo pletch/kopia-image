@@ -192,16 +192,44 @@ func DisksForVolumes(volumes []string) ([]uint32, error) {
 			return nil, errors.Wrapf(err, "volume %v", v)
 		}
 
-		if len(extents) != 1 {
-			return nil, errors.Wrapf(image.ErrUnsupportedLayout, "volume %v spans %v disk extents (dynamic or Storage Spaces volume)", v, len(extents))
+		n, err := singleDisk(extents)
+		if err != nil {
+			return nil, errors.Wrapf(err, "volume %v", v)
 		}
 
-		if !slices.Contains(disks, extents[0].DiskNumber) {
-			disks = append(disks, extents[0].DiskNumber)
+		if !slices.Contains(disks, n) {
+			disks = append(disks, n)
 		}
 	}
 
 	return disks, nil
+}
+
+// errNotOnPhysicalDisk is returned for volumes that occupy no part of a
+// physical disk.
+var errNotOnPhysicalDisk = stderrors.New("not on a physical disk")
+
+// singleDisk returns the disk that holds a volume with the given extents. It
+// refuses volumes that span several disks, and volumes that occupy no part of
+// any disk: virtual drives such as Google Drive's report one empty extent on
+// disk 0, which is an unrelated disk.
+func singleDisk(extents []blockdev.DiskExtent) (uint32, error) {
+	var nonEmpty []blockdev.DiskExtent
+
+	for _, e := range extents {
+		if e.Length > 0 {
+			nonEmpty = append(nonEmpty, e)
+		}
+	}
+
+	switch len(nonEmpty) {
+	case 0:
+		return 0, errNotOnPhysicalDisk
+	case 1:
+		return nonEmpty[0].DiskNumber, nil
+	default:
+		return 0, errors.Wrapf(image.ErrUnsupportedLayout, "spans %v disk extents (dynamic or Storage Spaces volume)", len(nonEmpty))
+	}
 }
 
 // PrepareDisk reads a disk's partition table and mounted volumes and decides
