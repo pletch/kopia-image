@@ -41,6 +41,37 @@ type Disk struct {
 func New(t *testing.T) *Disk {
 	t.Helper()
 
+	return newDisk(t, func(d *Disk) {
+		d.diskpart(t.Context(), "create vdisk file="+quote(d.File)+" maximum=1024 type=expandable\n")
+	})
+}
+
+// New4K is New with 4096-byte logical and physical sectors, like Storage
+// Spaces virtual disks and some large drives. diskpart cannot set the sector
+// size, so the VHDX is created with the Hyper-V module's New-VHD; the test is
+// skipped when that module is not installed.
+func New4K(t *testing.T) *Disk {
+	t.Helper()
+
+	return newDisk(t, func(d *Disk) {
+		if _, err := exec.LookPath("powershell"); err != nil {
+			t.Skip("powershell is not available")
+		}
+
+		if out, err := exec.CommandContext(t.Context(), "powershell", "-NoProfile", "-Command", "Get-Command New-VHD").CombinedOutput(); err != nil { //nolint:gosec
+			t.Skipf("New-VHD (Hyper-V module) is not available: %s", out)
+		}
+
+		script := "New-VHD -Path '" + strings.ReplaceAll(d.File, "'", "''") + "' -SizeBytes 1GB -Dynamic -LogicalSectorSizeBytes 4096 -PhysicalSectorSizeBytes 4096 | Out-Null"
+
+		out, err := exec.CommandContext(t.Context(), "powershell", "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput() //nolint:gosec
+		require.NoError(t, err, "New-VHD failed:\n%s", out)
+	})
+}
+
+func newDisk(t *testing.T, create func(d *Disk)) *Disk {
+	t.Helper()
+
 	if os.Getenv(EnvName) == "" {
 		t.Skipf("set %v=1 to run tests that attach a VHDX (requires administrator)", EnvName)
 	}
@@ -48,7 +79,7 @@ func New(t *testing.T) *Disk {
 	d := &Disk{t: t, dir: t.TempDir()}
 	d.File = filepath.Join(d.dir, "disk.vhdx")
 
-	d.diskpart(t.Context(), "create vdisk file="+quote(d.File)+" maximum=1024 type=expandable\n")
+	create(d)
 
 	t.Cleanup(func() {
 		// t.Context() is already canceled when cleanups run; detaching a detached disk fails harmlessly
@@ -67,6 +98,16 @@ func NewBlank(t *testing.T) *Disk {
 	t.Helper()
 
 	d := New(t)
+	d.Run("clean\n")
+
+	return d
+}
+
+// NewBlank4K is NewBlank with 4096-byte sectors.
+func NewBlank4K(t *testing.T) *Disk {
+	t.Helper()
+
+	d := New4K(t)
 	d.Run("clean\n")
 
 	return d

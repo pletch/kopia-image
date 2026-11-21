@@ -16,9 +16,9 @@ import (
 	"github.com/kopia/kopia/tests/testenv"
 )
 
-// readGPTSectors returns LBA 1-33 of a 512-byte-sector disk: the primary
-// GPT header and partition entries.
-func readGPTSectors(t *testing.T, diskNumber uint32) []byte {
+// readGPTSectors returns the primary GPT header and partition entries of a
+// disk: LBA 1-33 with 512-byte sectors, LBA 1-5 with 4096-byte sectors.
+func readGPTSectors(t *testing.T, diskNumber uint32, sectorSize int) []byte {
 	t.Helper()
 
 	dev, err := blockdev.Open(blockdev.DiskPath(diskNumber))
@@ -26,8 +26,10 @@ func readGPTSectors(t *testing.T, diskNumber uint32) []byte {
 
 	defer dev.Close()
 
-	b := make([]byte, 33*512)
-	_, err = dev.ReadAt(b, 512)
+	const entryArrayBytes = 128 * 128
+
+	b := make([]byte, sectorSize+entryArrayBytes)
+	_, err = dev.ReadAt(b, int64(sectorSize))
 	require.NoError(t, err)
 
 	return b
@@ -77,7 +79,7 @@ func TestImageRestoreToDiskAndFile(t *testing.T) {
 	t.Logf("restore to disk:\n%s", strings.Join(out, "\n"))
 
 	// the restored partition table is byte-identical to the one Windows created
-	require.Equal(t, readGPTSectors(t, src.Number()), readGPTSectors(t, dst.Number()))
+	require.Equal(t, readGPTSectors(t, src.Number(), 512), readGPTSectors(t, dst.Number(), 512))
 
 	// a second restore is refused: the disk now has a partition table, and once
 	// Windows recognizes the restored volume, a file system too
@@ -122,6 +124,81 @@ func TestImageRestoreToDiskAndFile(t *testing.T) {
 
 	chk, err = exec.CommandContext(t.Context(), "chkdsk", restored, "/scan").CombinedOutput()
 	require.NoError(t, err, "chkdsk after the partial restore:\n%s", chk)
+	require.Contains(t, string(chk), "found no problems")
+}
+
+// TestImageRestore4KSectors images a disk with 4096-byte sectors, whose GPT
+// reserves 6 sectors at the start and 5 at the end rather than 34 and 33, and
+// restores it to a raw file and to a blank 4K disk. A 512-byte disk is refused.
+func TestImageRestore4KSectors(t *testing.T) {
+	src := vhdxtest.New4K(t)
+	mnt := src.FormatAndMount()
+
+	srcLayout, err := blockdev.ReadLayout(src.Number())
+	require.NoError(t, err)
+	require.Equal(t, int64(4096), srcLayout.SectorSize)
+
+	want := map[string]string{}
+	for i := range 50 {
+		name := fmt.Sprintf("dir%d/file%02d.txt", i%5, i)
+		want[name] = strings.Repeat(fmt.Sprintf("content %v\n", i), i*100+1)
+		require.NoError(t, os.MkdirAll(filepath.Join(mnt, filepath.Dir(name)), 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(mnt, name), []byte(want[name]), 0o600))
+	}
+
+	env := testenv.NewCLITest(t, testenv.RepoFormatNotImportant, testenv.NewInProcRunner(t))
+	env.RunAndExpectSuccess(t, "repo", "create", "filesystem", "--path", env.RepoDir)
+
+	out := env.RunAndExpectSuccess(t, "image", "create", mnt, "--state-file="+filepath.Join(t.TempDir(), "state.json"))
+	t.Logf("create:\n%s", strings.Join(out, "\n"))
+
+	source := env.RunAndExpectSuccess(t, "image", "list")[0]
+
+	// a raw disk image file gets the image's 4096-byte sectors
+	imageFile := filepath.Join(t.TempDir(), "disk.img")
+	out = env.RunAndExpectSuccess(t, "image", "restore", source, "--target", imageFile)
+	t.Logf("restore to file:\n%s", strings.Join(out, "\n"))
+
+	f, err := os.Open(imageFile)
+	require.NoError(t, err)
+
+	table, err := gpt.Read(f, 4096)
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+	require.Len(t, table.Partitions, 2, "MSR and data partition")
+
+	// a disk with 512-byte sectors cannot hold the image
+	small := vhdxtest.NewBlank(t)
+	_, stderr := env.RunAndExpectFailure(t, "image", "restore", source, "--target", blockdev.DiskPath(small.Number()), "--force")
+	require.Contains(t, strings.Join(stderr, "\n"), "4096-byte sectors")
+
+	dst := vhdxtest.NewBlank4K(t)
+	target := blockdev.DiskPath(dst.Number())
+
+	out = env.RunAndExpectSuccess(t, "image", "restore", source, "--target", target, "--force", "--parallel", "8")
+	t.Logf("restore to disk:\n%s", strings.Join(out, "\n"))
+
+	// the restored partition table is byte-identical to the one Windows created
+	require.Equal(t, readGPTSectors(t, src.Number(), 4096), readGPTSectors(t, dst.Number(), 4096))
+
+	dstLayout, err := blockdev.ReadLayout(dst.Number())
+	require.NoError(t, err)
+	require.Equal(t, srcLayout.Partitions, dstLayout.Partitions)
+
+	// with the source gone, Windows mounts the restored volume
+	src.Detach()
+	dst.Reattach()
+
+	restored := dst.Mount()
+
+	for name, data := range want {
+		got, err := os.ReadFile(filepath.Join(restored, name))
+		require.NoError(t, err, name)
+		require.Equal(t, data, string(got), name)
+	}
+
+	chk, err := exec.CommandContext(t.Context(), "chkdsk", restored, "/scan").CombinedOutput()
+	require.NoError(t, err, "chkdsk:\n%s", chk)
 	require.Contains(t, string(chk), "found no problems")
 }
 
