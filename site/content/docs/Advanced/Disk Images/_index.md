@@ -252,11 +252,107 @@ registry hives with password hashes and LSA secrets),
 Anyone with the repository password can still restore the whole disk, so keep
 the password as safe as the computer itself.
 
+## Recovery media
+
+A computer whose disk failed cannot run kopia to restore itself. Build recovery
+media while it still works: a USB stick that boots into the computer's own
+Windows Recovery Environment (WinRE), with kopia, the repository connection and
+the drivers it needs, and walks you through the restore. Nothing needs
+installing; Windows already has everything the media is built from. Run it as
+administrator:
+
+```shell
+kopia image recovery-media create --usb 3                    # erase USB disk 3 and make it the media
+kopia image recovery-media create --iso D:\kopia-recovery.iso # keep an ISO file to write later
+```
+
+Without a target, `create` lists the USB disks to choose from, and offers to
+save an ISO file instead. Other targets are `--output-dir`, a folder to copy
+onto any FAT32 USB stick, and `--vhdx`, a virtual disk to try the media in
+Hyper-V. The **Create Recovery Media** button on the **Disk Images** page of
+the Kopia UI builds a USB stick or an ISO file after a UAC prompt.
+
+An ISO file is for keeping until it is needed and then writing to a USB stick
+with a tool such as [Rufus](https://rufus.ie/), which copies its files to a
+FAT32 stick that boots like media made with `--usb`. The ISO does not boot as a
+DVD or in a virtual machine: Windows does not keep its DVD boot files up to
+date with its recovery environment. To test the media in a virtual machine, use
+`--vhdx`.
+
+The media boots with Secure Boot on. It holds:
+
+* **The repository connection,** by default the current one, or the file given
+  with `--connect-from`, such as a connection with read-only access. Certificate
+  authorities the recovery system must trust to reach a repository server are
+  added with `--ca-cert`.
+* **No password,** unless you pass `--embed-password`. Anyone holding media with
+  the password can read every image in the repository, so keep it as safe as
+  the password itself. With `--iso` it asks first, since an ISO file is easily
+  copied to other places.
+* **Drivers:** this computer's storage, network and USB drivers, so that the
+  recovery system sees its disks and network (`--drivers none` adds none).
+  Every image stores the drivers of the computer it was taken of, so one stick
+  can restore several computers: `--drivers-from <host>` adds those of another
+  computer's newest image, `--drivers-from all` those of every computer, and
+  `--add-driver` adds a driver `.inf` file or folder. `kopia image drivers` lists
+  what the images store.
+
+The recovery system reaches the repository over a wired network connection;
+restoring over Wi-Fi is untested.
+
+### Restoring with recovery media
+
+Boot the computer from the stick. The media starts `kopia image recover`, which:
+
+1. connects to the repository, asking for the password unless the media holds
+   it. Through a repository server it asks which user to log in as, the media's
+   by default, so that an account that reads every computer's images can
+   restore any of them; another user always enters their own password;
+2. lists the images to choose from, newest first;
+3. lists the disks to restore to, shows the plan, including any NTFS volumes
+   it must shrink to fit a smaller disk, and erases the disk only after you
+   type `erase`;
+4. restores the image, deletes the files the image left out once Windows
+   mounts the volumes, and says when the restore is complete before asking to
+   restart.
+
+A system disk restored inside a USB enclosure does not boot Windows from the
+enclosure: Windows does not start from USB disks. Install the disk in the
+computer, or restore with the disk already installed.
+
+### Keeping media current
+
+The media records what it was built with, and `kopia image recovery-media
+status`, the Kopia UI and every image run say when it no longer matches the
+computer:
+
+* a newer kopia is installed;
+* Windows updated its recovery environment, after which old media may stop
+  booting with Secure Boot on;
+* the repository connection changed, or the server's certificate is no longer
+  trusted the way the media trusts it;
+* the partitions of an imaged disk changed;
+* the computer has drivers that the media lacks;
+* the media is more than 180 days old.
+
+Images that left files out need media built with kopia `0.23.1-wails.29` or
+newer, which deletes those files after the restore; older media refuses such
+images rather than leave the files filled with zeros.
+
+Media built on one computer can serve others: run `kopia image recovery-media
+register <media>` as administrator on each of them, so that their status checks
+it too. `kopia image recovery-media kit` prints the recovery kit, which is what
+someone needs to restore the computer without you: the repository, the disks
+with their newest images, and a line to write down where the password is kept.
+It never holds the password. Keep it with the media, and a printed copy
+somewhere else.
+
 ## Restoring
 
-Restore from a Linux live USB with the `kopia` binary and a connection to the
-repository; read-only access is enough. Restore the latest image of a source,
-or a snapshot ID from `kopia image list`:
+The [recovery media](#recovery-media) restores a Windows computer without
+anything else. You can also restore from a Linux live USB with the `kopia`
+binary and a connection to the repository; read-only access is enough. Restore
+the latest image of a source, or a snapshot ID from `kopia image list`:
 
 ```shell
 kopia image restore tim@desktop:image:disk:<GUID> --target /dev/nvme0n1 --dry-run
