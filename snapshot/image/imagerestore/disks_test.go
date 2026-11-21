@@ -42,3 +42,29 @@ func TestDiskInfo_Describe(t *testing.T) {
 	d.Volumes = []imagerestore.DiskVolume{{FileSystem: "NTFS", Label: "Data", MountPoints: []string{`D:\`}}, {FileSystem: "FAT32"}}
 	require.Equal(t, []string{`NTFS "Data" at D:\`, "FAT32"}, d.DescribeVolumes())
 }
+
+func TestDiskInfo_HasMountPoint(t *testing.T) {
+	cases := []struct {
+		mount, path string
+		want        bool
+	}{
+		{"/mnt/repo", "/mnt/repo", true},
+		{"/mnt/repo", "/mnt/repo/kopia", true},
+		{"/mnt/repo", "/mnt/repo2/kopia", false},
+		{"/", "/mnt/repo", true},
+		{`E:\`, `e:\repo`, true},
+		{`E:\Mount`, `E:\Mounted\repo`, false},
+		{`E:\Mount`, `E:\Mount\repo`, true},
+	}
+
+	for _, tc := range cases {
+		d := imagerestore.DiskInfo{Volumes: []imagerestore.DiskVolume{{MountPoints: []string{tc.mount}}}}
+		require.Equal(t, tc.want, d.HasMountPoint(tc.path), "%v holds %v", tc.mount, tc.path)
+	}
+}
+
+func TestDiskInfo_TargetProblem_inUse(t *testing.T) {
+	d := imagerestore.DiskInfo{Size: 1 << 30, SectorSize: 512, InUse: true, Volumes: []imagerestore.DiskVolume{{FileSystem: "/dev/sdb1", MountPoints: []string{"/data"}}}}
+	require.Equal(t, "in use: /dev/sdb1 at /data", d.TargetProblem(1<<20, 512, "/mnt/repo"))
+	require.Equal(t, "holds /data/repo", d.TargetProblem(1<<20, 512, "/data/repo"))
+}

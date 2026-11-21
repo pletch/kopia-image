@@ -36,6 +36,11 @@ type DiskInfo struct {
 	DiskGUID string
 
 	Volumes []DiskVolume
+
+	// InUse is set on Linux when the disk is mounted, used as swap, held by
+	// another block device or part of a mounted btrfs file system, which
+	// keeps it from being opened exclusively for a restore.
+	InUse bool
 }
 
 // IsRecoveryMedia reports whether the disk holds kopia recovery media.
@@ -54,13 +59,27 @@ func (d *DiskInfo) IsRecoveryMedia() bool {
 func (d *DiskInfo) HasMountPoint(path string) bool {
 	for _, v := range d.Volumes {
 		for _, m := range v.MountPoints {
-			if m != "" && strings.HasPrefix(strings.ToLower(path), strings.ToLower(m)) {
+			if m != "" && pathIsUnder(strings.ToLower(path), strings.ToLower(m)) {
 				return true
 			}
 		}
 	}
 
 	return false
+}
+
+// pathIsUnder reports whether path is dir or is inside it, so that /mnt/repo2
+// is not inside /mnt/repo.
+func pathIsUnder(path, dir string) bool {
+	if !strings.HasPrefix(path, dir) {
+		return false
+	}
+
+	if len(path) == len(dir) || strings.HasSuffix(dir, "/") || strings.HasSuffix(dir, `\`) {
+		return true
+	}
+
+	return path[len(dir)] == '/' || path[len(dir)] == '\\'
 }
 
 // Describe returns a one-line description of the disk.
@@ -120,6 +139,10 @@ func (d *DiskInfo) TargetProblem(minSize, sectorSize int64, excludePaths ...stri
 		if p != "" && d.HasMountPoint(p) {
 			return "holds " + p
 		}
+	}
+
+	if d.InUse {
+		return "in use: " + strings.Join(d.DescribeVolumes(), "; ")
 	}
 
 	return ""
