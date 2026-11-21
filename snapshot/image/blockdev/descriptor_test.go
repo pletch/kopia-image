@@ -53,11 +53,20 @@ func Test_decodeDeviceDescriptor_Invalid(t *testing.T) {
 	_, err := decodeDeviceDescriptor(make([]byte, deviceDescriptorMinSize-1))
 	require.ErrorContains(t, err, "expected at least")
 
-	// a string offset past the end is ignored rather than read
-	b := makeDeviceDescriptor("", "", 7, false)
-	binary.LittleEndian.PutUint32(b[deviceDescriptorProductOff:], 4096)
+	// the serial number follows the other strings
+	b := makeDeviceDescriptor("", "Ultra", 7, true)
+	binary.LittleEndian.PutUint32(b[deviceDescriptorSerialOff:], uint32(len(b))) //nolint:gosec
+	b = append(append(b, " 4C530001  "...), 0)
 
 	got, err := decodeDeviceDescriptor(b)
+	require.NoError(t, err)
+	require.Equal(t, "4C530001", got.Serial)
+
+	// a string offset past the end is ignored rather than read
+	b = makeDeviceDescriptor("", "", 7, false)
+	binary.LittleEndian.PutUint32(b[deviceDescriptorProductOff:], 4096)
+
+	got, err = decodeDeviceDescriptor(b)
 	require.NoError(t, err)
 	require.Empty(t, got.Model)
 }

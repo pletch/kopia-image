@@ -314,7 +314,7 @@ func (c *commandImageRecoveryMediaCreate) validateUSB(ctx context.Context, rep r
 		return nil, errors.Errorf("invalid disk %v", d.Path)
 	}
 
-	if problem := usbProblem(ctx, rep, d, c.force); problem != "" {
+	if problem := usbProblem(ctx, rep, d, c.force, c.localRepositoryPaths()...); problem != "" {
 		return nil, errors.Errorf("%v cannot be used: %v", d.Describe(), problem)
 	}
 
@@ -346,9 +346,36 @@ func (c *commandImageRecoveryMediaCreate) validateUSB(ctx context.Context, rep r
 	return &mediaTarget{kind: mediaUSB, path: d.Path, disk: d, num: uint32(num)}, nil
 }
 
+// localRepositoryPaths returns the paths of the filesystem repositories this
+// command uses: the one it is connected to and the one put on the media.
+func (c *commandImageRecoveryMediaCreate) localRepositoryPaths() []string {
+	var out []string
+
+	for _, f := range []string{c.svc.repositoryConfigFileName(), c.connectFrom} {
+		if f == "" {
+			continue
+		}
+
+		if lc, err := repo.LoadConfigFromFile(f); err == nil {
+			if p := recoverymedia.LocalRepositoryPath(lc); p != "" {
+				out = append(out, p)
+			}
+		}
+	}
+
+	return out
+}
+
 // usbProblem says why a disk must not be erased to become recovery media,
-// or returns "".
-func usbProblem(ctx context.Context, rep repo.Repository, d *imagerestore.DiskInfo, force bool) string {
+// or returns "". repoPaths are the paths of local repositories, which the
+// disk must not hold.
+func usbProblem(ctx context.Context, rep repo.Repository, d *imagerestore.DiskInfo, force bool, repoPaths ...string) string {
+	for _, p := range repoPaths {
+		if d.HasMountPoint(p) {
+			return "it holds the repository at " + p
+		}
+	}
+
 	switch {
 	case d.HasMountPoint(systemRoot()):
 		return "it holds Windows"
@@ -631,6 +658,12 @@ func (c *commandImageRecoveryMediaCreate) write(ctx context.Context, built *reco
 	case mediaISO:
 		err = recoverymedia.WriteISO(ctx, built.MediaDir, t.path)
 	default:
+		// the build takes minutes, in which the disk can be swapped for
+		// another that takes its number
+		if err := imagerestore.CheckSameDisk(t.disk); err != nil {
+			return errors.Wrap(err, "nothing was written; start again to choose the disk")
+		}
+
 		err = recoverymedia.WriteUSB(ctx, built.MediaDir, t.num, t.disk.Size, c.workDir)
 	}
 
@@ -1142,8 +1175,11 @@ func (c *commandImageRecoveryMediaCreate) pickTarget() error {
 		return errors.Wrap(err, "unable to list the disks")
 	}
 
+	repoPaths := c.localRepositoryPaths()
+
 	disks = slices.DeleteFunc(disks, func(d imagerestore.DiskInfo) bool {
-		return d.Bus != blockdev.BusUSB || d.HasMountPoint(systemRoot()) || d.Size < minRecoveryUSBBytes
+		return d.Bus != blockdev.BusUSB || d.HasMountPoint(systemRoot()) || d.Size < minRecoveryUSBBytes ||
+			slices.ContainsFunc(repoPaths, d.HasMountPoint)
 	})
 
 	if len(disks) == 0 {

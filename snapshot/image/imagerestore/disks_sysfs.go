@@ -14,7 +14,7 @@ import (
 // sector size.
 const sysBlockSectorSize = 512
 
-// mountEntry is a line of /proc/mounts for a device under /dev.
+// mountEntry is a line of /proc/self/mountinfo for a device under /dev.
 type mountEntry struct {
 	dev   string // as mounted, such as /dev/mapper/vg-data
 	kname string // the kernel name of the device, such as dm-0
@@ -23,9 +23,12 @@ type mountEntry struct {
 
 // scanSysDisks lists the whole disks in sysfs, without loop, RAM, optical
 // and device-mapper devices, with what uses them. fsys is the root of the
-// file system ("sys/block/...", "proc/mounts"), and resolve turns a device
-// path from /proc/mounts or /proc/swaps, such as /dev/mapper/vg-data, into
-// the device node it names, such as /dev/dm-0.
+// file system ("sys/block/...", "proc/self/mountinfo"), and resolve turns a
+// device path from mountinfo or /proc/swaps, such as /dev/mapper/vg-data,
+// into the device node it names, such as /dev/dm-0. A mount whose device
+// path names no block device, such as /dev/root, is found by its device
+// number instead. It fails if the mounts cannot be read, rather than show
+// every disk as unused.
 //
 // A disk is in use when it, or one of its partitions, is mounted, is swap,
 // is held by another block device (device mapper, LVM, RAID, encryption)
@@ -39,17 +42,43 @@ func scanSysDisks(fsys fs.FS, resolve func(string) string) ([]DiskInfo, error) {
 		return nil, errors.Wrap(err, "unable to list block devices")
 	}
 
-	kname := func(dev string) string { return path.Base(resolve(dev)) }
+	numbers := sysDeviceNumbers(fsys, entries)
 
-	mounts := readMountEntries(fsys, kname)
-	swaps := readSwaps(fsys, kname)
+	known := map[string]bool{}
+	for _, n := range numbers {
+		known[n] = true
+	}
+
+	kname := func(dev, number string) string {
+		k := path.Base(resolve(dev))
+		if known[k] {
+			return k
+		}
+
+		if n, ok := numbers[number]; ok {
+			return n
+		}
+
+		return k
+	}
+
+	mounts, err := readMountEntries(fsys, kname)
+	if err != nil {
+		return nil, err
+	}
+
+	swaps, err := readSwaps(fsys, kname)
+	if err != nil {
+		return nil, err
+	}
+
 	btrfs := readBtrfsMembers(fsys)
 
 	var out []DiskInfo
 
 	for _, e := range entries {
 		name := e.Name()
-		if strings.HasPrefix(name, "loop") || strings.HasPrefix(name, "ram") || strings.HasPrefix(name, "dm-") || strings.HasPrefix(name, "zram") || strings.HasPrefix(name, "sr") {
+		if !isDiskName(name) {
 			continue
 		}
 
@@ -69,6 +98,7 @@ func scanSysDisks(fsys fs.FS, resolve func(string) string) ([]DiskInfo, error) {
 			Path:       "/dev/" + name,
 			Model:      strings.TrimSpace(readSysFile(fsys, path.Join(dir, "device", "vendor")) + " " + readSysFile(fsys, path.Join(dir, "device", "model"))),
 			Removable:  readSysFile(fsys, path.Join(dir, "removable")) == "1",
+			Serial:     sysDiskSerial(fsys, dir),
 			Size:       sectors * sysBlockSectorSize,
 			SectorSize: sectorSize,
 		}
@@ -143,6 +173,30 @@ func describeDiskUse(fsys fs.FS, d *DiskInfo, name string, mounts []mountEntry, 
 	d.InUse = len(volumes) > 0
 }
 
+// sysDiskSerial returns the serial number of a disk, or its world-wide
+// identifier when it reports no serial number.
+func sysDiskSerial(fsys fs.FS, dir string) string {
+	for _, f := range []string{"device/serial", "serial", "wwid", "device/wwid"} {
+		if s := readSysFile(fsys, path.Join(dir, f)); s != "" {
+			return s
+		}
+	}
+
+	return ""
+}
+
+// isDiskName reports whether a block device name can be a disk: not a loop,
+// RAM, device-mapper, optical or floppy device.
+func isDiskName(name string) bool {
+	for _, p := range []string{"loop", "ram", "dm-", "zram", "sr", "fd"} {
+		if strings.HasPrefix(name, p) {
+			return false
+		}
+	}
+
+	return true
+}
+
 // sysPartitions returns the kernel names of a disk's partitions.
 func sysPartitions(fsys fs.FS, disk string) []string {
 	entries, err := fs.ReadDir(fsys, path.Join("sys/block", disk))
@@ -162,8 +216,8 @@ func sysPartitions(fsys fs.FS, disk string) []string {
 }
 
 // sysHolders returns the devices stacked on a disk or its partitions, such
-// as dm-0 for an LVM volume or md0 for a RAID array, and those stacked on
-// them in turn.
+// as dm-0 for an LVM volume or md0 for a RAID array, their partitions, and
+// the devices stacked on those in turn.
 func sysHolders(fsys fs.FS, disk string, parts []string) []string {
 	queue := []string{path.Join("sys/block", disk, "holders")}
 	for _, p := range parts {
@@ -189,6 +243,34 @@ func sysHolders(fsys fs.FS, disk string, parts []string) []string {
 
 			out = append(out, h)
 			queue = append(queue, path.Join("sys/block", h, "holders"))
+
+			// a partitioned RAID array: md0p1 and what is stacked on it
+			for _, p := range sysPartitions(fsys, h) {
+				if !slices.Contains(out, p) {
+					out = append(out, p)
+					queue = append(queue, path.Join("sys/block", h, p, "holders"))
+				}
+			}
+		}
+	}
+
+	return out
+}
+
+// sysDeviceNumbers returns the kernel name of every block device and
+// partition in sysfs by its device number ("8:1").
+func sysDeviceNumbers(fsys fs.FS, entries []fs.DirEntry) map[string]string {
+	out := map[string]string{}
+
+	for _, e := range entries {
+		if n := readSysFile(fsys, path.Join("sys/block", e.Name(), "dev")); n != "" {
+			out[n] = e.Name()
+		}
+
+		for _, p := range sysPartitions(fsys, e.Name()) {
+			if n := readSysFile(fsys, path.Join("sys/block", e.Name(), p, "dev")); n != "" {
+				out[n] = p
+			}
 		}
 	}
 
@@ -196,27 +278,34 @@ func sysHolders(fsys fs.FS, disk string, parts []string) []string {
 }
 
 // readMountEntries returns the mounts of devices under /dev, in the order of
-// /proc/mounts.
-func readMountEntries(fsys fs.FS, kname func(string) string) []mountEntry {
-	b, err := fs.ReadFile(fsys, "proc/mounts")
+// /proc/self/mountinfo. kname takes the device path and number.
+func readMountEntries(fsys fs.FS, kname func(dev, number string) string) ([]mountEntry, error) {
+	b, err := fs.ReadFile(fsys, "proc/self/mountinfo")
 	if err != nil {
-		return nil
+		return nil, errors.Wrap(err, "unable to read the mounts")
 	}
 
 	var out []mountEntry
 
 	for line := range strings.SplitSeq(string(b), "\n") {
+		// id parent major:minor root mount-point options [optional...] - type source super-options
 		f := strings.Fields(line)
-		if len(f) >= 2 && strings.HasPrefix(f[0], "/dev/") {
-			out = append(out, mountEntry{dev: f[0], kname: kname(f[0]), dir: unescapeMountField(f[1])})
+
+		sep := slices.Index(f, "-")
+		if sep < 5 || sep+2 >= len(f) {
+			continue
+		}
+
+		if dev := unescapeMountField(f[sep+2]); strings.HasPrefix(dev, "/dev/") {
+			out = append(out, mountEntry{dev: dev, kname: kname(dev, f[2]), dir: unescapeMountField(f[4])})
 		}
 	}
 
-	return out
+	return out, nil
 }
 
 // unescapeMountField undoes the octal escapes of spaces, tabs, newlines and
-// backslashes in /proc/mounts.
+// backslashes in /proc/self/mountinfo.
 func unescapeMountField(s string) string {
 	if !strings.Contains(s, `\`) {
 		return s
@@ -241,11 +330,16 @@ func unescapeMountField(s string) string {
 	return sb.String()
 }
 
-// readSwaps returns the kernel names of the devices in /proc/swaps.
-func readSwaps(fsys fs.FS, kname func(string) string) []string {
+// readSwaps returns the kernel names of the devices in /proc/swaps, which
+// does not exist on a kernel without swap.
+func readSwaps(fsys fs.FS, kname func(dev, number string) string) ([]string, error) {
 	b, err := fs.ReadFile(fsys, "proc/swaps")
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+
 	if err != nil {
-		return nil
+		return nil, errors.Wrap(err, "unable to read the swap devices")
 	}
 
 	var out []string
@@ -253,11 +347,11 @@ func readSwaps(fsys fs.FS, kname func(string) string) []string {
 	for line := range strings.SplitSeq(string(b), "\n") {
 		f := strings.Fields(line)
 		if len(f) >= 1 && strings.HasPrefix(f[0], "/dev/") {
-			out = append(out, kname(f[0]))
+			out = append(out, kname(unescapeMountField(f[0]), ""))
 		}
 	}
 
-	return out
+	return out, nil
 }
 
 // readBtrfsMembers returns the kernel names of the devices of each mounted

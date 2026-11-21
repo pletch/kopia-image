@@ -13,6 +13,7 @@ const (
 	deviceDescriptorRemovableOff = 10
 	deviceDescriptorVendorOff    = 12
 	deviceDescriptorProductOff   = 16
+	deviceDescriptorSerialOff    = 24
 	deviceDescriptorBusTypeOff   = 28
 )
 
@@ -46,6 +47,9 @@ type DiskDescriptor struct {
 	Bus string
 
 	Removable bool
+
+	// Serial is the serial number the disk reports, or "".
+	Serial string
 }
 
 // decodeDeviceDescriptor decodes a STORAGE_DEVICE_DESCRIPTOR.
@@ -67,6 +71,7 @@ func decodeDeviceDescriptor(b []byte) (DiskDescriptor, error) {
 		Model:     strings.TrimSpace(vendor + " " + product),
 		Bus:       bus,
 		Removable: b[deviceDescriptorRemovableOff] != 0,
+		Serial:    descriptorString(b, binary.LittleEndian.Uint32(b[deviceDescriptorSerialOff:])),
 	}, nil
 }
 

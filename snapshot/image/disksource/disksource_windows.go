@@ -256,11 +256,18 @@ func VolumesOnDisk(diskNumber uint32) ([]VolumeInfo, error) {
 	}
 }
 
+// fileSystemName returns the file system of a volume: "unformatted" when
+// Windows recognizes none, and "unreadable" when it cannot tell, as for a
+// locked BitLocker volume or one it denies access to.
 func fileSystemName(guidPath string) string {
 	name := make([]uint16, volumeNameBufLen)
 
 	if err := windows.GetVolumeInformation(windows.StringToUTF16Ptr(guidPath), nil, 0, nil, nil, nil, &name[0], volumeNameBufLen); err != nil {
-		return "unformatted"
+		if errors.Is(err, windows.ERROR_UNRECOGNIZED_VOLUME) {
+			return "unformatted"
+		}
+
+		return "unreadable"
 	}
 
 	return windows.UTF16ToString(name)

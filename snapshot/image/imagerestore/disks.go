@@ -2,7 +2,11 @@ package imagerestore
 
 import (
 	"fmt"
+	"path/filepath"
+	"slices"
 	"strings"
+
+	"github.com/pkg/errors"
 
 	"github.com/kopia/kopia/internal/units"
 )
@@ -27,6 +31,10 @@ type DiskInfo struct {
 	Model     string
 	Bus       string
 	Removable bool
+
+	// Serial is the serial number or other unique identifier the disk
+	// reports, or "".
+	Serial string
 
 	// Size and SectorSize are in bytes.
 	Size       int64
@@ -55,12 +63,22 @@ func (d *DiskInfo) IsRecoveryMedia() bool {
 }
 
 // HasMountPoint reports whether one of the disk's volumes is mounted at, or
-// holds, the given path.
+// holds, the given path, as given or with its symbolic links resolved. Paths
+// are compared without regard to case, slash direction or trailing
+// separators, so that C:\Backups is under the mount point C:\Backups\ that
+// Windows reports, and E:/kopia under E:\.
 func (d *DiskInfo) HasMountPoint(path string) bool {
+	paths := []string{path}
+	if r, err := filepath.EvalSymlinks(path); err == nil && r != path {
+		paths = append(paths, r)
+	}
+
 	for _, v := range d.Volumes {
 		for _, m := range v.MountPoints {
-			if m != "" && pathIsUnder(strings.ToLower(path), strings.ToLower(m)) {
-				return true
+			for _, p := range paths {
+				if m != "" && pathIsUnder(p, m) {
+					return true
+				}
 			}
 		}
 	}
@@ -71,15 +89,20 @@ func (d *DiskInfo) HasMountPoint(path string) bool {
 // pathIsUnder reports whether path is dir or is inside it, so that /mnt/repo2
 // is not inside /mnt/repo.
 func pathIsUnder(path, dir string) bool {
-	if !strings.HasPrefix(path, dir) {
-		return false
+	path, dir = normalizePath(path), normalizePath(dir)
+
+	return path == dir || strings.HasPrefix(path, strings.TrimSuffix(dir, "/")+"/")
+}
+
+// normalizePath lowercases a path, turns backslashes into slashes and
+// removes trailing slashes, except from "/".
+func normalizePath(p string) string {
+	p = strings.ToLower(strings.ReplaceAll(p, `\`, "/"))
+	if t := strings.TrimRight(p, "/"); t != "" {
+		return t
 	}
 
-	if len(path) == len(dir) || strings.HasSuffix(dir, "/") || strings.HasSuffix(dir, `\`) {
-		return true
-	}
-
-	return path[len(dir)] == '/' || path[len(dir)] == '\\'
+	return p
 }
 
 // Describe returns a one-line description of the disk.
@@ -146,4 +169,52 @@ func (d *DiskInfo) TargetProblem(minSize, sectorSize int64, excludePaths ...stri
 	}
 
 	return ""
+}
+
+// ErrDiskChanged is returned by CheckSameDisk when the disk at a path is not
+// the disk that was listed there.
+var ErrDiskChanged = errors.New("the disk changed since it was listed")
+
+// CheckSameDisk lists the disks again and checks that the disk at listed.Path
+// is the one that was listed: the same size, sector size, model, bus, serial
+// number, disk GUID and volumes. A disk unplugged and another attached in the
+// meantime can take over its path, such as \.\PhysicalDrive2 or /dev/sdb,
+// so this is called right before a listed disk is erased.
+func CheckSameDisk(listed *DiskInfo) error {
+	disks, err := ListDisks()
+	if err != nil {
+		return errors.Wrap(err, "unable to list the disks again")
+	}
+
+	i := slices.IndexFunc(disks, func(d DiskInfo) bool { return strings.EqualFold(d.Path, listed.Path) })
+	if i < 0 {
+		return errors.Wrapf(ErrDiskChanged, "%v is no longer attached", listed.Path)
+	}
+
+	if diff := listed.differences(&disks[i]); diff != "" {
+		return errors.Wrapf(ErrDiskChanged, "%v: %v", listed.Path, diff)
+	}
+
+	return nil
+}
+
+// differences describes how another listing of a disk differs from d, or
+// returns "".
+func (d *DiskInfo) differences(now *DiskInfo) string {
+	switch {
+	case d.Size != now.Size || d.SectorSize != now.SectorSize:
+		return fmt.Sprintf("it now has %v bytes in %v-byte sectors, it had %v in %v-byte sectors", now.Size, now.SectorSize, d.Size, d.SectorSize)
+	case d.Model != now.Model || d.Bus != now.Bus || d.Serial != now.Serial:
+		return fmt.Sprintf("it is now %q (%v, serial %q), it was %q (%v, serial %q)", now.Model, now.Bus, now.Serial, d.Model, d.Bus, d.Serial)
+	case !strings.EqualFold(d.DiskGUID, now.DiskGUID):
+		return fmt.Sprintf("its disk GUID is now %q, it was %q", now.DiskGUID, d.DiskGUID)
+	case !slices.EqualFunc(d.Volumes, now.Volumes, sameVolume):
+		return fmt.Sprintf("it now holds %v, it held %v", strings.Join(now.DescribeVolumes(), "; "), strings.Join(d.DescribeVolumes(), "; "))
+	}
+
+	return ""
+}
+
+func sameVolume(a, b DiskVolume) bool {
+	return a.FileSystem == b.FileSystem && a.Label == b.Label && slices.Equal(a.MountPoints, b.MountPoints)
 }

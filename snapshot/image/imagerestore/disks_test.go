@@ -55,6 +55,11 @@ func TestDiskInfo_HasMountPoint(t *testing.T) {
 		{`E:\`, `e:\repo`, true},
 		{`E:\Mount`, `E:\Mounted\repo`, false},
 		{`E:\Mount`, `E:\Mount\repo`, true},
+		{`C:\Backups\`, `C:\Backups`, true},
+		{`C:\Backups\`, `c:\backups\kopia`, true},
+		{`C:\Backups\`, `C:\BackupsOld\kopia`, false},
+		{`E:\`, `E:/kopia`, true},
+		{`E:\`, `F:\kopia`, false},
 	}
 
 	for _, tc := range cases {

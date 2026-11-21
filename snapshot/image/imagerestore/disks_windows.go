@@ -3,6 +3,7 @@ package imagerestore
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 
+	"github.com/kopia/kopia/internal/units"
 	"github.com/kopia/kopia/snapshot/image/blockdev"
 	"github.com/kopia/kopia/snapshot/image/disksource"
 )
@@ -37,12 +39,13 @@ func ListDisks() ([]DiskInfo, error) {
 			continue
 		}
 
-		if l, err := blockdev.ReadLayout(n); err == nil {
-			d.DiskGUID = l.DiskGUID
+		layout, err := blockdev.ReadLayout(n)
+		if err == nil {
+			d.DiskGUID = layout.DiskGUID
 		}
 
 		if desc, err := blockdev.DescribeDisk(n); err == nil {
-			d.Model, d.Bus, d.Removable = desc.Model, desc.Bus, desc.Removable
+			d.Model, d.Bus, d.Removable, d.Serial = desc.Model, desc.Bus, desc.Removable, desc.Serial
 		}
 
 		volumes, err := disksource.VolumesOnDisk(n)
@@ -52,6 +55,13 @@ func ListDisks() ([]DiskInfo, error) {
 
 		for _, v := range volumes {
 			d.Volumes = append(d.Volumes, DiskVolume{FileSystem: v.FileSystem, Label: volumeLabel(v.GUIDPath), MountPoints: v.MountPoints})
+		}
+
+		// an offline disk shows no volumes, though its partitions hold data
+		if len(d.Volumes) == 0 && layout != nil {
+			for _, p := range layout.Partitions {
+				d.Volumes = append(d.Volumes, DiskVolume{FileSystem: fmt.Sprintf("partition %v of %v without a volume Windows shows", p.Number, units.BytesString(p.Length)), Label: p.Name})
+			}
 		}
 
 		out = append(out, d)
