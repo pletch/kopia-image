@@ -140,14 +140,20 @@ func checkVolume(ctx context.Context, rep repo.Repository, v *image.Volume, pack
 		r.addProblemf("image is %v bytes, image.json says %v", length, v.Size)
 	}
 
-	contentIDs, err := rep.VerifyObject(ctx, v.ObjectID)
+	// as many lookups at once as chunks are fetched in a restore
+	lookups := opt.Parallel
+	if len(chunks) > 0 {
+		lookups = max(lookups, image.ParallelChunks(chunks[0].Length))
+	}
+
+	infos, err := image.VerifyObject(ctx, rep, v.ObjectID, lookups)
 	if err != nil {
 		r.addProblemf("chunks missing from the index: %v", err)
 		return r, nil
 	}
 
 	if packs != nil {
-		checkPacks(ctx, rep, contentIDs, packs, &r)
+		checkPacks(infos, packs, &r)
 	}
 
 	groups := groupChunks(chunks)
@@ -161,14 +167,8 @@ func checkVolume(ctx context.Context, rep repo.Repository, v *image.Volume, pack
 	return r, nil
 }
 
-func checkPacks(ctx context.Context, rep repo.Repository, contentIDs []content.ID, packs map[blob.ID]blob.Metadata, r *CheckResult) {
-	for _, cid := range contentIDs {
-		ci, err := rep.ContentInfo(ctx, cid)
-		if err != nil {
-			r.addProblemf("content %v: %v", cid, err)
-			continue
-		}
-
+func checkPacks(infos map[content.ID]content.Info, packs map[blob.ID]blob.Metadata, r *CheckResult) {
+	for cid, ci := range infos {
 		bm, ok := packs[ci.PackBlobID]
 		if !ok {
 			r.addProblemf("content %v is in missing pack blob %v", cid, ci.PackBlobID)

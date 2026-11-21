@@ -259,7 +259,7 @@ func (opt *CreateOptions) writeVolumes(ctx context.Context, rep repo.RepositoryW
 			}
 		}
 
-		if _, err := rep.VerifyObject(ctx, oid); err != nil {
+		if _, err := VerifyObject(ctx, rep, oid, ParallelChunks(opt.chunkSize())); err != nil {
 			return nil, errors.Wrapf(err, "image of partition %v is incomplete", v.PartitionNumber)
 		}
 
