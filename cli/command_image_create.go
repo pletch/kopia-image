@@ -55,9 +55,17 @@ func imageCompressor(policyCompressor compression.Name, setOnSource bool) compre
 }
 
 type commandImageCreate struct {
-	volumes       []string
-	parallel      int
-	chunkSize     string
+	volumes   []string
+	parallel  int
+	chunkSize string
+
+	// runStart, doneDisks and doneImages carry a run over attempts made
+	// after the connection to the repository was lost; retriesLeft counts
+	// the attempts that remain.
+	runStart      time.Time
+	doneDisks     map[uint32]bool
+	doneImages    []disksource.RunImage
+	retriesLeft   int
 	flushInterval time.Duration
 	dryRun        bool
 	description   string
@@ -116,6 +124,50 @@ func (c *commandImageCreate) runWithWriter(ctx context.Context) (err error) {
 		return c.run(ctx, nil)
 	}
 
+	c.runStart = clock.Now()
+	c.doneDisks = map[uint32]bool{}
+
+	// a broken connection to a repository server, as when the computer
+	// changes networks, ends the session; the run starts again over a new
+	// connection, without the disks it finished
+	for attempt := 0; ; attempt++ {
+		c.retriesLeft = len(imageConnectionRetryDelays) - attempt
+
+		err = c.runOnce(ctx)
+		if err == nil || !c.willRetry(err) || ctx.Err() != nil {
+			return err
+		}
+
+		delay := imageConnectionRetryDelays[attempt]
+
+		log(ctx).Warnf("The connection to the repository was lost: %v. Imaging again in %v; what was saved is not uploaded again, and disks already imaged are not imaged again.", err, delay)
+
+		t := time.NewTimer(delay)
+
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return err
+		case <-t.C:
+		}
+	}
+}
+
+// imageConnectionRetryDelays are the waits before imaging again when the
+// connection to the repository broke: a computer that changed networks or a
+// server that restarted is usually back within minutes.
+//
+//nolint:gochecknoglobals
+var imageConnectionRetryDelays = []time.Duration{30 * time.Second, 2 * time.Minute, 5 * time.Minute}
+
+// willRetry reports whether a run that failed with err is attempted again.
+func (c *commandImageCreate) willRetry(err error) bool {
+	return c.retriesLeft > 0 && repo.IsConnectionLost(err) &&
+		!errors.Is(err, errImageStopped) && !errors.Is(err, disksource.ErrAlreadyRunning)
+}
+
+// runOnce opens the repository and images the disks in one write session.
+func (c *commandImageCreate) runOnce(ctx context.Context) (err error) {
 	rep, err := c.svc.openRepository(ctx, true)
 	if err != nil {
 		return errors.Wrap(err, "open repository")
@@ -157,12 +209,19 @@ func (c *commandImageCreate) run(ctx context.Context, rep repo.RepositoryWriter)
 		return err //nolint:wrapcheck
 	}
 
-	status := &disksource.RunStatus{Volumes: c.volumes, StartTime: clock.Now()}
+	// an attempt after a lost connection continues the run
+	start := c.runStart
+	if start.IsZero() {
+		start = clock.Now()
+	}
+
+	status := &disksource.RunStatus{Volumes: c.volumes, StartTime: start, Images: slices.Clone(c.doneImages)}
 
 	if !c.dryRun {
 		defer func() {
-			// the status file belongs to the run that holds the lock
-			if errors.Is(err, disksource.ErrAlreadyRunning) {
+			// the status file belongs to the run that holds the lock, and
+			// a run attempted again records its outcome when it ends
+			if errors.Is(err, disksource.ErrAlreadyRunning) || c.willRetry(err) {
 				return
 			}
 
@@ -255,6 +314,11 @@ func (c *commandImageCreate) imageDisks(ctx context.Context, rep repo.Repository
 	}
 
 	for i, plan := range plans {
+		// imaged before the connection was lost
+		if c.doneDisks[plan.DiskNumber] {
+			continue
+		}
+
 		if monitor != nil {
 			monitor.setDisk(i+1, plan.DiskNumber)
 		}
@@ -262,6 +326,11 @@ func (c *commandImageCreate) imageDisks(ctx context.Context, rep repo.Repository
 		man, md, err := c.imageDisk(runCtx, rep, plan, guard.State, drivers, logf)
 		if man != nil {
 			status.Images = append(status.Images, runImage(man, md))
+		}
+
+		if err == nil && man != nil && c.doneDisks != nil {
+			c.doneDisks[plan.DiskNumber] = true
+			c.doneImages = append(c.doneImages, runImage(man, md))
 		}
 
 		if monitor != nil && monitor.stopped() {

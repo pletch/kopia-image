@@ -78,6 +78,10 @@ type grpcConnectionDialer func(ctx context.Context) (grpcConnection, error)
 
 var errGRPCConnectionClosed = errors.New("gRPC connection is closed")
 
+// ErrServerUnreachable is returned when a repository server does not accept
+// a connection in time.
+var ErrServerUnreachable = errors.New("the repository server is unreachable")
+
 const grpcDialSingleflightKey = "grpc-dial"
 
 type grpcConnectionManager struct {
@@ -1596,7 +1600,7 @@ func waitForGRPCConnectionReadyWithTransientFailureTimeout(ctx context.Context, 
 			}
 
 			if errors.Is(waitCtx.Err(), context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				return errors.Errorf("timed out waiting for gRPC connection readiness (last state=%v)", state)
+				return errors.Wrapf(ErrServerUnreachable, "timed out waiting for gRPC connection readiness (last state=%v)", state)
 			}
 
 			//nolint:wrapcheck
@@ -1612,7 +1616,7 @@ func waitForGRPCConnectionReadyWithTransientFailureTimeout(ctx context.Context, 
 		}
 
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return errors.Errorf("timed out waiting for gRPC connection readiness (last state=%v)", state)
+			return errors.Wrapf(ErrServerUnreachable, "timed out waiting for gRPC connection readiness (last state=%v)", state)
 		}
 
 		//nolint:wrapcheck
