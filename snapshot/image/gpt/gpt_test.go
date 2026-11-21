@@ -156,3 +156,46 @@ func TestClear(t *testing.T) {
 		require.Equal(t, byte(0x42), disk[1<<20])
 	}
 }
+
+// FuzzRead changes a valid GPT, header fields or entries, and fixes its
+// checksums, so that Read parses what it is given rather than rejecting it
+// for its checksum. Read must fail or succeed, not panic or read without
+// bound.
+func FuzzRead(f *testing.F) {
+	f.Add(true, uint16(72), []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f})
+	f.Add(true, uint16(80), []byte{0xff, 0xff, 0xff, 0xff})
+	f.Add(true, uint16(84), []byte{0x80, 0, 0, 0})
+	f.Add(false, uint16(32), []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
+	f.Add(true, uint16(80), []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
+
+	const sectorSize = 512
+
+	f.Fuzz(func(t *testing.T, header bool, off uint16, p []byte) {
+		disk := make(memDisk, 64<<20)
+		require.NoError(t, Write(disk, testLayout(sectorSize), int64(len(disk))))
+
+		hdr := disk[sectorSize : 2*sectorSize]
+
+		if header {
+			if at := int(off) % headerSize; at < 16 || at >= 20 {
+				copy(hdr[at:headerSize], p)
+			}
+		} else {
+			copy(disk[2*sectorSize+int(off)%(32*sectorSize):34*sectorSize], p)
+		}
+
+		// the entry array checksum, then the header checksum
+		count, size := int64(binary.LittleEndian.Uint32(hdr[80:])), int64(binary.LittleEndian.Uint32(hdr[84:]))
+		lba := int64(binary.LittleEndian.Uint64(hdr[72:])) //nolint:gosec
+
+		if size > 0 && count <= (1<<20)/size && lba >= 0 && lba < int64(len(disk))/sectorSize {
+			end := min(int64(len(disk)), lba*sectorSize+count*size)
+			binary.LittleEndian.PutUint32(hdr[88:], crc32.ChecksumIEEE(disk[lba*sectorSize:end]))
+		}
+
+		binary.LittleEndian.PutUint32(hdr[16:], 0)
+		binary.LittleEndian.PutUint32(hdr[16:], crc32.ChecksumIEEE(hdr[:headerSize]))
+
+		Read(disk, sectorSize) //nolint:errcheck
+	})
+}

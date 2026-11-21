@@ -58,7 +58,7 @@ func Shrink(device Device, partitionLength int64) error {
 		return err
 	}
 
-	flags := v.volumeFlagsOffset()
+	flags := v.flagsOff
 	binary.LittleEndian.PutUint16(v.volumeRec.buf[flags:], binary.LittleEndian.Uint16(v.volumeRec.buf[flags:])|volumeFlagDirty)
 
 	// all changes were made in memory; write them
@@ -123,6 +123,10 @@ func (v *volume) shrinkBitmap(bm []byte, clusterCount int64) (*bitmapWrite, erro
 		return nil, err
 	}
 
+	if err := v.checkRuns("$Bitmap", nr.runs); err != nil {
+		return nil, err
+	}
+
 	if nr.startVCN != 0 || (nr.lastVCN+1)*cs != nr.allocated || clusters(nr.runs)*cs != nr.allocated {
 		return nil, errors.Errorf("$Bitmap is not described by a single attribute (clusters %v-%v, %v bytes allocated)", nr.startVCN, nr.lastVCN, nr.allocated)
 	}
@@ -135,6 +139,10 @@ func (v *volume) shrinkBitmap(bm []byte, clusterCount int64) (*bitmapWrite, erro
 
 	// the clusters of $Bitmap past its new allocation are free
 	for _, r := range freedRuns(nr.runs, allocClusters) {
+		if r.lcn+r.length > clusterCount {
+			return nil, errors.Errorf("$Bitmap has clusters %v-%v, past the new end of the volume at %v", r.lcn, r.lcn+r.length-1, clusterCount)
+		}
+
 		for c := r.lcn; c < r.lcn+r.length; c++ {
 			data[c/8] &^= 1 << (c % 8) //nolint:mnd
 		}
@@ -180,6 +188,10 @@ func (v *volume) shrinkBadClus(clusterCount int64) error {
 
 	nr, err := v.badClus.nonResident(v.badData)
 	if err != nil {
+		return err
+	}
+
+	if err := v.checkRuns("$BadClus", nr.runs); err != nil {
 		return err
 	}
 
@@ -273,4 +285,53 @@ func MinPartitionLength(bitmap []byte, totalClusters, clusterSize, sectorSize in
 	last := lastSetBit(bitmap, totalClusters)
 
 	return (last+1)*clusterSize + sectorSize
+}
+
+// bootHiddenSectors is where an NTFS boot sector holds the sector its
+// partition starts at, which it calls hidden sectors.
+const bootHiddenSectors = 0x1C
+
+// SetHiddenSectors sets the starting sector of the volume's partition in its
+// boot sector and backup boot sector, as Windows does when it moves a
+// partition. It writes nothing when the boot sector already has it, or is
+// not an NTFS boot sector it can read: it returns only I/O errors.
+func SetHiddenSectors(device Device, hidden uint32) error {
+	dev := &aligned{dev: device, unit: maxAlignment}
+
+	sector := make([]byte, bootSectorSize)
+	if _, err := dev.ReadAt(sector, 0); err != nil {
+		return errors.Wrap(err, "unable to read the boot sector")
+	}
+
+	b, err := ParseBoot(sector)
+	if err != nil {
+		return nil //nolint:nilerr // not a boot sector to update
+	}
+
+	if binary.LittleEndian.Uint32(sector[bootHiddenSectors:]) == hidden {
+		return nil
+	}
+
+	dev.unit = b.BytesPerSector
+
+	// the backup first, as writeBoot does, so that the boot sector changes last
+	for _, off := range []int64{b.TotalSectors * b.BytesPerSector, 0} {
+		full := make([]byte, b.BytesPerSector)
+		if _, err := dev.ReadAt(full, off); err != nil {
+			return errors.Wrapf(err, "unable to read the boot sector at %v", off)
+		}
+
+		// a volume without its backup boot sector keeps it that way
+		if _, err := ParseBoot(full); err != nil {
+			continue
+		}
+
+		binary.LittleEndian.PutUint32(full[bootHiddenSectors:], hidden)
+
+		if _, err := dev.WriteAt(full, off); err != nil {
+			return errors.Wrapf(err, "unable to write the boot sector at %v", off)
+		}
+	}
+
+	return nil
 }

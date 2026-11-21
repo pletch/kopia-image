@@ -3,6 +3,7 @@ package ntfsresize
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/binary"
 	"io"
 	"os"
 	"strconv"
@@ -181,4 +182,94 @@ func TestRuns(t *testing.T) {
 
 	require.Equal(t, []run{{length: 5, lcn: 49823}, {length: 1, lcn: 10}}, truncateRuns(cases[2], 6))
 	require.Equal(t, []run{{length: 2, lcn: 11}, {length: 128, lcn: 1 << 40}}, freedRuns(cases[2], 6))
+}
+
+// recordOffsets returns where the boot sector and the MFT records that
+// Inspect and Shrink read are on the fixture, and where the value offset of
+// the volume information attribute is.
+func recordOffsets(t *testing.T, b []byte) (records []int64, volumeValueOffset int64) {
+	t.Helper()
+
+	v, err := open(&aligned{dev: &memDevice{b: bytes.Clone(b)}})
+	require.NoError(t, err)
+
+	base := v.boot.MFTCluster * v.boot.ClusterSize
+
+	for _, n := range []int64{recordMFT, recordVolume, recordBitmap, recordBadClus} {
+		records = append(records, base+n*v.boot.RecordSize)
+	}
+
+	return append(records, 0), v.volumeRec.offset + int64(v.volumeInfo.offset) + residentValueOffset
+}
+
+func TestShrink_volumeInformationOutsideItsAttribute(t *testing.T) {
+	orig := loadFixture(t)
+	_, valueOff := recordOffsets(t, orig)
+
+	for _, v := range []uint16{0, 0x10, 0x200, 0xffff} {
+		b := bytes.Clone(orig)
+		copy(b[valueOff:], []byte{byte(v), byte(v >> 8)})
+
+		_, err := Inspect(&memDevice{b: bytes.Clone(b)})
+		require.ErrorContains(t, err, "$Volume information", "value offset %#x", v)
+		require.Error(t, Shrink(&memDevice{b: b}, 24<<20), "value offset %#x", v)
+	}
+}
+
+// FuzzShrink corrupts the boot sector or a record that Inspect and Shrink
+// read, which must fail rather than panic, hang or allocate without bound.
+func FuzzShrink(f *testing.F) {
+	f.Add(uint8(1), uint16(0x14), []byte{0xff, 0xff})
+	f.Add(uint8(2), uint16(0x100), []byte{0x31, 0xff, 0xff, 0xff, 0xff, 0x7f})
+	f.Add(uint8(3), uint16(0x150), []byte{0x48, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f})
+	f.Add(uint8(4), uint16(0x28), []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f})
+	f.Add(uint8(0), uint16(0x40), []byte{0x31, 0x01, 0x00, 0x00, 0x00, 0x7f})
+
+	var (
+		orig    []byte
+		offsets []int64
+	)
+
+	f.Fuzz(func(t *testing.T, which uint8, off uint16, p []byte) {
+		if orig == nil {
+			orig = loadFixture(t)
+			offsets, _ = recordOffsets(t, orig)
+		}
+
+		if len(p) > 64 {
+			p = p[:64]
+		}
+
+		b := bytes.Clone(orig)
+		at := offsets[int(which)%len(offsets)] + int64(off)%1024
+		copy(b[at:], p)
+
+		Inspect(&memDevice{b: bytes.Clone(b)}) //nolint:errcheck
+		Shrink(&memDevice{b: b}, 24<<20)       //nolint:errcheck
+	})
+}
+
+func TestSetHiddenSectors(t *testing.T) {
+	dev := &memDevice{b: loadFixture(t)}
+	backup := int64(fixtureLength - 512)
+
+	require.NoError(t, SetHiddenSectors(dev, 123456))
+
+	for _, off := range []int64{0, backup} {
+		require.Equal(t, uint32(123456), binary.LittleEndian.Uint32(dev.b[off+bootHiddenSectors:]), "boot sector at %v", off)
+	}
+
+	info, err := Inspect(&memDevice{b: dev.b})
+	require.NoError(t, err)
+	require.True(t, info.BackupBootMatches)
+
+	// nothing is written when it already holds the value
+	dev.written = 0
+	require.NoError(t, SetHiddenSectors(dev, 123456))
+	require.Zero(t, dev.written)
+
+	// a volume that is not NTFS is left alone
+	other := &memDevice{b: make([]byte, 1<<20)}
+	require.NoError(t, SetHiddenSectors(other, 1))
+	require.Zero(t, other.written)
 }

@@ -1,0 +1,4 @@
+go test fuzz v1
+bool(true)
+uint16(80)
+[]byte("000\x8b000\xff")

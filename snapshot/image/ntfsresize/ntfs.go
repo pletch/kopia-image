@@ -8,6 +8,7 @@ package ntfsresize
 import (
 	"encoding/binary"
 	"io"
+	"math"
 	"math/bits"
 
 	"github.com/pkg/errors"
@@ -122,7 +123,7 @@ func ParseBoot(sector []byte) (*Boot, error) {
 }
 
 func (b *Boot) validate(sectorsPerCluster int64) error {
-	if sectorsPerCluster <= 0 || sectorsPerCluster&(sectorsPerCluster-1) != 0 || b.ClusterSize > maxCluster {
+	if sectorsPerCluster <= 0 || sectorsPerCluster&(sectorsPerCluster-1) != 0 || b.ClusterSize <= 0 || b.ClusterSize > maxCluster {
 		return errors.Errorf("invalid cluster size: %v sectors", sectorsPerCluster)
 	}
 
@@ -130,9 +131,14 @@ func (b *Boot) validate(sectorsPerCluster int64) error {
 		return errors.Errorf("invalid MFT record size %v", b.RecordSize)
 	}
 
+	// TotalClusters multiplies TotalSectors by BytesPerSector
+	if b.TotalSectors <= 0 || b.TotalSectors > math.MaxInt64/b.BytesPerSector {
+		return errors.Errorf("invalid geometry: %v sectors", b.TotalSectors)
+	}
+
 	clusters := b.TotalClusters()
 
-	if b.TotalSectors <= 0 || b.MFTCluster <= 0 || b.MFTCluster >= clusters || b.MFTMirrCluster <= 0 || b.MFTMirrCluster >= clusters {
+	if b.MFTCluster <= 0 || b.MFTCluster >= clusters || b.MFTMirrCluster <= 0 || b.MFTMirrCluster >= clusters {
 		return errors.Errorf("invalid geometry: %v sectors, $MFT at cluster %v, $MFTMirr at %v", b.TotalSectors, b.MFTCluster, b.MFTMirrCluster)
 	}
 

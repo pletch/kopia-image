@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"hash/crc32"
 	"io"
+	"math"
 	"unicode/utf16"
 
 	"github.com/google/uuid"
@@ -229,6 +230,9 @@ type Table struct {
 	Partitions []image.Partition
 }
 
+// maxEntryArraySize bounds the partition entry array that Read reads.
+const maxEntryArraySize = 1 << 20
+
 // Read reads and verifies the primary GPT of a disk with the given sector
 // size. It returns ErrNoGPT if the disk has no valid primary GPT.
 func Read(r io.ReaderAt, sectorSize int64) (*Table, error) {
@@ -248,15 +252,13 @@ func Read(r io.ReaderAt, sectorSize int64) (*Table, error) {
 		return nil, errors.Wrap(ErrNoGPT, "header checksum mismatch")
 	}
 
-	count := int64(binary.LittleEndian.Uint32(hdr[80:]))
-	size := int64(binary.LittleEndian.Uint32(hdr[84:]))
-
-	if size < entrySize || count <= 0 || count*size > 1<<20 {
-		return nil, errors.Wrapf(ErrNoGPT, "unsupported entry array of %v entries of %v bytes", count, size)
+	lba, count, size, err := entryArray(hdr, sectorSize)
+	if err != nil {
+		return nil, err
 	}
 
 	entries := make([]byte, count*size)
-	if _, err := r.ReadAt(entries, int64(binary.LittleEndian.Uint64(hdr[72:]))*sectorSize); err != nil { //nolint:gosec
+	if _, err := r.ReadAt(entries, lba*sectorSize); err != nil {
 		return nil, errors.Wrap(err, "unable to read GPT entries")
 	}
 
@@ -300,6 +302,27 @@ func Read(r io.ReaderAt, sectorSize int64) (*Table, error) {
 	}
 
 	return t, nil
+}
+
+// entryArray returns where the partition entry array of a GPT header is, its
+// number of entries and their size, after checking that the array is no
+// larger than maxEntryArraySize and that its offset does not overflow.
+func entryArray(hdr []byte, sectorSize int64) (lba, count, size int64, err error) {
+	count = int64(binary.LittleEndian.Uint32(hdr[80:]))
+	size = int64(binary.LittleEndian.Uint32(hdr[84:]))
+
+	// each is at most 2^32-1, so their product can overflow; compare without it
+	if size < entrySize || count <= 0 || count > maxEntryArraySize/size {
+		return 0, 0, 0, errors.Wrapf(ErrNoGPT, "unsupported entry array of %v entries of %v bytes", count, size)
+	}
+
+	// the entry array follows the header
+	rawLBA := binary.LittleEndian.Uint64(hdr[72:])
+	if rawLBA < 2 || rawLBA > math.MaxInt64 || int64(rawLBA) > math.MaxInt64/sectorSize {
+		return 0, 0, 0, errors.Wrapf(ErrNoGPT, "entry array at LBA %v", rawLBA)
+	}
+
+	return int64(rawLBA), count, size, nil
 }
 
 // Clear zeroes the protective MBR and the primary and backup GPT of a disk of

@@ -148,6 +148,7 @@ type volume struct {
 
 	volumeRec  *record
 	volumeInfo attribute
+	flagsOff   int // in volumeRec.buf: the flags of the volume information
 
 	bitmap     *record
 	bitmapData attribute
@@ -192,6 +193,10 @@ func open(dev *aligned) (*volume, error) {
 		return nil, errors.New("$Volume information is not resident")
 	}
 
+	if v.flagsOff, err = volumeFlagsOffset(v.volumeInfo, v.volumeRec.buf); err != nil {
+		return nil, err
+	}
+
 	if v.bitmap, err = readRecord(dev, b, base, recordBitmap); err != nil {
 		return nil, err
 	}
@@ -225,6 +230,10 @@ func (v *volume) checkFirstExtent(mft *record) error {
 		return err
 	}
 
+	if err := v.checkRuns("$MFT", nr.runs); err != nil {
+		return err
+	}
+
 	if nr.startVCN != 0 || len(nr.runs) == 0 || nr.runs[0].sparse || nr.runs[0].lcn != v.boot.MFTCluster {
 		return errors.New("the MFT does not start at the cluster the boot sector says")
 	}
@@ -238,16 +247,57 @@ func (v *volume) checkFirstExtent(mft *record) error {
 	return nil
 }
 
-func (v *volume) volumeFlagsOffset() int {
-	a := v.volumeInfo
-	valueOff := int(binary.LittleEndian.Uint16(v.volumeRec.buf[a.offset+0x14:]))
+// Layout of a resident attribute and of VOLUME_INFORMATION: 8 reserved
+// bytes, the major and minor version, and the flags.
+const (
+	residentValueLength = 0x10
+	residentValueOffset = 0x14
+	volumeInfoFlags     = 0x0A
+	volumeInfoSize      = 0x0C
+)
 
-	// VOLUME_INFORMATION: 8 reserved bytes, major and minor version, flags
-	return a.offset + valueOff + 0x0A //nolint:mnd
+// volumeFlagsOffset returns where in its record the flags of the resident
+// volume information attribute a are, after checking that its value lies
+// inside the attribute.
+func volumeFlagsOffset(a attribute, buf []byte) (int, error) {
+	if a.length < residentHeaderSize || a.offset+a.length > len(buf) {
+		return 0, errors.Errorf("$Volume information attribute of %v bytes at %v", a.length, a.offset)
+	}
+
+	valueLen := int64(binary.LittleEndian.Uint32(buf[a.offset+residentValueLength:]))
+	valueOff := int64(binary.LittleEndian.Uint16(buf[a.offset+residentValueOffset:]))
+
+	if valueLen < volumeInfoSize || valueOff < residentHeaderSize || valueOff+valueLen > int64(a.length) {
+		return 0, errors.Errorf("$Volume information of %v bytes at %v, in an attribute of %v bytes", valueLen, valueOff, a.length)
+	}
+
+	return a.offset + int(valueOff) + volumeInfoFlags, nil
 }
 
 func (v *volume) dirty() bool {
-	return binary.LittleEndian.Uint16(v.volumeRec.buf[v.volumeFlagsOffset():])&volumeFlagDirty != 0
+	return binary.LittleEndian.Uint16(v.volumeRec.buf[v.flagsOff:])&volumeFlagDirty != 0
+}
+
+// checkRuns checks that the runs of an attribute lie inside the volume and
+// cover no more clusters than it has.
+func (v *volume) checkRuns(name string, runs []run) error {
+	total := v.boot.TotalClusters()
+
+	var n int64
+
+	for _, r := range runs {
+		if r.length <= 0 || r.length > total-n {
+			return errors.Errorf("%v has a run of %v clusters, more than the volume's %v", name, r.length, total)
+		}
+
+		n += r.length
+
+		if !r.sparse && (r.lcn < 0 || r.lcn > total-r.length) {
+			return errors.Errorf("%v has %v clusters at cluster %v, outside the volume's %v", name, r.length, r.lcn, total)
+		}
+	}
+
+	return nil
 }
 
 // readBitmap reads the data of $Bitmap.
@@ -257,7 +307,14 @@ func (v *volume) readBitmap(dev io.ReaderAt) ([]byte, error) {
 		return nil, err
 	}
 
-	if nr.dataSize <= 0 || nr.dataSize > nr.allocated || nr.dataSize > clusters(nr.runs)*v.boot.ClusterSize {
+	if err := v.checkRuns("$Bitmap", nr.runs); err != nil {
+		return nil, err
+	}
+
+	// a bit per cluster, rounded up to whole 8-byte words
+	maxSize := ((v.boot.TotalClusters()+7)/8 + bitmapRounding - 1) / bitmapRounding * bitmapRounding //nolint:mnd
+
+	if nr.dataSize <= 0 || nr.dataSize > nr.allocated || nr.dataSize > clusters(nr.runs)*v.boot.ClusterSize || nr.dataSize > maxSize {
 		return nil, errors.Errorf("$Bitmap is %v bytes, with %v allocated", nr.dataSize, nr.allocated)
 	}
 
