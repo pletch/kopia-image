@@ -10,9 +10,17 @@ and encrypted like everything else.
 
 Every image is a full, independent copy of the disk at one moment. Kopia reads
 the allocated parts of each volume from a Volume Shadow Copy, but uploads only
-the 4 MiB chunks the repository does not already have, so a nightly image
-usually uploads a few gigabytes or less. Any image can be restored on its own;
-there are no incremental chains to break.
+the 1 MiB chunks the repository does not already have. A chunk is new when any
+of its bytes changed, so how much a nightly image uploads depends on how
+scattered the day's writes are: from a few gigabytes or less on a quiet
+computer to tens of gigabytes, before compression, on a busy one.
+`kopia image compare <old> <new>` shows where an image's new data comes from.
+Any image can be restored on its own; there are no incremental chains to break.
+
+Images made before kopia `0.23.1-wails.40` have 4 MiB chunks, which store an
+estimated twice as much per night. They still restore, browse and check, but the
+first image of each disk with 1 MiB chunks shares nothing with them and uploads
+in full. `kopia image create --chunk-size` takes sizes from 128K to 8M.
 
 ## Requirements and limits
 
@@ -61,6 +69,12 @@ A run that fails, for example when the network drops or the computer sleeps,
 saves no image. Its uploads are recorded periodically (`--flush-interval`,
 default 10 minutes) and once more when it fails, so the next run does not upload
 them again. Shadow copies left behind by a crash are removed by the next run.
+
+A run whose connection to the repository breaks or cannot be made, for example
+when a laptop switches from Wi-Fi to Ethernet, images again over a new
+connection after 30 seconds, 2 minutes and 5 minutes. What it saved is not
+uploaded again, disks it already imaged are not imaged again, and the run's
+status records only the final outcome.
 
 Every 45 minutes, and when it fails, a run also saves an incomplete
 "checkpoint" snapshot of what it has uploaded so far. The checkpoint keeps
@@ -118,8 +132,10 @@ user:
 * `install` also copies `kopia.exe` into `C:\ProgramData\kopia\image\bin`, and
   the tasks run that copy. The kopia you ran may be in a folder your account
   can write, such as a per-user installation, and whoever replaced it there
-  would run as SYSTEM. **Run `kopia image schedule install` again after
-  upgrading kopia**, or the tasks keep running the old version.
+  would run as SYSTEM. **After upgrading kopia, update that copy**, or the
+  tasks keep running the old version: the KopiaUI-Wails installer does it after
+  a UAC prompt, or run `kopia image schedule update` as administrator. It
+  keeps the tasks' settings and saved password.
 * `C:\ProgramData\kopia\image` is owned by Administrators and only SYSTEM and
   Administrators can open it.
 * `C:\ProgramData\kopia`, which holds the run status and the list of shadow
@@ -137,6 +153,16 @@ kopia image schedule run      # start an image now
 kopia image schedule show     # next and last runs, and the last run's result
 kopia image schedule remove   # remove the tasks and the saved password
 ```
+
+Every user can read the tasks' status, so `schedule show` and the Kopia UI show
+the next and last runs without administrator rights; only administrators can
+start, change or remove the tasks. Tasks scheduled with kopia before
+`0.23.1-wails.45` are hidden from other users until `install` or `update` runs
+again.
+
+If an image run is still going when you remove the schedule, the files it has
+open, such as its copy of `kopia.exe` and its log, are removed when Windows
+restarts. The saved password is always removed at once.
 
 Run the first image by hand (`kopia image schedule run`, or
 `kopia image create C:`) and watch it finish: the first upload is the full disk
@@ -165,8 +191,9 @@ Keep images long enough to reach back past an infection. Ransomware often waits
 days or weeks before encrypting, and the image to restore is one from before it
 arrived. Keep weekly and monthly images, not only recent ones.
 
-Each retained image keeps a list of its chunks, about 262,000 entries per TB of
-disk, which full maintenance reads, so do not keep more images than you need.
+Each retained image keeps a list of its chunks, about a million entries per TB
+of disk with 1 MiB chunks, which full maintenance reads, so do not keep more
+images than you need.
 
 Do not give the image source a snapshot schedule in the Kopia UI or policy:
 image sources are never snapshotted as directories, and the UI shows them with
@@ -240,13 +267,27 @@ kopia image restore tim@desktop:image:disk:<GUID> --target /dev/nvme0n1
 
 `image restore` recreates the partition table with the original disk and
 partition GUIDs, so the Windows boot configuration stays valid, then writes
-every volume, fetching `--parallel` chunks at once (default 16) and zeroing free
-space without downloading it. Each volume is checked against its partition
-before anything is written, and the unused end of a partition is zeroed, so
-nothing of the disk's previous contents remains inside a partition. It refuses a
-target that:
+every volume, fetching about 64 MiB of chunks at once (`--parallel` sets the
+number of chunks: by default 64 of 1 MiB, or 16 of 4 MiB). Chunks of zeros are
+not downloaded. In the free clusters of NTFS volumes they are not written
+either, since NTFS ignores what free clusters hold, so a mostly empty volume
+restores quickly; zeros inside files are written. Each volume is checked against
+its partition before anything is written, and the unused end of a partition is
+zeroed. Writes to a disk that briefly stops responding, as some USB enclosures
+do, are retried for about a minute.
 
-* has a different logical sector size or is too small (larger is fine),
+A target smaller than the imaged disk is fine if the volumes fit: NTFS volumes
+are shrunk, the largest first and no more than needed, and the partitions after
+them move down, keeping their GUIDs. Files are not moved, so a volume shrinks
+only as far as its last used cluster. The plan is shown before anything is
+written. Windows checks a shrunk volume when it next mounts it; if the recovery
+partition moved, run `reagentc /disable` and `reagentc /enable` in Windows
+afterwards.
+
+`image restore` refuses a target that:
+
+* has a different logical sector size, or is too small even with its NTFS
+  volumes shrunk,
 * is mounted or in use,
 * already has a partition table (pass `--overwrite`),
 * shares its disk GUID with another attached disk, such as the original disk
