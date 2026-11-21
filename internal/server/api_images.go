@@ -89,6 +89,8 @@ func handleImagesList(ctx context.Context, rc requestContext) (any, *apiError) {
 
 	co := rc.rep.ClientOptions()
 
+	rc.srv.imageDetailsCache().keepOnly(mans)
+
 	if rc.queryParam("all") == "" {
 		mans = slices.DeleteFunc(mans, func(m *snapshot.Manifest) bool { return m.Source.Host != co.Hostname })
 	}
@@ -133,6 +135,8 @@ func addImageSpace(rc requestContext, mans []*snapshot.Manifest, resp *serverapi
 
 	exclusive := map[manifest.ID]int64{}
 
+	rc.srv.imageSpaceCache().setFile(func() string { return imageSpaceFilePath(rc) })
+
 	for _, src := range order {
 		s := &serverapi.ImageSourceSpace{Source: src}
 
@@ -158,6 +162,22 @@ func addImageSpace(rc requestContext, mans []*snapshot.Manifest, resp *serverapi
 	}
 }
 
+// imageSpaceFilePath is where the server saves the space of the images: the
+// repository's cache directory, or "" when it has none.
+func imageSpaceFilePath(rc requestContext) string {
+	cfg := rc.srv.getOptions().ConfigFile
+	if cfg == "" {
+		return ""
+	}
+
+	opt, err := repo.GetCachingOptions(rc.req.Context(), cfg)
+	if err != nil || opt.CacheDirectory == "" {
+		return ""
+	}
+
+	return filepath.Join(opt.CacheDirectory, imageSpaceFileName)
+}
+
 func convertImageSnapshot(ctx context.Context, rc requestContext, m *snapshot.Manifest) *serverapi.ImageSnapshot {
 	img := &serverapi.ImageSnapshot{
 		ID:          m.ID,
@@ -174,8 +194,10 @@ func convertImageSnapshot(ctx context.Context, rc requestContext, m *snapshot.Ma
 		img.Size = m.RootEntry.DirSummary.TotalFileSize
 	}
 
+	l, md, err := rc.srv.imageDetailsCache().get(ctx, rc.rep, m)
+
 	// the disk map is an extra; the image is listed without it
-	if l, err := image.ReadLayout(ctx, rc.rep, m); err == nil {
+	if l != nil {
 		img.DiskSize = l.DiskSize
 
 		for _, p := range l.Partitions {
@@ -188,7 +210,6 @@ func convertImageSnapshot(ctx context.Context, rc requestContext, m *snapshot.Ma
 		}
 	}
 
-	md, err := image.ReadMetadata(ctx, rc.rep, m)
 	if err != nil {
 		img.MetadataError = err.Error()
 		return img

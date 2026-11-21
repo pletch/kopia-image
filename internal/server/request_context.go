@@ -29,6 +29,7 @@ type serverInterface interface {
 	Refresh()
 	refreshedSince(t time.Time) bool
 	imageSpaceCache() *imageSpaceCache
+	imageDetailsCache() *imageDetailsCache
 	getMountController(ctx context.Context, rep repo.Repository, oid object.ID, createIfNotFound bool, webdavURL string) (mount.Controller, error)
 	deleteMount(oid object.ID)
 	listMounts() map[object.ID]mount.Controller

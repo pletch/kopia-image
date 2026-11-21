@@ -22,6 +22,7 @@ import (
 	"github.com/kopia/kopia/internal/servertesting"
 	"github.com/kopia/kopia/internal/testutil"
 	"github.com/kopia/kopia/repo"
+	"github.com/kopia/kopia/repo/content"
 	"github.com/kopia/kopia/repo/manifest"
 	"github.com/kopia/kopia/snapshot"
 	"github.com/kopia/kopia/snapshot/image"
@@ -783,4 +784,55 @@ func TestImagesList_space(t *testing.T) {
 	}, 30*time.Second, 50*time.Millisecond)
 
 	require.Equal(t, *resp.Space[0].StoredBytes, *resp.Images[0].ExclusiveBytes)
+}
+
+// TestImagesList_spaceSurvivesRestart checks that a server started again
+// shows the space calculated by the one before, while the images are the
+// same, instead of calculating it again.
+func TestImagesList_spaceSurvivesRestart(t *testing.T) {
+	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
+
+	localHost := env.Repository.ClientOptions().Hostname
+	data := bytes.Repeat([]byte{1, 2, 3, 4}, 1<<18)
+
+	mustCreateRawImage(t, env, localHost, "0f6ab3f2-1c3d-4e5f-8a9b-0c1d2e3f4a51", data)
+	require.NoError(t, env.RepositoryWriter.Flush(ctx))
+
+	// connecting sets a cache directory unless caching is off, as it is in
+	// the test environment
+	cacheDir := testutil.TempDirectory(t)
+	require.NoError(t, repo.SetCachingOptions(ctx, env.ConfigFile(), &content.CachingOptions{CacheDirectory: cacheDir, ContentCacheSizeBytes: 1 << 20}))
+
+	cli := startImageServer(t, env, &fakeImageHost{dir: testutil.TempDirectory(t)})
+
+	var first *serverapi.ImagesResponse
+
+	require.Eventually(t, func() bool {
+		var err error
+
+		first, err = serverapi.ListImages(ctx, cli, false)
+		require.NoError(t, err)
+		require.Len(t, first.Space, 1)
+
+		return !first.Space[0].Pending
+	}, 30*time.Second, 50*time.Millisecond)
+
+	require.NotNil(t, first.Space[0].StoredBytes)
+	require.NotNil(t, first.Images[0].ExclusiveBytes)
+
+	// the file is written after the space is reported
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(filepath.Join(cacheDir, "image-space.json"))
+		return err == nil
+	}, 10*time.Second, 50*time.Millisecond)
+
+	// a new server with the same repository configuration
+	cli2 := startImageServer(t, env, &fakeImageHost{dir: testutil.TempDirectory(t)})
+
+	second, err := serverapi.ListImages(ctx, cli2, false)
+	require.NoError(t, err)
+	require.Len(t, second.Space, 1)
+	require.False(t, second.Space[0].Pending, "the saved space is shown at once")
+	require.Equal(t, *first.Space[0].StoredBytes, *second.Space[0].StoredBytes)
+	require.Equal(t, *first.Images[0].ExclusiveBytes, *second.Images[0].ExclusiveBytes)
 }
