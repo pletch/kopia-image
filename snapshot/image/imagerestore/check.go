@@ -146,7 +146,7 @@ func checkVolume(ctx context.Context, rep repo.Repository, v *image.Volume, pack
 		lookups = max(lookups, image.ParallelChunks(chunks[0].Length))
 	}
 
-	infos, err := image.VerifyObject(ctx, rep, v.ObjectID, lookups)
+	infos, err := image.VerifyObject(ctx, rep, v.ObjectID, lookups, nil)
 	if err != nil {
 		r.addProblemf("chunks missing from the index: %v", err)
 		return r, nil

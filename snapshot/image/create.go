@@ -251,6 +251,9 @@ func (opt *CreateOptions) writeVolumes(ctx context.Context, rep repo.RepositoryW
 			return nil, errors.Wrapf(err, "partition %v", v.PartitionNumber)
 		}
 
+		opt.Progress.startChecking()
+		opt.logf("Saving the upload of %v and checking that the repository holds every chunk", name)
+
 		// a repository server makes the contents sent to it visible only once
 		// flushed; a direct connection sees its own pending contents
 		if _, direct := rep.(repo.DirectRepositoryWriter); !direct {
@@ -259,7 +262,7 @@ func (opt *CreateOptions) writeVolumes(ctx context.Context, rep repo.RepositoryW
 			}
 		}
 
-		if _, err := VerifyObject(ctx, rep, oid, ParallelChunks(opt.chunkSize())); err != nil {
+		if _, err := VerifyObject(ctx, rep, oid, ParallelChunks(opt.chunkSize()), opt.Progress.checkedChunks); err != nil {
 			return nil, errors.Wrapf(err, "image of partition %v is incomplete", v.PartitionNumber)
 		}
 

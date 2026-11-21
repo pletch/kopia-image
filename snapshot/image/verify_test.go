@@ -25,8 +25,14 @@ func TestVerifyObject(t *testing.T) {
 	require.NoError(t, env.RepositoryWriter.Flush(ctx))
 
 	for _, parallel := range []int{0, 1, 64} {
-		infos, err := VerifyObject(ctx, env.RepositoryWriter, oid, parallel)
+		var done, total int64
+
+		infos, err := VerifyObject(ctx, env.RepositoryWriter, oid, parallel, func(d, tot int64) {
+			done, total = max(done, d), tot
+		})
 		require.NoError(t, err)
+		require.Equal(t, int64(5), total)
+		require.Equal(t, int64(5), done)
 
 		// the chunk list, 3 chunks of data and 1 of zeros
 		require.Len(t, infos, 5)
@@ -34,7 +40,7 @@ func TestVerifyObject(t *testing.T) {
 
 	// a chunk the repository does not hold
 	missing := object.DirectObjectID(mustContentID(t, "0123456789abcdef0123456789abcdef"))
-	_, err = VerifyObject(ctx, env.RepositoryWriter, missing, 8)
+	_, err = VerifyObject(ctx, env.RepositoryWriter, missing, 8, nil)
 	require.Error(t, err)
 }
 
