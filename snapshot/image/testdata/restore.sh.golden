@@ -3,8 +3,8 @@
 #
 # Usage: bash restore.sh /dev/<target-disk>
 #
-# Requires kopia connected to the repository, sgdisk, blockdev and dd.
-# WARNING: this destroys all data on the target disk.
+# Requires kopia connected to the repository, sgdisk, blockdev, lsblk and
+# GNU dd. WARNING: this destroys all data on the target disk.
 set -euo pipefail # pipefail makes a failed "kopia show" fail the restore
 
 if [ $# -ne 1 ]; then
@@ -12,45 +12,61 @@ if [ $# -ne 1 ]; then
   exit 2
 fi
 
-DISK=$1
+# /dev/disk/by-id/... names the same disk as /dev/sdX
+DISK=$(readlink -f -- "$1")
 
 if [ ! -b "$DISK" ]; then
-  echo "$DISK is not a block device" >&2
+  echo "$1 is not a block device" >&2
+  exit 1
+fi
+
+if [ -e "/sys/class/block/$(basename -- "$DISK")/partition" ]; then
+  echo "$1 is a partition; give the whole disk" >&2
+  exit 1
+fi
+
+if [ -n "$(lsblk -nro MOUNTPOINTS "$DISK" 2>/dev/null || lsblk -nro MOUNTPOINT "$DISK")" ]; then
+  echo "$1 has mounted file systems; unmount them first" >&2
   exit 1
 fi
 
 if [ "$(blockdev --getss "$DISK")" -ne 512 ]; then
-  echo "$DISK must have a logical sector size of 512 bytes" >&2
+  echo "$1 must have a logical sector size of 512 bytes" >&2
   exit 1
 fi
 
 if [ "$(blockdev --getsize64 "$DISK")" -lt 108178457088 ]; then
-  echo "$DISK must be at least 108178457088 bytes" >&2
+  echo "$1 must be at least 108178457088 bytes" >&2
   exit 1
 fi
 
-case "$DISK" in
-  *[0-9]) PART="${DISK}p" ;;
-  *) PART="$DISK" ;;
-esac
+# the partition table goes first, so that nothing mounts a partition
+# while it is written
+sgdisk --zap-all "$DISK" >/dev/null
+blockdev --rereadpt "$DISK" 2>/dev/null || true
+sync
+blockdev --flushbufs "$DISK"
 
-sgdisk --zap-all "$DISK"
+echo 'Writing p1-esp.img to partition 1'
+kopia show 'Ix0123456789abcdef0123456789abcd01' | dd of="$DISK" bs=1048576 count=104857600 seek=1048576 iflag=fullblock,count_bytes oflag=seek_bytes,direct conv=fsync,notrunc,nocreat status=progress
+echo 'Zeroing partition 2'
+dd if=/dev/zero of="$DISK" bs=1048576 count=16777216 seek=105906176 iflag=count_bytes oflag=seek_bytes,direct conv=fsync,notrunc,nocreat status=none
+echo 'Writing p3-C.img to partition 3'
+kopia show 'Ix0123456789abcdef0123456789abcd03' | dd of="$DISK" bs=1048576 count=107374182400 seek=122683392 iflag=fullblock,count_bytes oflag=seek_bytes,direct conv=fsync,notrunc,nocreat status=progress
+echo 'Writing p4-recovery.img to partition 4'
+kopia show 'Ix0123456789abcdef0123456789abcd04' | dd of="$DISK" bs=1048576 count=681574400 seek=107496865792 iflag=fullblock,count_bytes oflag=seek_bytes,direct conv=fsync,notrunc,nocreat status=progress
+
+sync
+blockdev --flushbufs "$DISK"
+
+echo 'Writing the partition table'
 sgdisk --set-alignment=1 --disk-guid='0f6ab3f2-1c3d-4e5f-8a9b-0c1d2e3f4a5b' \
   --new=1:2048:206847 --typecode=1:'c12a7328-f81f-11d2-ba4b-00a0c93ec93b' --partition-guid=1:'11111111-2222-4333-8444-555555555551' --change-name=1:'EFI system partition' --attributes=1:set:63 \
   --new=2:206848:239615 --typecode=2:'e3c9e316-0b5c-4db8-817d-f92df00215ae' --partition-guid=2:'11111111-2222-4333-8444-555555555552' --change-name=2:'Microsoft reserved partition' \
   --new=3:239616:209954815 --typecode=3:'ebd0a0a2-b9e5-4433-87c0-68b6b72699c7' --partition-guid=3:'11111111-2222-4333-8444-555555555553' --change-name=3:'Basic data partition' \
   --new=4:209954816:211286015 --typecode=4:'de94bba4-06d1-4d40-a16a-bfd50179d6ac' --partition-guid=4:'11111111-2222-4333-8444-555555555554' --change-name=4:'Tim'\''s recovery' --attributes=4:set:0 --attributes=4:set:63 \
-  "$DISK"
-
-partprobe "$DISK" 2>/dev/null || blockdev --rereadpt "$DISK"
-udevadm settle 2>/dev/null || true
-
-echo 'Writing p1-esp.img to partition 1'
-kopia show 'Ix0123456789abcdef0123456789abcd01' | dd of="${PART}1" bs=1048576 iflag=fullblock oflag=direct conv=fsync status=progress
-echo 'Writing p3-C.img to partition 3'
-kopia show 'Ix0123456789abcdef0123456789abcd03' | dd of="${PART}3" bs=1048576 iflag=fullblock oflag=direct conv=fsync status=progress
-echo 'Writing p4-recovery.img to partition 4'
-kopia show 'Ix0123456789abcdef0123456789abcd04' | dd of="${PART}4" bs=1048576 iflag=fullblock oflag=direct conv=fsync status=progress
+  "$DISK" >/dev/null
 
 sync
+partprobe "$DISK" 2>/dev/null || blockdev --rereadpt "$DISK" 2>/dev/null || true
 echo 'Restore complete.'

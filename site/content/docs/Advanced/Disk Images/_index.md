@@ -385,17 +385,28 @@ afterwards.
 * has a different logical sector size, or is too small even with its NTFS
   volumes shrunk,
 * is mounted or in use,
-* already has a partition table (pass `--overwrite`),
+* is not blank, with a partition table or any other data in its first or last
+  MiB (pass `--overwrite`),
 * shares its disk GUID with another attached disk, such as the original disk
   (pass `--force`; Windows takes one of two disks with the same GUID offline).
 
 `--only p3-C` restores a single volume into a disk that already has the image's
-partition table. `--target disk.img` writes a raw disk image file instead, which
+partition table, keeping the disk's other partitions as they are. On Windows
+the volume may be mounted: it is locked and dismounted while it is written, and
+refused if it holds Windows or the repository. On Linux no partition of the
+disk may be mounted. The volume's boot sectors are written last, so an
+interrupted restore leaves a volume that does not mount rather than one that
+holds partly old data. `--target disk.img` writes a raw disk image file instead, which
 virtual machines can boot. A missing file is created, except under `/dev`, where
 a missing name is a mistyped device.
 
 Each image also contains `restore.sh`, which restores using only stock `kopia`,
-`sgdisk` and `dd`, if the `image restore` command is not available.
+`sgdisk`, `lsblk` and GNU `dd`, if the `image restore` command is not
+available: `bash restore.sh /dev/sdX`, or a `/dev/disk/by-id/...` name. It
+refuses a partition or a disk with mounted file systems, clears the partition
+table, writes each volume at its partition's offset, no longer than its image,
+and writes the partition table last. It does not shrink volumes, so the target
+must be at least as large as the imaged disk.
 
 ## Protecting images from ransomware
 
