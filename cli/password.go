@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/pkg/errors"
-	"golang.org/x/term"
 
 	"github.com/kopia/kopia/internal/passwordpersist"
 )
@@ -103,7 +102,7 @@ func askPass(out io.Writer, prompt string) (string, error) {
 	for range 5 {
 		fmt.Fprint(out, prompt) //nolint:errcheck
 
-		passBytes, err := term.ReadPassword(fd)
+		passBytes, err := readMaskedPassword(fd, os.Stdin, out)
 		if err != nil {
 			return "", errors.Wrap(err, "password prompt error")
 		}

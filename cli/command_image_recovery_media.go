@@ -324,18 +324,23 @@ func (c *commandImageRecoveryMediaCreate) validateUSB(ctx context.Context, rep r
 		c.out.printStdout("  %v\n", v)
 	}
 
-	answer := c.confirmDisk
-	if answer == "" {
-		c.out.printStdout("Type %v to erase it and continue: ", word)
+	// scripts confirm with the disk number, people by typing a word that a
+	// slip of the keyboard does not produce
+	if c.confirmDisk != "" {
+		if !strings.EqualFold(strings.TrimSpace(c.confirmDisk), word) {
+			return nil, errors.Errorf("--confirm-disk %v does not match disk %v", c.confirmDisk, word)
+		}
+	} else {
+		c.out.printStdout("Type %v to erase it and continue, or anything else to cancel: ", eraseWord)
 
-		answer, err = readLine(c.svc)
+		answer, err := readLine(c.svc)
 		if err != nil {
 			return nil, err
 		}
-	}
 
-	if !strings.EqualFold(strings.TrimSpace(answer), word) {
-		return nil, errors.New("canceled; nothing was written")
+		if !strings.EqualFold(strings.TrimSpace(answer), eraseWord) {
+			return nil, errors.New("canceled; nothing was written")
+		}
 	}
 
 	return &mediaTarget{kind: mediaUSB, path: d.Path, disk: d, num: uint32(num)}, nil

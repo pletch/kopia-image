@@ -84,6 +84,10 @@ type commandImageRecover struct {
 	// smaller disk; nil when that could not be read.
 	shrinkLimits imagerestore.ShrinkLimits
 
+	// otherUser is set when the person logs in to the repository server as
+	// another user than the media's, whose password the media does not hold.
+	otherUser bool
+
 	svc advancedAppServices
 	out textOutput
 }
@@ -159,6 +163,10 @@ func (c *commandImageRecover) recover(ctx context.Context) error {
 	}
 
 	c.checkNetworkAndClock(ctx, lc)
+
+	if err := c.chooseServerUser(ctx, cfgPath, lc); err != nil {
+		return err
+	}
 
 	rep, err := c.openRepository(ctx, cfgPath)
 	if err != nil {
@@ -429,6 +437,46 @@ func probeDate(ctx context.Context, client *http.Client, url string) (time.Time,
 	return t, errors.Wrap(err, "the server sent no time")
 }
 
+// chooseServerUser asks, for a repository server connection, which user to
+// log in as: the one the media was built for, or another, such as one whose
+// account can read the images of every computer. Another user enters their
+// own password even when the media holds one.
+func (c *commandImageRecover) chooseServerUser(ctx context.Context, cfgPath string, lc *repo.LocalConfig) error {
+	if lc.APIServer == nil || c.answers != nil {
+		return nil
+	}
+
+	current := lc.UsernameAtHost()
+
+	for {
+		a, err := c.ask("Log in to the repository server as " + current + "? Press Enter, or type another user as user@host: ")
+		if err != nil {
+			return err
+		}
+
+		if a == "" || strings.EqualFold(a, current) {
+			return nil
+		}
+
+		i := strings.LastIndex(a, "@")
+		if i <= 0 || i == len(a)-1 || strings.ContainsAny(a, " \t") {
+			c.out.printStdout("Type the user as user@host, as 'kopia server user list' shows it.\n")
+			continue
+		}
+
+		opt := lc.ClientOptions
+		opt.Username, opt.Hostname = a[:i], a[i+1:]
+
+		if err := repo.SetClientOptions(ctx, cfgPath, opt); err != nil {
+			return errors.Wrap(err, "unable to change the repository user")
+		}
+
+		c.otherUser = true
+
+		return nil
+	}
+}
+
 func (c *commandImageRecover) openRepository(ctx context.Context, cfgPath string) (repo.Repository, error) {
 	var (
 		password string
@@ -436,7 +484,7 @@ func (c *commandImageRecover) openRepository(ctx context.Context, cfgPath string
 	)
 
 	switch {
-	case c.info.Password != "":
+	case c.info.Password != "" && !c.otherUser:
 		password = c.info.Password
 	case c.answers != nil && c.answers.Password != "":
 		password = c.answers.Password
@@ -642,8 +690,13 @@ func systemRoot() string {
 	return "/"
 }
 
-// confirmationWord is what a person types to erase a disk: its number on
-// Windows, its device name elsewhere.
+// eraseWord is what a person types to erase a disk, after its description:
+// a word rather than the disk's number, which differs from its number in
+// the list and is easily typed twice.
+const eraseWord = "erase"
+
+// confirmationWord is a disk's number on Windows, its device name elsewhere,
+// with which scripts confirm erasing it.
 func confirmationWord(path string) string {
 	if n, ok := strings.CutPrefix(strings.ToLower(path), `\\.\physicaldrive`); ok {
 		return n
@@ -674,20 +727,18 @@ func (c *commandImageRecover) confirm(t *recoverTarget) error {
 		return nil
 	}
 
-	word := confirmationWord(t.path)
-
 	c.out.printStdout("\nEverything on %v will be erased:\n", t.disk.Describe())
 
 	for _, v := range t.disk.DescribeVolumes() {
 		c.out.printStdout("  %v\n", v)
 	}
 
-	a, err := c.ask("Type " + word + " to erase it and restore, or anything else to cancel: ")
+	a, err := c.ask("Type " + eraseWord + " to erase it and restore, or anything else to cancel: ")
 	if err != nil {
 		return err
 	}
 
-	if !strings.EqualFold(a, word) {
+	if !strings.EqualFold(a, eraseWord) {
 		return errors.New("canceled; nothing was written")
 	}
 
