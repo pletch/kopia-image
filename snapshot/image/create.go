@@ -30,7 +30,6 @@ const (
 )
 
 const (
-	imageSplitter             = "FIXED-4M"
 	defaultRawReadAttempts    = 3
 	failureFlushTimeout       = time.Minute
 	defaultCheckpointInterval = 45 * time.Minute
@@ -92,6 +91,10 @@ type CreateOptions struct {
 	// AsyncWrites is the number of chunks hashed and written in parallel.
 	AsyncWrites int
 
+	// ChunkSize is the size of the image's chunks, one of ChunkSizes;
+	// DefaultChunkSize when zero.
+	ChunkSize int64
+
 	// FlushInterval is how often the repository is flushed while imaging, so
 	// that a failed run's uploaded chunks are indexed and a retry does not
 	// upload them again. Zero disables periodic flushes.
@@ -149,7 +152,7 @@ func Create(ctx context.Context, rep repo.RepositoryWriter, options *CreateOptio
 
 	md := &Metadata{
 		FormatVersion: FormatVersion,
-		ChunkSize:     DefaultChunkSize,
+		ChunkSize:     opt.chunkSize(),
 		DiskGUID:      opt.Layout.DiskGUID,
 		StartTime:     rep.Time().UTC(),
 	}
@@ -206,6 +209,14 @@ func (opt *CreateOptions) validate() error {
 
 	if len(opt.Volumes) == 0 {
 		return errors.New("no volumes to image")
+	}
+
+	if _, err := splitterFor(opt.chunkSize()); err != nil {
+		return err
+	}
+
+	if opt.chunkSize()%opt.Layout.SectorSize != 0 {
+		return errors.Errorf("chunk size %v is not a multiple of the sector size %v", opt.chunkSize(), opt.Layout.SectorSize)
 	}
 
 	return nil

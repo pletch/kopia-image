@@ -662,9 +662,15 @@ func (s *Server) RegisterGRPCHandlers(r grpc.ServiceRegistrar) {
 	grpcapi.RegisterKopiaRepositoryServer(r, s)
 }
 
+// minDefaultConcurrency is the fewest requests the server handles at once by
+// default. Requests mostly wait for storage, not for a processor: an image
+// restore fetches 64 chunks of 1 MiB at once, and on a server with few cores
+// twice their number would make it wait for the server instead.
+const minDefaultConcurrency = 64
+
 func makeGRPCServerState(maxConcurrency int) grpcServerState {
 	if maxConcurrency == 0 {
-		maxConcurrency = 2 * runtime.NumCPU() //nolint:mnd
+		maxConcurrency = max(2*runtime.NumCPU(), minDefaultConcurrency) //nolint:mnd
 	}
 
 	return grpcServerState{

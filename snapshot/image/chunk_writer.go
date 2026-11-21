@@ -17,13 +17,14 @@ import (
 
 // indexContentPrefix and indirectStreamType reproduce how kopia's object
 // writer stores the chunk list of a multi-chunk object, so images written here
-// get exactly the object ID a FIXED-4M object writer would produce.
+// get exactly the object ID a fixed-size object writer would produce.
 const (
 	indexContentPrefix = "x"
 	indirectStreamType = "kopia:indirect"
 )
 
-// writeImageObject writes exactly size bytes from r as a FIXED-4M object.
+// writeImageObject writes exactly size bytes from r as an object of fixed-size
+// chunks of opt.chunkSize().
 //
 // Instead of streaming the volume through one object writer, it writes each
 // chunk as its own single-chunk object, in parallel, and then the chunk list
@@ -46,10 +47,12 @@ func (opt *CreateOptions) writeImageObject(ctx context.Context, rep repo.Reposit
 	// a source that knows its zeroed ranges lets zero chunks skip the read and compare
 	masked, isMasked := r.(maskedSource)
 
-	entries := make([]object.IndirectObjectEntry, (size+DefaultChunkSize-1)/DefaultChunkSize)
+	chunkSize := opt.chunkSize()
+
+	entries := make([]object.IndirectObjectEntry, (size+chunkSize-1)/chunkSize)
 	for i := range entries {
-		entries[i].Start = int64(i) * DefaultChunkSize
-		entries[i].Length = min(int64(DefaultChunkSize), size-entries[i].Start)
+		entries[i].Start = int64(i) * chunkSize
+		entries[i].Length = min(chunkSize, size-entries[i].Start)
 	}
 
 	// checkpoints read the chunk list while it fills, so chunk objects are
@@ -143,7 +146,7 @@ func (opt *CreateOptions) chunkBuffers(n int) chan []byte {
 
 	buffers := make(chan []byte, n)
 	for range n {
-		buffers <- newBuffer(DefaultChunkSize)
+		buffers <- newBuffer(int(opt.chunkSize()))
 	}
 
 	return buffers
@@ -178,9 +181,15 @@ func readChunk(r io.Reader, masked maskedSource, isMasked bool, chunk []byte, of
 // writeChunk writes one chunk as a single-chunk object, whose ID is the ID of
 // its content, as a multi-chunk object writer records it.
 func (opt *CreateOptions) writeChunk(ctx context.Context, rep repo.RepositoryWriter, data []byte, name string) (object.ID, error) {
+	// a splitter of the chunk size writes the chunk as a single content
+	splitter, err := splitterFor(opt.chunkSize())
+	if err != nil {
+		return object.EmptyID, err
+	}
+
 	w := rep.NewObjectWriter(ctx, object.WriterOptions{
 		Description:        imageObjectDescription + name,
-		Splitter:           imageSplitter,
+		Splitter:           splitter,
 		Compressor:         opt.Compressor,
 		MetadataCompressor: opt.MetadataCompressor,
 	})
@@ -275,7 +284,16 @@ func (z *zeroChunkCache) get(ctx context.Context, length int64) (object.ID, erro
 	return oid, nil
 }
 
-var zeroChunk = make([]byte, DefaultChunkSize)
+var zeroChunk = make([]byte, MaxChunkSize)
+
+// chunkSize returns the size of the image's chunks.
+func (opt *CreateOptions) chunkSize() int64 {
+	if opt.ChunkSize <= 0 {
+		return DefaultChunkSize
+	}
+
+	return opt.ChunkSize
+}
 
 func isZeroChunk(b []byte) bool {
 	return bytes.Equal(b, zeroChunk[:len(b)])

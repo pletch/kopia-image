@@ -98,7 +98,7 @@ func (c *commandImageRecover) setup(svc advancedAppServices, parent commandParen
 	cmd.Flag("answers", "JSON file answering every question, for unattended recovery").StringVar(&c.answersFile)
 	cmd.Flag("target", "Disk or disk image file to restore to, instead of choosing one").StringVar(&c.target)
 	cmd.Flag("network-wait", "How long to wait for the repository to answer").Default(defaultRecoverNetworkWait.String()).DurationVar(&c.networkWait)
-	cmd.Flag("parallel", "Number of chunks fetched in parallel").Default("16").IntVar(&c.parallel)
+	cmd.Flag("parallel", "Number of chunks fetched in parallel; by default 64 MiB of chunks, 64 of 1 MiB or 16 of 4 MiB").Default("0").IntVar(&c.parallel)
 	cmd.Action(svc.noRepositoryAction(c.run))
 
 	c.svc = svc

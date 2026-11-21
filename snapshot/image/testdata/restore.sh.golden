@@ -46,11 +46,11 @@ partprobe "$DISK" 2>/dev/null || blockdev --rereadpt "$DISK"
 udevadm settle 2>/dev/null || true
 
 echo 'Writing p1-esp.img to partition 1'
-kopia show 'Ix0123456789abcdef0123456789abcd01' | dd of="${PART}1" bs=4194304 iflag=fullblock oflag=direct conv=fsync status=progress
+kopia show 'Ix0123456789abcdef0123456789abcd01' | dd of="${PART}1" bs=1048576 iflag=fullblock oflag=direct conv=fsync status=progress
 echo 'Writing p3-C.img to partition 3'
-kopia show 'Ix0123456789abcdef0123456789abcd03' | dd of="${PART}3" bs=4194304 iflag=fullblock oflag=direct conv=fsync status=progress
+kopia show 'Ix0123456789abcdef0123456789abcd03' | dd of="${PART}3" bs=1048576 iflag=fullblock oflag=direct conv=fsync status=progress
 echo 'Writing p4-recovery.img to partition 4'
-kopia show 'Ix0123456789abcdef0123456789abcd04' | dd of="${PART}4" bs=4194304 iflag=fullblock oflag=direct conv=fsync status=progress
+kopia show 'Ix0123456789abcdef0123456789abcd04' | dd of="${PART}4" bs=1048576 iflag=fullblock oflag=direct conv=fsync status=progress
 
 sync
 echo 'Restore complete.'

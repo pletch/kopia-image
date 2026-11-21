@@ -36,10 +36,6 @@ const (
 	MaxFormatVersion = FormatVersionDeletesExcluded
 )
 
-// DefaultChunkSize is the fixed chunk size of image objects. Every chunk i of
-// an image covers bytes [i*ChunkSize, (i+1)*ChunkSize) of its volume.
-const DefaultChunkSize = 4 << 20
-
 // VolumeKind is how a partition was imaged.
 type VolumeKind string
 

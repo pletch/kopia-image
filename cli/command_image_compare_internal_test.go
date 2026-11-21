@@ -40,16 +40,21 @@ func createRawTestImage(ctx context.Context, t *testing.T, env *repotesting.Envi
 			PartitionNumber: 1, Label: "esp", Kind: image.VolumeKindRaw, Size: int64(len(data)),
 			Open: func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(data)), nil },
 		}},
+		ChunkSize: testImageChunkSize,
 	})
 	require.NoError(t, err)
 
 	return man
 }
 
+// testImageChunkSize is the chunk size of the test images, which the expected
+// figures are for.
+const testImageChunkSize = 4 << 20
+
 func TestImageCompare(t *testing.T) {
 	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
 
-	const chunk = image.DefaultChunkSize
+	const chunk = testImageChunkSize
 
 	data := make([]byte, 3*chunk)
 	for i := range data {

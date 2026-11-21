@@ -19,10 +19,7 @@ import (
 	"github.com/kopia/kopia/snapshot/image/imagerestore"
 )
 
-const (
-	defaultImageRestoreParallel = 16
-	imageRestoreProgressEvery   = 5 * time.Second
-)
+const imageRestoreProgressEvery = 5 * time.Second
 
 type commandImageRestore struct {
 	snapshot  string
@@ -40,7 +37,7 @@ func (c *commandImageRestore) setup(svc appServices, parent commandParent) {
 	cmd := parent.Command("restore", "Restore a disk image to a disk or to a raw disk image file.")
 	cmd.Arg("snapshot", "Image snapshot ID, or an image source (user@host:image:disk:<GUID>) to restore its latest image").Required().StringVar(&c.snapshot)
 	cmd.Flag("target", `Disk to restore to (/dev/sdX on Linux, \\.\PhysicalDriveN on Windows) or a file; a missing file is created`).Required().StringVar(&c.target)
-	cmd.Flag("parallel", "Number of chunks fetched in parallel").Default("16").IntVar(&c.parallel)
+	cmd.Flag("parallel", "Number of chunks fetched in parallel; by default 64 MiB of chunks, 64 of 1 MiB or 16 of 4 MiB").Default("0").IntVar(&c.parallel)
 	cmd.Flag("only", "Restore only these volumes (e.g. p3-C or a partition number) into the target's matching partition table").StringsVar(&c.only)
 	cmd.Flag("dry-run", "Check the snapshot and the target without writing").BoolVar(&c.dryRun)
 	cmd.Flag("overwrite", "Allow overwriting a target that already has a partition table").BoolVar(&c.overwrite)
@@ -180,7 +177,7 @@ func restoreImageToTarget(ctx context.Context, out *textOutput, rep repo.Reposit
 	progress := newImageRestoreProgress(out.printStderr)
 
 	if parallel <= 0 {
-		parallel = defaultImageRestoreParallel
+		parallel = image.ParallelChunks(s.Metadata.ChunkSize)
 	}
 
 	results, err := imagerestore.RestoreDisk(ctx, rep, s, t, imagerestore.DiskOptions{

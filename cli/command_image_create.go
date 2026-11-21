@@ -5,6 +5,7 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -56,6 +57,7 @@ func imageCompressor(policyCompressor compression.Name, setOnSource bool) compre
 type commandImageCreate struct {
 	volumes       []string
 	parallel      int
+	chunkSize     string
 	flushInterval time.Duration
 	dryRun        bool
 	description   string
@@ -81,7 +83,10 @@ type commandImageCreate struct {
 func (c *commandImageCreate) setup(svc appServices, parent commandParent) {
 	cmd := parent.Command("create", "Create block-level images of the disks holding the given volumes. Windows only; run as administrator or SYSTEM.")
 	cmd.Arg("volume", "A volume on each disk to image, e.g. C:").Required().StringsVar(&c.volumes)
-	cmd.Flag("parallel", "Number of chunks hashed and uploaded in parallel").Default("0").IntVar(&c.parallel)
+	cmd.Flag("parallel", "Number of chunks hashed and uploaded in parallel; by default as many as the computer has processors, or 64 MiB of chunks if that is more").Default("0").IntVar(&c.parallel)
+	cmd.Flag("chunk-size", "Size of the image chunks: a chunk is stored again when any of its bytes changes, "+
+		"so smaller chunks store less new data per image, but take more index entries and requests").
+		Default(imageChunkSizeDefault).EnumVar(&c.chunkSize, imageChunkSizeNames()...)
 	cmd.Flag("flush-interval", "How often to save upload progress, so that a failed run's uploads are reused").Default(defaultImageFlushInterval.String()).DurationVar(&c.flushInterval)
 	cmd.Flag("dry-run", "Print the partition plan and the size of the zeroed space without imaging").BoolVar(&c.dryRun)
 	cmd.Flag("description", "Free-form snapshot description").StringVar(&c.description)
@@ -385,9 +390,11 @@ func (c *commandImageCreate) imageDisk(ctx context.Context, rep repo.RepositoryW
 		return nil, nil, errors.Wrapf(err, "unable to get the policy of %v", src)
 	}
 
+	chunkSize := image.ChunkSizes[c.chunkSize]
+
 	parallel := c.parallel
 	if parallel <= 0 {
-		parallel = runtime.GOMAXPROCS(0)
+		parallel = max(runtime.GOMAXPROCS(0), image.ParallelChunks(chunkSize))
 	}
 
 	man, md, err = image.Create(ctx, rep, &image.CreateOptions{
@@ -398,6 +405,7 @@ func (c *commandImageCreate) imageDisk(ctx context.Context, rep repo.RepositoryW
 		Compressor:         imageCompressor(pol.CompressionPolicy.CompressorName, def.CompressionPolicy.CompressorName == src),
 		MetadataCompressor: pol.MetadataCompressionPolicy.MetadataCompressor(),
 		AsyncWrites:        parallel,
+		ChunkSize:          chunkSize,
 		FlushInterval:      c.flushInterval,
 		NewBuffer:          blockdev.AlignedBuffer,
 		Drivers:            drivers,
@@ -558,4 +566,15 @@ func (c *commandImageCreate) printSummary(man *snapshot.Manifest, md *image.Meta
 	c.out.printStdout("Created image snapshot %v of %v in %v: %v read, %v new data, %v stored.\n",
 		man.ID, man.Source, md.EndTime.Sub(md.StartTime).Truncate(time.Second), units.BytesString(read),
 		optionalBytes(md.NewDataBytes, "?"), optionalBytes(md.UploadedBytes, "unknown (repository server)"))
+}
+
+// imageChunkSizeDefault is the name of image.DefaultChunkSize.
+const imageChunkSizeDefault = "1M"
+
+// imageChunkSizeNames returns the names of the chunk sizes, smallest first.
+func imageChunkSizeNames() []string {
+	names := slices.Collect(maps.Keys(image.ChunkSizes))
+	slices.SortFunc(names, func(a, b string) int { return cmp.Compare(image.ChunkSizes[a], image.ChunkSizes[b]) })
+
+	return names
 }

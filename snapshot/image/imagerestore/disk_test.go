@@ -54,6 +54,7 @@ func createImageSnapshot(t *testing.T) (context.Context, *repotesting.Environmen
 			{PartitionNumber: 3, Label: "C", Kind: image.VolumeKindNTFS, Size: int64(len(contents[3])), Open: bytesSource(contents[3]), ClusterSize: 4096},
 		},
 		Compressor: "zstd-fastest",
+		ChunkSize:  chunk, // as testImage is made of
 	})
 	require.NoError(t, err)
 

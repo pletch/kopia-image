@@ -13,10 +13,9 @@ import (
 	"github.com/kopia/kopia/internal/repotesting"
 	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/repo/object"
-	"github.com/kopia/kopia/snapshot/image"
 )
 
-const chunk = image.DefaultChunkSize
+const chunk = 4 << 20 // the chunk size of the objects that writeTestObject writes
 
 // memDisk is an in-memory target that records zero calls.
 type memDisk struct {

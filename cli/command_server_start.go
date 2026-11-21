@@ -110,7 +110,7 @@ func (c *commandServerStart) setup(svc advancedAppServices, parent commandParent
 
 	cmd.Flag("refresh-interval", "Frequency for refreshing repository status").Default("4h").DurationVar(&c.serverStartRefreshInterval)
 	cmd.Flag("insecure", "Allow insecure configurations (do not use in production)").Hidden().BoolVar(&c.serverStartInsecure)
-	cmd.Flag("max-concurrency", "Maximum number of server goroutines").Default("0").IntVar(&c.serverStartMaxConcurrency)
+	cmd.Flag("max-concurrency", "Maximum number of requests the server handles at once; by default twice the number of processors, and at least 64").Default("0").IntVar(&c.serverStartMaxConcurrency)
 	cmd.Flag("background", "Run at background priority, so that snapshots yield to other programs (Windows; KopiaUI uses it)").BoolVar(&c.serverStartBackground)
 
 	cmd.Flag(insecureserverbind.AllowDangerousUnauthenticatedNetworkFlag, insecureserverbind.AllowDangerousUnauthenticatedNetworkFlagHelp).

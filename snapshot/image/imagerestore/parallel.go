@@ -30,9 +30,9 @@ const (
 )
 
 // MaxChunkLength is the longest chunk accepted in an image object. Images are
-// written in chunks of image.DefaultChunkSize; the limit keeps a damaged or
+// written in chunks of up to image.MaxChunkSize; the limit keeps a damaged or
 // forged chunk list from making readers allocate arbitrarily large buffers.
-const MaxChunkLength = 4 * image.DefaultChunkSize
+const MaxChunkLength = 4 * image.MaxChunkSize
 
 // ErrUnexpectedLength is returned when an image object is not as long as the
 // image metadata says, before anything is written.

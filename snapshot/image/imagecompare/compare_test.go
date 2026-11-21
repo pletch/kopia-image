@@ -22,7 +22,7 @@ import (
 
 const (
 	mib   = 1 << 20
-	chunk = image.DefaultChunkSize
+	chunk = 4 << 20 // images of kopia v0.23.1-wails.39 and older
 )
 
 func writeObject(ctx context.Context, t *testing.T, rep repo.RepositoryWriter, data []byte) object.ID {
