@@ -4,9 +4,9 @@
 package background
 
 // Enter puts the process in background mode until leave is called: on
-// Windows its CPU, disk and memory priority are lowered. Elsewhere it does
-// nothing, since lowering the priority of a Go program there would have to
-// reach every thread it starts.
+// Windows its CPU, disk and memory priority are lowered; on Linux the nice
+// value and disk priority of each of its threads, for as long as the process
+// runs. Elsewhere it does nothing.
 //
 // Enter is meant for a process that does one backup job, such as an image run
 // or the server behind a KopiaUI window; it must not be called again before
