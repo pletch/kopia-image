@@ -50,6 +50,7 @@ func TestTaskXML_daily(t *testing.T) {
 	for _, want := range []string{
 		`<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">`,
 		`<URI>\Kopia\Image create</URI>`,
+		`<SecurityDescriptor>D:(A;;FA;;;BA)(A;;FA;;;SY)(A;;FR;;;AU)</SecurityDescriptor>`,
 		`<StartBoundary>2026-11-16T02:30:00</StartBoundary>`,
 		`<DaysInterval>1</DaysInterval>`,
 		`<UserId>S-1-5-18</UserId>`,

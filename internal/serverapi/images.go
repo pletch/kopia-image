@@ -176,8 +176,9 @@ type ImageTask struct {
 	Scheduled bool `json:"scheduled"`
 
 	// StatusHidden is set when the task is installed but Task Scheduler does
-	// not show it to the server's account, which happens to the tasks of
-	// SYSTEM; the status fields are then empty.
+	// not show it to the server's account, which happens to tasks of SYSTEM
+	// installed before kopia let every user read them; the status fields are
+	// then empty until the schedule is installed again.
 	StatusHidden bool `json:"statusHidden,omitempty"`
 
 	schedule.TaskStatus

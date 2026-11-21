@@ -79,8 +79,9 @@ type taskXML struct {
 }
 
 type infoXML struct {
-	Description string
-	URI         string
+	Description        string
+	URI                string
+	SecurityDescriptor string
 }
 
 type triggersXML struct {
@@ -171,6 +172,13 @@ type execXML struct {
 	WorkingDirectory string `xml:",omitempty"`
 }
 
+// taskSecurityDescriptor gives Administrators and SYSTEM full control of a
+// task and lets every signed-in user read it. Task Scheduler otherwise hides
+// the tasks of SYSTEM from other accounts, so that KopiaUI, which runs as the
+// user, could not show when the task runs next or how its last run ended.
+// Reading does not let users start, change or delete the task.
+const taskSecurityDescriptor = "D:(A;;FA;;;BA)(A;;FA;;;SY)(A;;FR;;;AU)"
+
 // belowNormalPriority keeps background runs from slowing interactive use.
 const belowNormalPriority = 7
 
@@ -218,7 +226,7 @@ func (t *Task) XML(now time.Time) ([]byte, error) {
 	doc := taskXML{
 		Version:    "1.4",
 		Xmlns:      "http://schemas.microsoft.com/windows/2004/02/mit/task",
-		Info:       infoXML{Description: t.Description, URI: t.Name},
+		Info:       infoXML{Description: t.Description, URI: t.Name, SecurityDescriptor: taskSecurityDescriptor},
 		Triggers:   triggersXML{Calendar: trigger},
 		Principals: principalsXML{Principal: principalXML{ID: "Author", UserID: systemSID, RunLevel: "HighestAvailable"}},
 		Settings:   settings,
