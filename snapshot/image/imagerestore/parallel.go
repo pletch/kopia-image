@@ -74,8 +74,9 @@ func Chunks(ctx context.Context, rep repo.Repository, oid object.ID) ([]object.I
 }
 
 // decodeIndex reads the chunk list of an indirect object and checks that the
-// chunks tile the object from offset 0 without gaps or overlaps and that none
-// is longer than MaxChunkLength. It returns the chunks and the object length.
+// chunks tile the object from offset 0 without gaps or overlaps, that none is
+// longer than MaxChunkLength and that a chunk listed more than once has the
+// same length each time. It returns the chunks and the object length.
 func decodeIndex(r io.Reader) ([]object.IndirectObjectEntry, int64, error) {
 	var index struct {
 		Stream  string                       `json:"stream"`
@@ -92,11 +93,20 @@ func decodeIndex(r io.Reader) ([]object.IndirectObjectEntry, int64, error) {
 
 	var end int64
 
+	// a chunk is fetched once and written at every offset it is listed at,
+	// so every listing must agree on its length
+	lengths := map[object.ID]int64{}
+
 	for i, e := range index.Entries {
 		if e.Start != end || e.Length <= 0 || e.Length > MaxChunkLength {
 			return nil, 0, errors.Errorf("entry %v starts at %v and is %v bytes long, expected to start at %v and be at most %v bytes", i, e.Start, e.Length, end, MaxChunkLength)
 		}
 
+		if l, ok := lengths[e.Object]; ok && l != e.Length {
+			return nil, 0, errors.Errorf("entry %v lists chunk %v as %v bytes long, an earlier entry as %v bytes", i, e.Object, e.Length, l)
+		}
+
+		lengths[e.Object] = e.Length
 		end += e.Length
 	}
 
@@ -310,6 +320,11 @@ func (o *objectWriter) writeGroup(ctx context.Context, g *chunkGroup, buf []byte
 	r, err := o.rep.OpenObject(ctx, g.object)
 	if err != nil {
 		return errors.Wrapf(err, "unable to open chunk %v", g.object)
+	}
+
+	// reading exactly the listed length would silently cut a longer chunk
+	if n := r.Length(); n != g.length {
+		return stderrors.Join(errors.Wrapf(ErrUnexpectedLength, "chunk %v is %v bytes, the index lists %v", g.object, n, g.length), r.Close())
 	}
 
 	_, err = io.ReadFull(r, buf)

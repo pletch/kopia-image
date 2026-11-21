@@ -174,14 +174,20 @@ type VolumeResult struct {
 
 // RestoreDisk restores an image to a target: it clears any partition table,
 // writes every selected volume with parallel chunk fetches, zeroes partitions
-// that have no image (such as the Microsoft reserved partition), and only then
-// writes the partition table with the original GUIDs, syncs, verifies it and
-// makes the operating system reread the partitions.
+// that have no image (such as the Microsoft reserved partition), syncs, and
+// only then writes the partition table with the original GUIDs, syncs again,
+// verifies it and makes the operating system reread the partitions.
 //
 // Writing the partition table last keeps the operating system from finding
 // and mounting partitions while their data is being written, and leaves a
-// disk without a partition table if the restore is interrupted.
+// disk without a partition table if the restore is interrupted. The sync
+// before it keeps a disk's write cache from storing the partition table
+// before the data if the power fails.
 func RestoreDisk(ctx context.Context, rep repo.Repository, s *Snapshot, t Target, opt DiskOptions) ([]VolumeResult, error) {
+	if err := s.checkVolumes(opt.Volumes); err != nil {
+		return nil, err
+	}
+
 	fullRestore := len(opt.Volumes) == len(s.Metadata.Volumes)
 
 	if !fullRestore && len(s.Resized) > 0 {
@@ -214,12 +220,53 @@ func RestoreDisk(ctx context.Context, rep repo.Repository, s *Snapshot, t Target
 	return results, errors.Wrap(t.Sync(), "unable to sync")
 }
 
+// checkVolumes checks that volumes are volumes of the snapshot, each listed
+// once, whose partitions are in its layout. RestoreDisk takes them for a full
+// restore when they are as many as the snapshot's volumes, which they then
+// are, each exactly once.
+func (s *Snapshot) checkVolumes(volumes []image.Volume) error {
+	if len(volumes) == 0 {
+		return errors.New("no volumes to restore")
+	}
+
+	seen := map[int]bool{}
+
+	for i := range volumes {
+		v := &volumes[i]
+
+		if seen[v.PartitionNumber] {
+			return errors.Errorf("partition %v is listed more than once", v.PartitionNumber)
+		}
+
+		seen[v.PartitionNumber] = true
+
+		j := slices.IndexFunc(s.Metadata.Volumes, func(m image.Volume) bool { return m.PartitionNumber == v.PartitionNumber })
+		if j < 0 {
+			return errors.Errorf("the snapshot has no volume for partition %v", v.PartitionNumber)
+		}
+
+		if m := &s.Metadata.Volumes[j]; m.EntryName != v.EntryName || m.ObjectID != v.ObjectID || m.Size != v.Size || m.Kind != v.Kind {
+			return errors.Errorf("%v (partition %v) is not the snapshot's volume %v", v.EntryName, v.PartitionNumber, m.EntryName)
+		}
+
+		if _, ok := s.Layout.Partition(v.PartitionNumber); !ok {
+			return errors.Errorf("partition %v of %v is not in the layout", v.PartitionNumber, v.EntryName)
+		}
+	}
+
+	return nil
+}
+
 func restoreVolumes(ctx context.Context, rep repo.Repository, t Target, layout *image.Layout, free map[int][]image.Extent, opt DiskOptions) ([]VolumeResult, error) {
 	var results []VolumeResult
 
 	for i := range opt.Volumes {
 		v := opt.Volumes[i]
-		p, _ := layout.Partition(v.PartitionNumber)
+
+		p, ok := layout.Partition(v.PartitionNumber)
+		if !ok {
+			return results, errors.Errorf("partition %v of %v is not in the layout", v.PartitionNumber, v.EntryName)
+		}
 
 		// an NTFS volume restored to a shorter partition, see FitTo
 		shrink := v.Size > p.Length
@@ -304,14 +351,19 @@ func (s *section) WriteAt(b []byte, off int64) (int, error) {
 	return s.t.WriteAt(b, s.offset+off) //nolint:wrapcheck
 }
 
-// finishFullRestore zeroes the partitions without an image, then writes,
-// syncs and verifies the partition table and makes the operating system
-// reread it.
+// finishFullRestore zeroes the partitions without an image and syncs, then
+// writes, syncs and verifies the partition table and makes the operating
+// system reread it.
 func (s *Snapshot) finishFullRestore(t Target, volumes []image.Volume) error {
 	if !t.IsZeroed() {
 		if err := s.zeroPartitionsWithoutImage(t); err != nil {
 			return err
 		}
+	}
+
+	// the volumes must be on the disk before a partition table points at them
+	if err := t.Sync(); err != nil {
+		return errors.Wrap(err, "unable to sync the volumes")
 	}
 
 	if err := gpt.Write(t, s.Layout, t.Size()); err != nil {

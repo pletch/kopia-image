@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -266,4 +267,104 @@ func TestRestoreDisk_interruptedLeavesNoPartitionTable(t *testing.T) {
 	_, err = gpt.Read(target, 512)
 	require.ErrorIs(t, err, gpt.ErrNoGPT, "an interrupted restore must not leave a partition table")
 	require.NoError(t, target.Close())
+}
+
+// orderTarget records the order of volume writes, partition table writes and
+// syncs.
+type orderTarget struct {
+	Target
+
+	dataStart, dataEnd int64
+	events             []string
+}
+
+func (o *orderTarget) WriteAt(p []byte, off int64) (int, error) {
+	if off >= o.dataStart && off < o.dataEnd {
+		o.events = append(o.events, "data")
+	} else {
+		o.events = append(o.events, "table")
+	}
+
+	return o.Target.WriteAt(p, off) //nolint:wrapcheck
+}
+
+func (o *orderTarget) Zero(off, length int64) error {
+	o.events = append(o.events, "data")
+	return o.Target.Zero(off, length) //nolint:wrapcheck
+}
+
+func (o *orderTarget) Sync() error {
+	o.events = append(o.events, "sync")
+	return o.Target.Sync() //nolint:wrapcheck
+}
+
+func TestRestoreDisk_syncsVolumesBeforeWritingThePartitionTable(t *testing.T) {
+	ctx, env, s, contents := createImageSnapshot(t)
+
+	path := filepath.Join(t.TempDir(), "disk.img")
+
+	target, err := OpenTarget(path, s.Layout.DiskSize, 512)
+	require.NoError(t, err)
+
+	first, last := s.Layout.Partitions[0], s.Layout.Partitions[len(s.Layout.Partitions)-1]
+	o := &orderTarget{Target: target, dataStart: first.Offset, dataEnd: last.Offset + last.Length}
+
+	_, err = RestoreDisk(ctx, env.Repository, s, o, DiskOptions{Volumes: s.Metadata.Volumes})
+	require.NoError(t, err)
+	require.NoError(t, target.Close())
+
+	lastData := slices.Index(o.events, "data")
+	for i, e := range o.events {
+		if e == "data" {
+			lastData = i
+		}
+	}
+
+	require.GreaterOrEqual(t, lastData, 0)
+
+	tableWrite := slices.Index(o.events[lastData:], "table")
+	require.Positive(t, tableWrite, "the partition table is written after the volumes")
+
+	require.Contains(t, o.events[lastData:lastData+tableWrite], "sync", "the volumes are synced before the partition table is written: %v", o.events[lastData:])
+	require.Equal(t, "sync", o.events[len(o.events)-1], "the partition table is synced")
+
+	verifyRestoredDisk(t, path, s, contents)
+}
+
+func TestRestoreDisk_rejectsVolumesNotOfTheSnapshot(t *testing.T) {
+	ctx, env, s, _ := createImageSnapshot(t)
+
+	esp, ntfs := s.Metadata.Volumes[0], s.Metadata.Volumes[1]
+
+	foreign := ntfs
+	foreign.ObjectID = esp.ObjectID
+
+	missing := ntfs
+	missing.PartitionNumber = 2
+
+	cases := map[string]struct {
+		volumes []image.Volume
+		want    string
+	}{
+		"none":                       {nil, "no volumes"},
+		"a volume twice for a whole": {[]image.Volume{esp, esp}, "more than once"},
+		"another object":             {[]image.Volume{esp, foreign}, "is not the snapshot's volume"},
+		"a partition without volume": {[]image.Volume{missing}, "no volume for partition 2"},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "disk.img")
+
+			target, err := OpenTarget(path, s.Layout.DiskSize, 512)
+			require.NoError(t, err)
+
+			o := &orderTarget{Target: target}
+
+			_, err = RestoreDisk(ctx, env.Repository, s, o, DiskOptions{Volumes: tc.volumes})
+			require.ErrorContains(t, err, tc.want)
+			require.Empty(t, o.events, "nothing is written")
+			require.NoError(t, target.Close())
+		})
+	}
 }

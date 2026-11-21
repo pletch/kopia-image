@@ -2,15 +2,18 @@ package imagerestore
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/kopia/kopia/internal/repotesting"
+	"github.com/kopia/kopia/repo"
 	"github.com/kopia/kopia/repo/object"
 )
 
@@ -46,29 +49,35 @@ func indexJSON(t *testing.T, stream string, entries ...object.IndirectObjectEntr
 }
 
 func TestDecodeIndex(t *testing.T) {
-	oid := object.EmptyID
+	full, err := object.ParseID("aabb")
+	require.NoError(t, err)
+
+	last, err := object.ParseID("ccdd")
+	require.NoError(t, err)
 
 	entries, length, err := decodeIndex(bytes.NewReader(indexJSON(t, indirectStreamType,
-		object.IndirectObjectEntry{Start: 0, Length: chunk, Object: oid},
-		object.IndirectObjectEntry{Start: chunk, Length: 100, Object: oid})))
+		object.IndirectObjectEntry{Start: 0, Length: chunk, Object: full},
+		object.IndirectObjectEntry{Start: chunk, Length: chunk, Object: full},
+		object.IndirectObjectEntry{Start: 2 * chunk, Length: 100, Object: last})))
 	require.NoError(t, err)
-	require.Len(t, entries, 2)
-	require.Equal(t, int64(chunk+100), length)
+	require.Len(t, entries, 3)
+	require.Equal(t, int64(2*chunk+100), length)
 }
 
 func TestDecodeIndex_rejectsInvalidChunkLists(t *testing.T) {
 	oid := object.EmptyID
 
 	cases := map[string][]byte{
-		"not JSON":         []byte("{"),
-		"other stream":     indexJSON(t, "other", object.IndirectObjectEntry{Length: 1, Object: oid}),
-		"gap":              indexJSON(t, indirectStreamType, object.IndirectObjectEntry{Start: 1, Length: 1, Object: oid}),
-		"overlap":          indexJSON(t, indirectStreamType, object.IndirectObjectEntry{Length: 2, Object: oid}, object.IndirectObjectEntry{Start: 1, Length: 2, Object: oid}),
-		"empty chunk":      indexJSON(t, indirectStreamType, object.IndirectObjectEntry{Length: 0, Object: oid}),
-		"negative chunk":   indexJSON(t, indirectStreamType, object.IndirectObjectEntry{Length: -5, Object: oid}),
-		"oversized chunk":  indexJSON(t, indirectStreamType, object.IndirectObjectEntry{Length: MaxChunkLength + 1, Object: oid}),
-		"enormous chunk":   indexJSON(t, indirectStreamType, object.IndirectObjectEntry{Length: 1 << 62, Object: oid}),
-		"oversized second": indexJSON(t, indirectStreamType, object.IndirectObjectEntry{Length: 1, Object: oid}, object.IndirectObjectEntry{Start: 1, Length: 1 << 40, Object: oid}),
+		"not JSON":                      []byte("{"),
+		"other stream":                  indexJSON(t, "other", object.IndirectObjectEntry{Length: 1, Object: oid}),
+		"gap":                           indexJSON(t, indirectStreamType, object.IndirectObjectEntry{Start: 1, Length: 1, Object: oid}),
+		"overlap":                       indexJSON(t, indirectStreamType, object.IndirectObjectEntry{Length: 2, Object: oid}, object.IndirectObjectEntry{Start: 1, Length: 2, Object: oid}),
+		"empty chunk":                   indexJSON(t, indirectStreamType, object.IndirectObjectEntry{Length: 0, Object: oid}),
+		"negative chunk":                indexJSON(t, indirectStreamType, object.IndirectObjectEntry{Length: -5, Object: oid}),
+		"oversized chunk":               indexJSON(t, indirectStreamType, object.IndirectObjectEntry{Length: MaxChunkLength + 1, Object: oid}),
+		"enormous chunk":                indexJSON(t, indirectStreamType, object.IndirectObjectEntry{Length: 1 << 62, Object: oid}),
+		"oversized second":              indexJSON(t, indirectStreamType, object.IndirectObjectEntry{Length: 1, Object: oid}, object.IndirectObjectEntry{Start: 1, Length: 1 << 40, Object: oid}),
+		"chunk listed with two lengths": indexJSON(t, indirectStreamType, object.IndirectObjectEntry{Length: 2, Object: oid}, object.IndirectObjectEntry{Start: 2, Length: 3, Object: oid}),
 	}
 
 	for name, data := range cases {
@@ -77,6 +86,46 @@ func TestDecodeIndex_rejectsInvalidChunkLists(t *testing.T) {
 			require.Error(t, err)
 		})
 	}
+}
+
+// writeIndirectObject stores a chunk list as the index of an indirect object.
+func writeIndirectObject(ctx context.Context, t *testing.T, rep repo.RepositoryWriter, entries ...object.IndirectObjectEntry) object.ID {
+	t.Helper()
+
+	indexID := writeTestObject(ctx, t, rep, indexJSON(t, indirectStreamType, entries...))
+
+	oid, err := object.ParseID("I" + indexID.String())
+	require.NoError(t, err)
+
+	return oid
+}
+
+func TestWriteObject_rejectsChunksOfAnotherLength(t *testing.T) {
+	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
+
+	data := randomBytes(3, 1000)
+	chunkID := writeTestObject(ctx, t, env.RepositoryWriter, data)
+
+	for _, listed := range []int64{999, 1001} {
+		oid := writeIndirectObject(ctx, t, env.RepositoryWriter, object.IndirectObjectEntry{Length: listed, Object: chunkID})
+
+		disk := &memDisk{data: bytes.Repeat([]byte{0xee}, 2000)}
+
+		_, err := WriteObject(ctx, env.Repository, oid, disk, 0, Options{Zero: disk.zero})
+		require.ErrorIs(t, err, ErrUnexpectedLength, "listed as %v bytes", listed)
+		require.Equal(t, bytes.Repeat([]byte{0xee}, 2000), disk.data, "the target is untouched")
+	}
+
+	// the same chunk listed twice with the same length is fine
+	oid := writeIndirectObject(ctx, t, env.RepositoryWriter,
+		object.IndirectObjectEntry{Length: 1000, Object: chunkID},
+		object.IndirectObjectEntry{Start: 1000, Length: 1000, Object: chunkID})
+
+	disk := &memDisk{data: make([]byte, 2000)}
+
+	_, err := WriteObject(ctx, env.Repository, oid, disk, 0, Options{Zero: disk.zero})
+	require.NoError(t, err)
+	require.Equal(t, append(slices.Clone(data), data...), disk.data)
 }
 
 // FuzzDecodeIndex checks that every chunk list decodeIndex accepts tiles the
