@@ -836,3 +836,43 @@ func TestImagesList_spaceSurvivesRestart(t *testing.T) {
 	require.Equal(t, *first.Space[0].StoredBytes, *second.Space[0].StoredBytes)
 	require.Equal(t, *first.Images[0].ExclusiveBytes, *second.Images[0].ExclusiveBytes)
 }
+
+// TestImagesStatus_diskSchedules checks that each schedule's task is listed
+// and that running the schedule now starts all of them.
+func TestImagesStatus_diskSchedules(t *testing.T) {
+	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
+
+	host := &fakeImageHost{dir: testutil.TempDirectory(t), tasks: map[string]schedule.TaskStatus{}}
+	cli := startImageServer(t, env, host)
+
+	require.NoError(t, schedule.WriteSettings(schedule.SettingsPath(host.dir), &schedule.Settings{
+		Volumes: []string{"C:", "D:"},
+		At:      "02:00",
+		Disks: []schedule.DiskSchedule{
+			{Volumes: []string{"C:"}, At: "02:00", Task: schedule.CreateTaskNameFor(0)},
+			{Volumes: []string{"D:"}, At: "21:00", Days: []string{"Sunday"}, Task: schedule.CreateTaskNameFor(1)},
+		},
+		CheckDay: "Sunday",
+		CheckAt:  "12:00",
+	}))
+
+	first := schedule.TaskPath(schedule.DefaultTaskFolder, "Image create")
+	second := schedule.TaskPath(schedule.DefaultTaskFolder, "Image create 2")
+	check := schedule.TaskPath(schedule.DefaultTaskFolder, schedule.CheckTaskName)
+
+	host.setTask(first, schedule.TaskStatus{Status: "Ready"})
+	host.setTask(second, schedule.TaskStatus{Status: "Ready", NextRunTime: "Sunday"})
+	host.setTask(check, schedule.TaskStatus{Status: "Ready"})
+
+	st, err := serverapi.ImageStatus(ctx, cli)
+	require.NoError(t, err)
+	require.Len(t, st.Tasks, 3)
+	require.Equal(t, []string{first, second, check}, []string{st.Tasks[0].Name, st.Tasks[1].Name, st.Tasks[2].Name})
+	require.Equal(t, "Sunday", st.Tasks[1].NextRunTime)
+	require.Len(t, st.Schedule.Disks, 2)
+
+	resp, err := serverapi.RunImageTask(ctx, cli)
+	require.NoError(t, err)
+	require.Equal(t, first, resp.Task)
+	require.Equal(t, []string{first, second}, host.ranTasks())
+}

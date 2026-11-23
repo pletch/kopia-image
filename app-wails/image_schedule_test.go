@@ -444,3 +444,62 @@ func TestPauseImageSchedule(t *testing.T) {
 		t.Fatalf("ran %q", ran)
 	}
 }
+
+func TestImageScheduleSettings_diskSchedules(t *testing.T) {
+	s := validScheduleSettings()
+	s.Volumes = []string{"C:"}
+	s.Disks = []imageDiskSchedule{
+		{Volumes: []string{"D:", "E:"}, At: "21:30", Days: []string{"Monday", "Thursday"}},
+		{Volumes: []string{"F:"}, At: "03:00"},
+	}
+
+	args, err := s.installArgs("cfg", "id1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{
+		"--config-file", "cfg", "image", "schedule", "install", "C:",
+		"--at", "02:30", "--check-day", "Sunday", "--check-at", "12:00", "--days", "Monday,Thursday",
+		"--disk-schedule", "D:,E:=21:30/Monday,Thursday", "--disk-schedule", "F:=03:00",
+		"--wake", "--no-allow-on-battery", "--request-id", "id1",
+	}
+
+	if !slices.Equal(args, want) {
+		t.Fatalf("got %q\nwant %q", args, want)
+	}
+
+	// only schedules of their own
+	s.Volumes = nil
+
+	if _, err := s.installArgs("cfg", "id2"); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, bad := range map[string]func(*imageScheduleSettings){
+		"volume in two schedules": func(s *imageScheduleSettings) { s.Disks[1].Volumes = []string{"D:"} },
+		"volume also in Volumes":  func(s *imageScheduleSettings) { s.Volumes = []string{"F:"} },
+		"empty schedule":          func(s *imageScheduleSettings) { s.Disks[1].Volumes = nil },
+		"bad volume":              func(s *imageScheduleSettings) { s.Disks[0].Volumes = []string{"D:=01:00 --x"} },
+		"bad time":                func(s *imageScheduleSettings) { s.Disks[0].At = "21:30/Sunday" },
+		"bad day":                 func(s *imageScheduleSettings) { s.Disks[0].Days = []string{"Sunday,Monday"} },
+		"repeated day":            func(s *imageScheduleSettings) { s.Disks[0].Days = []string{"Sunday", "Sunday"} },
+		"no volumes at all":       func(s *imageScheduleSettings) { s.Disks = nil },
+		"too many schedules": func(s *imageScheduleSettings) {
+			s.Disks = make([]imageDiskSchedule, maxImageDiskSchedules+1)
+		},
+	} {
+		s := validScheduleSettings()
+		s.Volumes = nil
+		s.Disks = []imageDiskSchedule{
+			{Volumes: []string{"D:", "E:"}, At: "21:30", Days: []string{"Monday"}},
+			{Volumes: []string{"F:"}, At: "03:00"},
+		}
+
+		bad(s)
+
+		if _, err := s.installArgs("cfg", "id"); !errors.Is(err, errInvalidSchedule) {
+			t.Errorf("%v: got %v, want an invalid schedule", name, err)
+		}
+	}
+}

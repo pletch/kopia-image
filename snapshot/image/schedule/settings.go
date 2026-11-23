@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/pkg/errors"
@@ -19,12 +20,18 @@ const (
 // that the web UI can show and change them; Task Scheduler does not let
 // other users read the tasks of SYSTEM.
 type Settings struct {
+	// Volumes are all the volumes imaged, one on each disk; At and Days are
+	// the schedule of the first of Disks. Settings written before Disks
+	// have only these: one schedule for all the volumes.
 	Volumes []string `json:"volumes"`
 
 	// At is the time of day, HH:MM; Days are weekday names, empty for
 	// every day.
 	At   string   `json:"at"`
 	Days []string `json:"days,omitempty"`
+
+	// Disks are the schedules of the disks, each run by its own task.
+	Disks []DiskSchedule `json:"disks,omitempty"`
 
 	TimeLimit      string `json:"timeLimit"`
 	Retries        int    `json:"retries"`
@@ -50,6 +57,62 @@ type Settings struct {
 	// ConnectionDigest identifies it, see recoverymedia.ConnectionDigest.
 	Repository       string `json:"repository"`
 	ConnectionDigest string `json:"connectionDigest"`
+}
+
+// DiskSchedule is when the disks holding Volumes are imaged: by the task
+// Task, the name of it in the task folder.
+type DiskSchedule struct {
+	Volumes []string `json:"volumes"`
+	At      string   `json:"at"`
+	Days    []string `json:"days,omitempty"`
+	Task    string   `json:"task"`
+}
+
+// MaxDiskSchedules is the most schedules a computer can have: one for each
+// drive letter.
+const MaxDiskSchedules = 26
+
+// CreateTaskNameFor returns the name of the task that runs the i-th
+// schedule: the first keeps the name of the single task kopia had before.
+func CreateTaskNameFor(i int) string {
+	if i == 0 {
+		return CreateTaskName
+	}
+
+	return CreateTaskName + " " + strconv.Itoa(i+1)
+}
+
+// Schedules returns the schedules of the disks; settings written before
+// there was one for each disk have a single one, for all the volumes.
+func (s *Settings) Schedules() []DiskSchedule {
+	if len(s.Disks) > 0 {
+		return s.Disks
+	}
+
+	if len(s.Volumes) == 0 {
+		return nil
+	}
+
+	return []DiskSchedule{{Volumes: s.Volumes, At: s.At, Days: s.Days, Task: CreateTaskName}}
+}
+
+// CreateTaskNames returns the names of the tasks that create the images,
+// without their folder. Without settings, it is the single task kopia has
+// always had.
+func (s *Settings) CreateTaskNames() []string {
+	var names []string
+
+	if s != nil {
+		for _, d := range s.Schedules() {
+			names = append(names, d.Task)
+		}
+	}
+
+	if len(names) == 0 {
+		names = []string{CreateTaskName}
+	}
+
+	return names
 }
 
 // Request is the outcome of the last "kopia image schedule install" or

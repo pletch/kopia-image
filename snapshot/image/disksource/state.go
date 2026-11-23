@@ -61,6 +61,28 @@ func LockPath(statePath string) string {
 	return statePath + ".lock"
 }
 
+// IsRunning reports whether an image run holds the lock of the state file
+// at path. It takes the lock only to test it, so a run can start right
+// after it returns false.
+func IsRunning(path string) (bool, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil { //nolint:mnd
+		return false, errors.Wrap(err, "unable to create state directory")
+	}
+
+	lock := flock.New(LockPath(path))
+
+	ok, err := lock.TryLock()
+	if err != nil {
+		return false, errors.Wrap(err, "unable to lock image state")
+	}
+
+	if !ok {
+		return true, nil
+	}
+
+	return false, errors.Wrap(lock.Unlock(), "unable to unlock image state")
+}
+
 // OpenShadowState locks and reads the state file at path, creating its
 // directory if needed. It returns ErrAlreadyRunning if another process holds
 // the lock.

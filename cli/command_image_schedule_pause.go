@@ -42,7 +42,7 @@ func (c *commandImageSchedulePause) run(ctx context.Context) error {
 
 	changed := 0
 
-	for _, name := range []string{schedule.CreateTaskName, schedule.CheckTaskName} {
+	for _, name := range c.loc.scheduledTaskNames() {
 		err := schedule.SetEnabled(ctx, c.loc.taskName(name), c.resume)
 
 		switch {

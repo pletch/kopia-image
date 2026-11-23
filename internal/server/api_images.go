@@ -237,8 +237,23 @@ func convertImageSnapshot(ctx context.Context, rc requestContext, m *snapshot.Ma
 	return img
 }
 
-func imageCreateTaskPath() string {
-	return schedule.TaskPath(schedule.DefaultTaskFolder, schedule.CreateTaskName)
+// imageCreateTaskPaths returns the tasks that create images: one for each
+// schedule recorded in the state folder, or the single one kopia has always
+// had.
+func imageCreateTaskPaths(host ImageHost) []string {
+	var s *schedule.Settings
+
+	if dir, err := host.StateDir(); err == nil {
+		s, _ = schedule.ReadSettings(schedule.SettingsPath(dir))
+	}
+
+	var out []string
+
+	for _, name := range s.CreateTaskNames() {
+		out = append(out, schedule.TaskPath(schedule.DefaultTaskFolder, name))
+	}
+
+	return out
 }
 
 // handleImagesStatus reports the scheduled image tasks, the last image run
@@ -270,7 +285,7 @@ func handleImagesStatus(ctx context.Context, rc requestContext) (any, *apiError)
 		}
 	}
 
-	for _, name := range []string{schedule.CreateTaskName, schedule.CheckTaskName} {
+	for _, name := range append(resp.Schedule.CreateTaskNames(), schedule.CheckTaskName) {
 		t := &serverapi.ImageTask{Name: schedule.TaskPath(schedule.DefaultTaskFolder, name)}
 
 		ts, err := host.QueryTask(ctx, t.Name)
@@ -389,18 +404,27 @@ func readImageStatusFile[T any](path string, read func(string) (*T, error)) (v *
 	return v, ""
 }
 
-// handleImagesScheduleRun starts the scheduled image task, which creates
-// images as SYSTEM, the way "kopia image schedule run" does. When Task
+// handleImagesScheduleRun starts the scheduled image tasks, which create
+// images as SYSTEM one after another, the way "kopia image schedule run"
+// does. When Task
 // Scheduler refuses the server's account, it fails with ACCESS_DENIED, so
 // that KopiaUI can run "kopia image schedule run" as administrator instead,
 // after the UAC prompt.
 func handleImagesScheduleRun(ctx context.Context, rc requestContext) (any, *apiError) {
 	host := imageHostOf(rc)
-	name := imageCreateTaskPath()
+	names := imageCreateTaskPaths(host)
+	name := names[0]
 
-	_, err := host.QueryTask(ctx, name)
-	if err == nil {
-		err = host.RunTask(ctx, name)
+	var err error
+
+	for _, n := range names {
+		if _, err = host.QueryTask(ctx, n); err == nil {
+			err = host.RunTask(ctx, n)
+		}
+
+		if err != nil {
+			break
+		}
 	}
 
 	// a task hidden from the server's account can be started as administrator

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -155,6 +156,19 @@ func (r *imageScheduleRequest) record(operation string, loc *imageScheduleLocati
 	return schedule.WriteRequest(schedule.RequestPath(loc.stateDir()), req) //nolint:wrapcheck
 }
 
+// scheduledTaskNames returns the names of the image tasks, without their
+// folder: the create tasks of the schedules recorded in the state folder,
+// or the single one kopia has always had, and the check task.
+func (l *imageScheduleLocation) scheduledTaskNames() []string {
+	var s *schedule.Settings
+
+	if r, err := schedule.ReadSettings(schedule.SettingsPath(l.stateDir())); err == nil {
+		s = r
+	}
+
+	return append(s.CreateTaskNames(), schedule.CheckTaskName)
+}
+
 func (l *imageScheduleLocation) taskName(name string) string {
 	return schedule.TaskPath(l.taskFolder, name)
 }
@@ -173,6 +187,7 @@ type commandImageScheduleInstall struct {
 	volumes        []string
 	at             string
 	days           string
+	diskSchedules  []string
 	timeLimit      time.Duration
 	retries        int
 	retryInterval  time.Duration
@@ -193,9 +208,10 @@ type commandImageScheduleInstall struct {
 
 func (c *commandImageScheduleInstall) setup(svc advancedAppServices, parent commandParent) {
 	cmd := parent.Command("install", "Create or replace the scheduled image tasks. Run as administrator.")
-	cmd.Arg("volume", "A volume on each disk to image, e.g. C:").Required().StringsVar(&c.volumes)
+	cmd.Arg("volume", "A volume on each disk to image at --at on --days, e.g. C:").StringsVar(&c.volumes)
 	cmd.Flag("at", "Time of day to create the image (HH:MM)").Default("02:00").StringVar(&c.at)
 	cmd.Flag("days", "Days to create the image, e.g. Mon,Thu (default: every day)").StringVar(&c.days)
+	cmd.Flag("disk-schedule", "Image the disks holding some volumes on their own schedule, e.g. D:=03:00 or D:,E:=21:30/Mon,Thu; repeat for more").StringsVar(&c.diskSchedules)
 	cmd.Flag("time-limit", "Stop a run that takes longer").Default("4h").DurationVar(&c.timeLimit)
 	cmd.Flag("retries", "Times to retry a failed run").Default("3").IntVar(&c.retries)
 	cmd.Flag("retry-interval", "Time between retries").Default("15m").DurationVar(&c.retryInterval)
@@ -237,20 +253,33 @@ func (c *commandImageScheduleInstall) run(ctx context.Context, rep repo.Reposito
 		return err
 	}
 
-	createTask, checkTask, err := c.tasks()
+	schedules, err := c.schedules()
 	if err != nil {
 		return err
 	}
 
-	if _, err := disksource.DisksForVolumes(c.volumes); err != nil {
+	createTasks, checkTask, err := c.tasks(schedules)
+	if err != nil {
+		return err
+	}
+
+	volumes := allScheduledVolumes(schedules)
+
+	if _, err := disksource.DisksForVolumes(volumes); err != nil {
 		return errors.Wrap(err, "unable to find the disks to image")
+	}
+
+	// the tasks of schedules that this install drops
+	var previous []string
+	if s, err := schedule.ReadSettings(schedule.SettingsPath(c.loc.stateDir())); err == nil {
+		previous = s.CreateTaskNames()
 	}
 
 	if err := c.writeConfig(ctx, rep); err != nil {
 		return err
 	}
 
-	for _, t := range []*schedule.Task{createTask, checkTask} {
+	for _, t := range append(createTasks, checkTask) {
 		if t == nil {
 			continue
 		}
@@ -267,34 +296,173 @@ func (c *commandImageScheduleInstall) run(ctx context.Context, rep repo.Reposito
 		c.out.printStdout("Scheduled %q, next run %v.\n", t.Name, next)
 	}
 
-	if checkTask == nil {
-		if err := schedule.Delete(ctx, c.loc.taskName(schedule.CheckTaskName)); err != nil && !errors.Is(err, schedule.ErrTaskNotFound) {
-			return errors.Wrap(err, "unable to remove the previous check task")
-		}
+	if err := c.removeDroppedTasks(ctx, previous, schedules, checkTask == nil); err != nil {
+		return err
 	}
 
-	if err := c.writeSettings(rep); err != nil {
+	if err := c.writeSettings(rep, schedules); err != nil {
 		return err
 	}
 
 	c.out.printStdout("The tasks run as SYSTEM, using the copy of kopia and the repository connection in %v.\n", c.loc.configDir)
 	c.out.printStdout("Run 'kopia image schedule install' again after upgrading kopia, so the tasks use the new version.\n")
-	c.out.printStdout("Create the first image now with 'kopia image schedule run', or interactively with 'kopia image create %v'.\n", strings.Join(c.volumes, " "))
+	c.out.printStdout("Create the first image now with 'kopia image schedule run', or interactively with 'kopia image create %v'.\n", strings.Join(volumes, " "))
 
 	return nil
 }
 
-// writeSettings records the settings the tasks were scheduled with where the
-// web UI can read them.
-func (c *commandImageScheduleInstall) writeSettings(rep repo.Repository) error {
-	days, err := parseWeekdays(c.days)
-	if err != nil {
-		return err
+// removeDroppedTasks removes the create tasks of previous schedules that
+// the new ones do not use, and the check task when it was turned off.
+func (c *commandImageScheduleInstall) removeDroppedTasks(ctx context.Context, previous []string, schedules []schedule.DiskSchedule, noCheck bool) error {
+	if noCheck {
+		previous = append(previous, schedule.CheckTaskName)
 	}
 
+	for _, name := range previous {
+		if slices.ContainsFunc(schedules, func(d schedule.DiskSchedule) bool { return d.Task == name }) {
+			continue
+		}
+
+		if err := schedule.Delete(ctx, c.loc.taskName(name)); err != nil && !errors.Is(err, schedule.ErrTaskNotFound) {
+			return errors.Wrapf(err, "unable to remove the previous task %q", name)
+		}
+	}
+
+	return nil
+}
+
+// schedules returns the schedules to install: the volumes given as
+// arguments at --at on --days, then each --disk-schedule. Schedules at the
+// same time on the same days are one, run by one task.
+func (c *commandImageScheduleInstall) schedules() ([]schedule.DiskSchedule, error) {
+	var (
+		out []schedule.DiskSchedule
+		err error
+	)
+
+	if len(c.volumes) > 0 {
+		if out, err = addDiskSchedule(out, c.volumes, c.at, c.days); err != nil {
+			return nil, err
+		}
+	}
+
+	for _, spec := range c.diskSchedules {
+		volumes, at, days, perr := parseDiskSchedule(spec)
+		if perr != nil {
+			return nil, perr
+		}
+
+		if out, err = addDiskSchedule(out, volumes, at, days); err != nil {
+			return nil, errors.Wrapf(err, "invalid --disk-schedule %q", spec)
+		}
+	}
+
+	if len(out) == 0 {
+		return nil, errors.New("give the volumes to image, as arguments or with --disk-schedule")
+	}
+
+	if len(out) > schedule.MaxDiskSchedules {
+		return nil, errors.Errorf("at most %v schedules", schedule.MaxDiskSchedules)
+	}
+
+	for i := range out {
+		out[i].Task = schedule.CreateTaskNameFor(i)
+	}
+
+	return out, nil
+}
+
+// addDiskSchedule adds a schedule of volumes, at a time of day on days, to
+// out, or adds the volumes to the schedule that has the same time and days.
+func addDiskSchedule(out []schedule.DiskSchedule, volumes []string, at, days string) ([]schedule.DiskSchedule, error) {
+	if _, err := time.Parse("15:04", at); err != nil {
+		return nil, errors.Errorf("invalid time of day %q, expected HH:MM", at)
+	}
+
+	weekdays, err := parseWeekdays(days)
+	if err != nil {
+		return nil, err
+	}
+
+	// in week order, so that the same days in another order match
+	slices.Sort(weekdays)
+	weekdays = slices.Compact(weekdays)
+
+	d := schedule.DiskSchedule{At: at}
+	for _, w := range weekdays {
+		d.Days = append(d.Days, w.String())
+	}
+
+	// a volume is a drive letter or the folder a volume is mounted in, kept
+	// as given; Windows names are the same in any case
+	same := func(v string) func(string) bool {
+		return func(o string) bool { return strings.EqualFold(o, v) }
+	}
+
+	for _, v := range volumes {
+		v = strings.TrimSpace(v)
+
+		switch {
+		case v == "":
+			return nil, errors.New("empty volume name")
+		case slices.ContainsFunc(d.Volumes, same(v)):
+			return nil, errors.Errorf("%v is listed twice", v)
+		case slices.ContainsFunc(out, func(o schedule.DiskSchedule) bool { return slices.ContainsFunc(o.Volumes, same(v)) }):
+			return nil, errors.Errorf("%v is in more than one schedule", v)
+		}
+
+		d.Volumes = append(d.Volumes, v)
+	}
+
+	for i := range out {
+		if out[i].At == d.At && slices.Equal(out[i].Days, d.Days) {
+			out[i].Volumes = append(out[i].Volumes, d.Volumes...)
+			return out, nil
+		}
+	}
+
+	return append(out, d), nil
+}
+
+// parseDiskSchedule parses a --disk-schedule: VOLUMES=HH:MM[/DAYS], where
+// VOLUMES and DAYS are separated by commas. A volume may be the folder a
+// volume is mounted in, which may hold "=": the time follows the last one.
+func parseDiskSchedule(spec string) (volumes []string, at, days string, err error) {
+	i := strings.LastIndex(spec, "=")
+
+	vols, when := "", ""
+	if i >= 0 {
+		vols, when = spec[:i], spec[i+1:]
+	}
+
+	if i < 0 || strings.TrimSpace(vols) == "" {
+		return nil, "", "", errors.Errorf("invalid --disk-schedule %q, expected VOLUMES=HH:MM[/DAYS], e.g. D:=03:00/Mon,Thu", spec)
+	}
+
+	at, days, _ = strings.Cut(when, "/")
+
+	return strings.Split(vols, ","), strings.TrimSpace(at), days, nil
+}
+
+// allScheduledVolumes returns the volumes of all the schedules.
+func allScheduledVolumes(schedules []schedule.DiskSchedule) []string {
+	var out []string
+
+	for _, d := range schedules {
+		out = append(out, d.Volumes...)
+	}
+
+	return out
+}
+
+// writeSettings records the settings the tasks were scheduled with where the
+// web UI can read them.
+func (c *commandImageScheduleInstall) writeSettings(rep repo.Repository, schedules []schedule.DiskSchedule) error {
 	s := &schedule.Settings{
-		Volumes:        c.volumes,
-		At:             c.at,
+		Volumes:        allScheduledVolumes(schedules),
+		At:             schedules[0].At,
+		Days:           schedules[0].Days,
+		Disks:          schedules,
 		TimeLimit:      c.timeLimit.String(),
 		Retries:        c.retries,
 		RetryInterval:  c.retryInterval.String(),
@@ -306,10 +474,6 @@ func (c *commandImageScheduleInstall) writeSettings(rep repo.Repository) error {
 		CheckNTFS:      c.checkNTFS,
 		KopiaVersion:   repo.BuildVersion,
 		InstalledAt:    clock.Now(),
-	}
-
-	for _, d := range days {
-		s.Days = append(s.Days, d.String())
 	}
 
 	if !strings.EqualFold(c.checkDay, "none") && c.checkDay != "" {
@@ -333,18 +497,9 @@ func (c *commandImageScheduleInstall) writeSettings(rep repo.Repository) error {
 	return schedule.WriteSettings(schedule.SettingsPath(c.loc.stateDir()), s) //nolint:wrapcheck
 }
 
-// tasks builds the image and weekly check task definitions.
-func (c *commandImageScheduleInstall) tasks() (createTask, checkTask *schedule.Task, err error) {
-	at, err := time.Parse("15:04", c.at)
-	if err != nil {
-		return nil, nil, errors.Errorf("invalid --at %q, expected HH:MM", c.at)
-	}
-
-	days, err := parseWeekdays(c.days)
-	if err != nil {
-		return nil, nil, err
-	}
-
+// tasks builds the task definitions: one that creates the images of each
+// schedule, and the weekly check.
+func (c *commandImageScheduleInstall) tasks(schedules []schedule.DiskSchedule) (createTasks []*schedule.Task, checkTask *schedule.Task, err error) {
 	exe := c.loc.taskExe()
 
 	common := []string{
@@ -353,27 +508,40 @@ func (c *commandImageScheduleInstall) tasks() (createTask, checkTask *schedule.T
 		"--log-dir", filepath.Join(c.loc.configDir, "logs"),
 	}
 
-	createArgs := append(append([]string(nil), common...), "image", "create")
-	createArgs = append(createArgs, c.volumes...)
-	createArgs = append(createArgs, "--flush-interval", c.flushInterval.String(), "--state-file", c.loc.statePath)
+	for _, d := range schedules {
+		at, err := time.Parse("15:04", d.At)
+		if err != nil {
+			return nil, nil, errors.Errorf("invalid time of day %q, expected HH:MM", d.At)
+		}
 
-	createTask = &schedule.Task{
-		Name:             c.loc.taskName(schedule.CreateTaskName),
-		Description:      "Creates kopia block-level images of the disks holding " + strings.Join(c.volumes, " "),
-		Command:          exe,
-		Arguments:        createArgs,
-		WorkingDir:       c.loc.configDir,
-		At:               at,
-		Days:             days,
-		TimeLimit:        c.timeLimit,
-		RetryInterval:    c.retryInterval,
-		RetryCount:       c.retries,
-		WakeToRun:        c.wake,
-		AllowOnBatteries: c.allowOnBattery,
+		days, err := parseWeekdays(strings.Join(d.Days, ","))
+		if err != nil {
+			return nil, nil, err
+		}
+
+		createArgs := append(append([]string(nil), common...), "image", "create")
+		createArgs = append(createArgs, d.Volumes...)
+		// with several schedules, a run can start while another is going
+		createArgs = append(createArgs, "--flush-interval", c.flushInterval.String(), "--state-file", c.loc.statePath, "--wait-for-other-run")
+
+		createTasks = append(createTasks, &schedule.Task{
+			Name:             c.loc.taskName(d.Task),
+			Description:      "Creates kopia block-level images of the disks holding " + strings.Join(d.Volumes, " "),
+			Command:          exe,
+			Arguments:        createArgs,
+			WorkingDir:       c.loc.configDir,
+			At:               at,
+			Days:             days,
+			TimeLimit:        c.timeLimit,
+			RetryInterval:    c.retryInterval,
+			RetryCount:       c.retries,
+			WakeToRun:        c.wake,
+			AllowOnBatteries: c.allowOnBattery,
+		})
 	}
 
 	if strings.EqualFold(c.checkDay, "none") || c.checkDay == "" {
-		return createTask, nil, nil
+		return createTasks, nil, nil
 	}
 
 	checkDays, err := parseWeekdays(c.checkDay)
@@ -404,7 +572,7 @@ func (c *commandImageScheduleInstall) tasks() (createTask, checkTask *schedule.T
 		AllowOnBatteries: c.allowOnBattery,
 	}
 
-	return createTask, checkTask, nil
+	return createTasks, checkTask, nil
 }
 
 // writeConfig secures the task folder and puts into it a copy of kopia and a
@@ -613,7 +781,7 @@ func (c *commandImageScheduleShow) run(ctx context.Context) error {
 		return err
 	}
 
-	for _, name := range []string{schedule.CreateTaskName, schedule.CheckTaskName} {
+	for _, name := range c.loc.scheduledTaskNames() {
 		full := c.loc.taskName(name)
 
 		props, err := schedule.Query(ctx, full)
@@ -667,12 +835,15 @@ func (c *commandImageScheduleShow) run(ctx context.Context) error {
 }
 
 type commandImageScheduleRun struct {
+	volume string
+
 	loc imageScheduleLocation
 	out textOutput
 }
 
 func (c *commandImageScheduleRun) setup(svc appServices, parent commandParent) {
-	cmd := parent.Command("run", "Start the scheduled image task now.")
+	cmd := parent.Command("run", "Start the scheduled image tasks now: each images its disks after the one before ends.")
+	cmd.Arg("volume", "Start only the task of the schedule that images this volume, e.g. D:").StringVar(&c.volume)
 	c.loc.flags(cmd)
 	cmd.Action(svc.noRepositoryAction(c.run))
 	c.out.setup(svc)
@@ -683,13 +854,45 @@ func (c *commandImageScheduleRun) run(ctx context.Context) error {
 		return err
 	}
 
-	if err := schedule.Run(ctx, c.loc.taskName(schedule.CreateTaskName)); err != nil {
-		return err //nolint:wrapcheck
+	names, err := c.taskNames()
+	if err != nil {
+		return err
 	}
 
-	c.out.printStdout("Started %q; follow it with 'kopia image schedule show'.\n", c.loc.taskName(schedule.CreateTaskName))
+	for _, name := range names {
+		if err := schedule.Run(ctx, c.loc.taskName(name)); err != nil {
+			return err //nolint:wrapcheck
+		}
+
+		c.out.printStdout("Started %q.\n", c.loc.taskName(name))
+	}
+
+	c.out.printStdout("Follow the run with 'kopia image schedule show'.\n")
 
 	return nil
+}
+
+// taskNames returns the create tasks to start: all of them, or the one
+// whose schedule images the volume given.
+func (c *commandImageScheduleRun) taskNames() ([]string, error) {
+	s, err := schedule.ReadSettings(schedule.SettingsPath(c.loc.stateDir()))
+	if err != nil {
+		s = nil
+	}
+
+	if c.volume == "" {
+		return s.CreateTaskNames(), nil
+	}
+
+	if s != nil {
+		for _, d := range s.Schedules() {
+			if slices.ContainsFunc(d.Volumes, func(v string) bool { return strings.EqualFold(v, c.volume) }) {
+				return []string{d.Task}, nil
+			}
+		}
+	}
+
+	return nil, errors.Errorf("no image schedule images %v", c.volume)
 }
 
 type commandImageScheduleRemove struct {
@@ -714,7 +917,7 @@ func (c *commandImageScheduleRemove) run(ctx context.Context) error {
 		return err
 	}
 
-	for _, name := range []string{schedule.CreateTaskName, schedule.CheckTaskName} {
+	for _, name := range c.loc.scheduledTaskNames() {
 		err := schedule.Delete(ctx, c.loc.taskName(name))
 
 		switch {

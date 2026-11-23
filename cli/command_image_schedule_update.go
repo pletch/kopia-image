@@ -46,7 +46,7 @@ func (c *commandImageScheduleUpdate) setup(svc appServices, parent commandParent
 // kopia did so at install, so that KopiaUI shows it. The tasks run the same
 // either way, so a failure only warns.
 func (c *commandImageScheduleUpdate) shareTaskStatus(ctx context.Context) {
-	for _, name := range []string{schedule.CreateTaskName, schedule.CheckTaskName} {
+	for _, name := range c.loc.scheduledTaskNames() {
 		full := c.loc.taskName(name)
 
 		if err := schedule.ShareStatus(ctx, full); err != nil && !errors.Is(err, schedule.ErrTaskNotFound) {

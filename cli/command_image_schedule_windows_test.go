@@ -171,3 +171,103 @@ func dumpLogs(t *testing.T, dir string) {
 		return nil
 	})
 }
+
+// TestImageScheduleDiskSchedules checks that disks on schedules of their own
+// get a task each, that starting them together images both disks, one after
+// the other, and that installing again without a schedule removes its task.
+func TestImageScheduleDiskSchedules(t *testing.T) {
+	first := vhdxtest.New(t).FormatAndMount()
+	second := vhdxtest.New(t).FormatAndMount()
+
+	for _, mnt := range []string{first, second} {
+		require.NoError(t, os.WriteFile(filepath.Join(mnt, "hello.txt"), []byte("hello "+mnt), 0o600))
+	}
+
+	exe := buildKopia(t)
+
+	env := testenv.NewCLITest(t, testenv.RepoFormatNotImportant, testenv.NewInProcRunner(t))
+	env.RunAndExpectSuccess(t, "repo", "create", "filesystem", "--path", env.RepoDir)
+
+	configDir := filepath.Join(t.TempDir(), "image")
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	stateDir := filepath.Dir(statePath)
+	loc := []string{"--task-folder", testTaskFolder, "--config-dir", configDir, "--state-file", statePath}
+
+	t.Cleanup(func() {
+		for _, name := range []string{"Image create", "Image create 2", "Image check"} {
+			_ = schedule.Delete(context.Background(), testTaskFolder+`\`+name)
+		}
+	})
+
+	env.RunAndExpectSuccess(t, append([]string{
+		"image", "schedule", "install", first, "--at", "03:17",
+		"--disk-schedule", second + "=04:23/sat", "--check-day", "none", "--kopia-exe", exe,
+	}, loc...)...)
+
+	settings, err := schedule.ReadSettings(schedule.SettingsPath(stateDir))
+	require.NoError(t, err)
+	require.Equal(t, []string{first, second}, settings.Volumes)
+	require.Equal(t, []schedule.DiskSchedule{
+		{Volumes: []string{first}, At: "03:17", Task: "Image create"},
+		{Volumes: []string{second}, At: "04:23", Days: []string{"Saturday"}, Task: "Image create 2"},
+	}, settings.Disks)
+
+	props, err := schedule.Query(t.Context(), testTaskFolder+`\Image create`)
+	require.NoError(t, err)
+	require.Contains(t, props["Next Run Time"], "3:17")
+
+	props, err = schedule.Query(t.Context(), testTaskFolder+`\Image create 2`)
+	require.NoError(t, err)
+	require.Contains(t, props["Next Run Time"], "4:23")
+	require.Equal(t, "SYSTEM", props["Run As User"])
+
+	// both start now: the one that finds the other running waits for it
+	env.RunAndExpectSuccess(t, append([]string{"image", "schedule", "run"}, loc...)...)
+
+	// image list shows each disk's source, then its images, indented
+	var images []string
+
+	require.Eventually(t, func() bool {
+		images = nil
+
+		for _, l := range env.RunAndExpectSuccess(t, "image", "list") {
+			if strings.HasPrefix(l, " ") {
+				images = append(images, l)
+			}
+		}
+
+		return len(images) == 2
+	}, 8*time.Minute, 3*time.Second, "both disks were not imaged; logs are in %v", filepath.Join(configDir, "logs"))
+
+	require.Eventually(t, func() bool {
+		running, rerr := disksource.IsRunning(statePath)
+		return rerr == nil && !running
+	}, time.Minute, time.Second)
+
+	st, err := disksource.ReadRunStatus(disksource.StatusPath(statePath))
+	require.NoError(t, err)
+
+	if !st.Success {
+		dumpLogs(t, filepath.Join(configDir, "logs"))
+	}
+
+	require.True(t, st.Success, "scheduled run failed: %v", st.Error)
+	require.Len(t, st.Images, 1, "the last run imaged its own disk only")
+
+	// one schedule for both: the second task goes away
+	env.RunAndExpectSuccess(t, append([]string{
+		"image", "schedule", "install", first, second, "--at", "03:17", "--check-day", "none", "--kopia-exe", exe,
+	}, loc...)...)
+
+	_, err = schedule.Query(t.Context(), testTaskFolder+`\Image create 2`)
+	require.ErrorIs(t, err, schedule.ErrTaskNotFound)
+
+	settings, err = schedule.ReadSettings(schedule.SettingsPath(stateDir))
+	require.NoError(t, err)
+	require.Equal(t, []schedule.DiskSchedule{{Volumes: []string{first, second}, At: "03:17", Task: "Image create"}}, settings.Disks)
+
+	env.RunAndExpectSuccess(t, append([]string{"image", "schedule", "remove"}, loc...)...)
+
+	_, err = schedule.Query(t.Context(), testTaskFolder+`\Image create`)
+	require.ErrorIs(t, err, schedule.ErrTaskNotFound)
+}

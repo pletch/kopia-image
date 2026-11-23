@@ -76,6 +76,10 @@ type commandImageCreate struct {
 	excludeFNTB   bool
 	excludeCommon bool
 
+	// waitForOtherRun makes the run wait for one that is going, rather
+	// than fail: scheduled runs of disks on different schedules can meet.
+	waitForOtherRun bool
+
 	// req records the outcome of a run that KopiaUI started without a
 	// window; loc tells where.
 	req imageScheduleRequest
@@ -104,6 +108,7 @@ func (c *commandImageCreate) setup(svc appServices, parent commandParent) {
 	cmd.Flag("exclude-files-not-to-backup", "Read temporary files, crash reports and dumps, the BITS queue and event trace buffers as zeros (the safe part of FilesNotToBackup); a restore deletes them").Default("true").BoolVar(&c.excludeFNTB)
 	cmd.Flag("exclude-common-caches", "Read the caches of web browsers, Windows Update's downloads and Delivery Optimization as zeros; a restore deletes them").Default("true").BoolVar(&c.excludeCommon)
 	cmd.Flag("state-file", "Override the file that records shadow copies to remove after a crash").Hidden().StringVar(&c.statePath)
+	cmd.Flag("wait-for-other-run", "Wait for an image run that is going to end, rather than fail").BoolVar(&c.waitForOtherRun)
 	c.req.flag(cmd)
 	cmd.Action(svc.noRepositoryAction(c.req.recording("create", &c.loc, c.runWithWriter)))
 	c.svc = svc
@@ -133,7 +138,21 @@ func (c *commandImageCreate) runWithWriter(ctx context.Context) (err error) {
 	for attempt := 0; ; attempt++ {
 		c.retriesLeft = len(imageConnectionRetryDelays) - attempt
 
+		if c.waitForOtherRun {
+			if werr := c.waitForRunToEnd(ctx); werr != nil {
+				return werr
+			}
+		}
+
 		err = c.runOnce(ctx)
+
+		// another run started between the wait and this one's start
+		if c.waitForOtherRun && errors.Is(err, disksource.ErrAlreadyRunning) && ctx.Err() == nil {
+			attempt--
+
+			continue
+		}
+
 		if err == nil || !c.willRetry(err) || ctx.Err() != nil {
 			return err
 		}
@@ -164,6 +183,60 @@ var imageConnectionRetryDelays = []time.Duration{30 * time.Second, 2 * time.Minu
 func (c *commandImageCreate) willRetry(err error) bool {
 	return c.retriesLeft > 0 && repo.IsConnectionLost(err) &&
 		!errors.Is(err, errImageStopped) && !errors.Is(err, disksource.ErrAlreadyRunning)
+}
+
+// imageRunWaitInterval is how often a run waiting for another checks
+// whether it has ended.
+//
+//nolint:gochecknoglobals
+var imageRunWaitInterval = 30 * time.Second
+
+// waitForRunToEnd waits while another image run holds the state lock. It
+// tests the lock without opening the repository, so a long wait holds no
+// connection.
+func (c *commandImageCreate) waitForRunToEnd(ctx context.Context) error {
+	statePath := c.statePath
+	if statePath == "" {
+		p, err := disksource.DefaultStatePath()
+		if err != nil {
+			return errors.Wrap(err, "unable to find the image state file")
+		}
+
+		statePath = p
+	}
+
+	logged := false
+
+	for {
+		running, err := disksource.IsRunning(statePath)
+		if err != nil {
+			return err //nolint:wrapcheck
+		}
+
+		if !running {
+			// the run starts now, not when it began to wait
+			if logged && len(c.doneImages) == 0 {
+				c.runStart = clock.Now()
+			}
+
+			return nil
+		}
+
+		if !logged {
+			log(ctx).Infof("Another image run is going; waiting for it to end.")
+
+			logged = true
+		}
+
+		t := time.NewTimer(imageRunWaitInterval)
+
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return ctx.Err() //nolint:wrapcheck
+		case <-t.C:
+		}
+	}
 }
 
 // runOnce opens the repository and images the disks in one write session.

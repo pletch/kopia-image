@@ -52,25 +52,56 @@ type imageScheduleSettings struct {
 
 	Wake           bool `json:"wake"`
 	AllowOnBattery bool `json:"allowOnBattery"`
+
+	// Disks are schedules of their own for some disks, each run by its
+	// own task; the disks of Volumes are imaged at At on Days.
+	Disks []imageDiskSchedule `json:"disks"`
 }
+
+// imageDiskSchedule is when the disks holding Volumes are imaged.
+type imageDiskSchedule struct {
+	Volumes []string `json:"volumes"`
+	At      string   `json:"at"`
+	Days    []string `json:"days"`
+}
+
+// maxImageDiskSchedules matches schedule.MaxDiskSchedules in the kopia
+// module: one for each drive letter.
+const maxImageDiskSchedules = 26
 
 // installArgs checks the settings and returns the arguments of
 // "kopia image schedule install" for the repository connection configFile.
 func (s *imageScheduleSettings) installArgs(configFile, requestID string) ([]string, error) {
-	if err := validateVolumes(s.Volumes); err != nil {
+	if len(s.Disks) > maxImageDiskSchedules {
+		return nil, fmt.Errorf("%w: too many schedules", errInvalidSchedule)
+	}
+
+	// every volume once, in all the schedules together
+	all := slices.Clone(s.Volumes)
+	for _, d := range s.Disks {
+		if len(d.Volumes) == 0 {
+			return nil, fmt.Errorf("%w: a schedule has no disk", errInvalidSchedule)
+		}
+
+		all = append(all, d.Volumes...)
+	}
+
+	if err := validateVolumes(all); err != nil {
 		return nil, err
 	}
 
-	for _, t := range []string{s.At, s.CheckAt} {
-		if !timeOfDayRE.MatchString(t) {
-			return nil, fmt.Errorf("%w: %q is not a time of day (HH:MM)", errInvalidSchedule, t)
+	if err := validateWhen(s.At, s.Days); err != nil {
+		return nil, err
+	}
+
+	for _, d := range s.Disks {
+		if err := validateWhen(d.At, d.Days); err != nil {
+			return nil, err
 		}
 	}
 
-	for i, d := range s.Days {
-		if !slices.Contains(weekdays, d) || slices.Contains(s.Days[:i], d) {
-			return nil, fmt.Errorf("%w: %q is not a weekday", errInvalidSchedule, d)
-		}
+	if !timeOfDayRE.MatchString(s.CheckAt) {
+		return nil, fmt.Errorf("%w: %q is not a time of day (HH:MM)", errInvalidSchedule, s.CheckAt)
 	}
 
 	if s.CheckDay != "none" && !slices.Contains(weekdays, s.CheckDay) {
@@ -85,9 +116,33 @@ func (s *imageScheduleSettings) installArgs(configFile, requestID string) ([]str
 		args = append(args, "--days", strings.Join(s.Days, ","))
 	}
 
+	for _, d := range s.Disks {
+		spec := strings.Join(d.Volumes, ",") + "=" + d.At
+		if len(d.Days) > 0 {
+			spec += "/" + strings.Join(d.Days, ",")
+		}
+
+		args = append(args, "--disk-schedule", spec)
+	}
+
 	args = append(args, boolFlag("wake", s.Wake), boolFlag("allow-on-battery", s.AllowOnBattery), "--request-id", requestID)
 
 	return args, nil
+}
+
+// validateWhen accepts a time of day, HH:MM, and distinct weekday names.
+func validateWhen(at string, days []string) error {
+	if !timeOfDayRE.MatchString(at) {
+		return fmt.Errorf("%w: %q is not a time of day (HH:MM)", errInvalidSchedule, at)
+	}
+
+	for i, d := range days {
+		if !slices.Contains(weekdays, d) || slices.Contains(days[:i], d) {
+			return fmt.Errorf("%w: %q is not a weekday", errInvalidSchedule, d)
+		}
+	}
+
+	return nil
 }
 
 // validateVolumes accepts one to 26 distinct drive letters, e.g. "C:": they
