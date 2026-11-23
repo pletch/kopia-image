@@ -876,3 +876,72 @@ func TestImagesStatus_diskSchedules(t *testing.T) {
 	require.Equal(t, first, resp.Task)
 	require.Equal(t, []string{first, second}, host.ranTasks())
 }
+
+// TestImagesStatus_otherRepository checks that the status leaves out the
+// runs of another repository's images, which share the computer's state
+// folder.
+func TestImagesStatus_otherRepository(t *testing.T) {
+	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
+
+	host := &fakeImageHost{dir: testutil.TempDirectory(t), tasks: map[string]schedule.TaskStatus{}}
+	cli := startImageServer(t, env, host)
+
+	lc, err := repo.LoadConfigFromFile(env.ConfigFile())
+	require.NoError(t, err)
+
+	this := recoverymedia.ConnectionDigest(lc)
+	start := clock.Now().Add(-time.Hour)
+
+	writeRun := func(repository string) {
+		require.NoError(t, disksource.WriteRunStatus(disksource.StatusPathIn(host.dir), &disksource.RunStatus{
+			Volumes: []string{"C:"}, StartTime: start, EndTime: start.Add(time.Minute), Success: true, Repository: repository,
+		}))
+		require.NoError(t, disksource.WriteRunProgress(disksource.ProgressPathIn(host.dir), &disksource.RunProgress{
+			Volumes: []string{"C:"}, StartTime: clock.Now(), UpdatedAt: clock.Now(), Repository: repository,
+		}))
+	}
+
+	writeSchedule := func(repository string) {
+		require.NoError(t, schedule.WriteSettings(schedule.SettingsPath(host.dir), &schedule.Settings{
+			Volumes: []string{"C:"}, At: "02:00", CheckDay: "none", ConnectionDigest: repository,
+		}))
+	}
+
+	status := func() *serverapi.ImageStatusResponse {
+		st, serr := serverapi.ImageStatus(ctx, cli)
+		require.NoError(t, serr)
+
+		return st
+	}
+
+	// a run of this repository shows, whoever's schedule it is
+	writeSchedule("another")
+	writeRun(this)
+
+	st := status()
+	require.False(t, *st.ScheduleForThisRepository)
+	require.NotNil(t, st.LastRun)
+	require.NotNil(t, st.Progress)
+
+	// a run of the other repository does not
+	writeRun("another")
+
+	st = status()
+	require.Nil(t, st.LastRun)
+	require.Nil(t, st.Progress)
+
+	// a run recorded before runs named their repository belongs to the
+	// schedule's repository
+	writeRun("")
+
+	st = status()
+	require.Nil(t, st.LastRun)
+	require.Nil(t, st.Progress)
+
+	writeSchedule(this)
+
+	st = status()
+	require.True(t, *st.ScheduleForThisRepository)
+	require.NotNil(t, st.LastRun)
+	require.NotNil(t, st.Progress)
+}

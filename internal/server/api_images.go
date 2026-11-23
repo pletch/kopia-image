@@ -266,23 +266,7 @@ func handleImagesStatus(ctx context.Context, rc requestContext) (any, *apiError)
 
 	stateDir, stateErr := host.StateDir()
 	if stateErr == nil {
-		resp.LastRun, resp.LastRunError = readImageStatusFile(disksource.StatusPathIn(stateDir), disksource.ReadRunStatus)
-		resp.RecoveryMedia, resp.RecoveryMediaError = readImageStatusFile(filepath.Join(stateDir, recoverymedia.RecordFileName), readRecoveryMedia)
-		resp.Schedule, resp.ScheduleError = readImageStatusFile(schedule.SettingsPath(stateDir), schedule.ReadSettings)
-		resp.LastRequest, _ = readImageStatusFile(schedule.RequestPath(stateDir), schedule.ReadRequest)
-
-		// images are created by another process: once a run ends, read the
-		// repository again, so that the images, the drivers they store and
-		// their sizes show without waiting for the next periodic refresh
-		if r := resp.LastRun; r != nil && !r.EndTime.IsZero() && !rc.srv.refreshedSince(r.EndTime) {
-			rc.srv.Refresh()
-		}
-
-		// a file not updated for a minute belongs to a run that ended without
-		// removing it
-		if p, _ := readImageStatusFile(disksource.ProgressPathIn(stateDir), disksource.ReadRunProgress); p != nil && clock.Now().Sub(p.UpdatedAt) < imageProgressStale {
-			resp.Progress = p
-		}
+		readImageState(rc, stateDir, resp)
 	}
 
 	for _, name := range append(resp.Schedule.CreateTaskNames(), schedule.CheckTaskName) {
@@ -313,14 +297,60 @@ func handleImagesStatus(ctx context.Context, rc requestContext) (any, *apiError)
 		return resp, nil
 	}
 
-	if resp.Schedule != nil && resp.Schedule.ConnectionDigest != "" {
-		if lc, err := repo.LoadConfigFromFile(rc.srv.getOptions().ConfigFile); err == nil {
-			same := recoverymedia.ConnectionDigest(lc) == resp.Schedule.ConnectionDigest
-			resp.ScheduleForThisRepository = &same
-		}
+	return resp, nil
+}
+
+// readImageState fills in what the state folder records: the last run, the
+// recovery media, the schedule and the run in progress. The run and the
+// progress of another repository's images are left out.
+func readImageState(rc requestContext, stateDir string, resp *serverapi.ImageStatusResponse) {
+	// the repository this server serves, to tell its runs and schedule
+	// from those of another repository on the same computer
+	thisRepo := ""
+	if lc, err := repo.LoadConfigFromFile(rc.srv.getOptions().ConfigFile); err == nil {
+		thisRepo = recoverymedia.ConnectionDigest(lc)
 	}
 
-	return resp, nil
+	resp.LastRun, resp.LastRunError = readImageStatusFile(disksource.StatusPathIn(stateDir), disksource.ReadRunStatus)
+	resp.RecoveryMedia, resp.RecoveryMediaError = readImageStatusFile(filepath.Join(stateDir, recoverymedia.RecordFileName), readRecoveryMedia)
+	resp.Schedule, resp.ScheduleError = readImageStatusFile(schedule.SettingsPath(stateDir), schedule.ReadSettings)
+	resp.LastRequest, _ = readImageStatusFile(schedule.RequestPath(stateDir), schedule.ReadRequest)
+
+	if resp.Schedule != nil && resp.Schedule.ConnectionDigest != "" && thisRepo != "" {
+		same := resp.Schedule.ConnectionDigest == thisRepo
+		resp.ScheduleForThisRepository = &same
+	}
+
+	// the last run of another repository's images is not this one's
+	if r := resp.LastRun; r != nil && runOfOtherRepository(r.Repository, thisRepo, resp.ScheduleForThisRepository) {
+		resp.LastRun = nil
+	}
+
+	// images are created by another process: once a run ends, read the
+	// repository again, so that the images, the drivers they store and
+	// their sizes show without waiting for the next periodic refresh
+	if r := resp.LastRun; r != nil && !r.EndTime.IsZero() && !rc.srv.refreshedSince(r.EndTime) {
+		rc.srv.Refresh()
+	}
+
+	// a file not updated for a minute belongs to a run that ended without
+	// removing it
+	if p, _ := readImageStatusFile(disksource.ProgressPathIn(stateDir), disksource.ReadRunProgress); p != nil && clock.Now().Sub(p.UpdatedAt) < imageProgressStale &&
+		!runOfOtherRepository(p.Repository, thisRepo, resp.ScheduleForThisRepository) {
+		resp.Progress = p
+	}
+}
+
+// runOfOtherRepository reports whether an image run, whose status or
+// progress names the repository runRepo, wrote to another repository than
+// thisRepo. A run recorded before runs named their repository belongs to
+// the schedule's.
+func runOfOtherRepository(runRepo, thisRepo string, scheduleForThisRepository *bool) bool {
+	if runRepo != "" && thisRepo != "" {
+		return runRepo != thisRepo
+	}
+
+	return scheduleForThisRepository != nil && !*scheduleForThisRepository
 }
 
 // scheduleHasTask reports whether the schedule settings include a task:

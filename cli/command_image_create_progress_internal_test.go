@@ -26,7 +26,7 @@ func TestImageRunMonitor(t *testing.T) {
 
 	var progress image.Progress
 
-	m := startImageRunMonitor(ctx, dir, start, []string{"C:"}, 2, &progress, func() int64 { return 1234 }, cancel)
+	m := startImageRunMonitor(ctx, dir, "digest", start, []string{"C:"}, 2, &progress, func() int64 { return 1234 }, cancel)
 	m.setDisk(1, 3)
 
 	require.Eventually(t, func() bool {

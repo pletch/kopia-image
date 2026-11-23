@@ -29,6 +29,10 @@ type RunStatus struct {
 	// RecoveryMedia lists why the recovery media last built no longer
 	// matches the computer, after a successful run.
 	RecoveryMedia []string `json:"recoveryMedia,omitempty"`
+
+	// Repository identifies the repository the run writes to, see
+	// recoverymedia.ConnectionDigest; empty in files written before.
+	Repository string `json:"repository,omitempty"`
 }
 
 // RunImage is an image snapshot saved by a run.

@@ -76,6 +76,10 @@ type commandImageCreate struct {
 	excludeFNTB   bool
 	excludeCommon bool
 
+	// connectionDigest identifies the repository, in the run's status and
+	// progress, so that the web UI of another repository leaves them out
+	connectionDigest string
+
 	// waitForOtherRun makes the run wait for one that is going, rather
 	// than fail: scheduled runs of disks on different schedules can meet.
 	waitForOtherRun bool
@@ -131,6 +135,10 @@ func (c *commandImageCreate) runWithWriter(ctx context.Context) (err error) {
 
 	c.runStart = clock.Now()
 	c.doneDisks = map[uint32]bool{}
+
+	if lc, err := repo.LoadConfigFromFile(c.svc.repositoryConfigFileName()); err == nil {
+		c.connectionDigest = recoverymedia.ConnectionDigest(lc)
+	}
 
 	// a broken connection to a repository server, as when the computer
 	// changes networks, ends the session; the run starts again over a new
@@ -288,7 +296,7 @@ func (c *commandImageCreate) run(ctx context.Context, rep repo.RepositoryWriter)
 		start = clock.Now()
 	}
 
-	status := &disksource.RunStatus{Volumes: c.volumes, StartTime: start, Images: slices.Clone(c.doneImages)}
+	status := &disksource.RunStatus{Volumes: c.volumes, StartTime: start, Images: slices.Clone(c.doneImages), Repository: c.connectionDigest}
 
 	if !c.dryRun {
 		defer func() {
@@ -371,7 +379,7 @@ func (c *commandImageCreate) imageDisks(ctx context.Context, rep repo.Repository
 
 	if !c.dryRun {
 		uploadedBefore := c.uploaded.Load()
-		monitor = startImageRunMonitor(ctx, filepath.Dir(statePath), status.StartTime, c.volumes, len(plans), &c.progress,
+		monitor = startImageRunMonitor(ctx, filepath.Dir(statePath), c.connectionDigest, status.StartTime, c.volumes, len(plans), &c.progress,
 			func() int64 { return c.uploaded.Load() - uploadedBefore }, cancel)
 
 		defer monitor.close(ctx)

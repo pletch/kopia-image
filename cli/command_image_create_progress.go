@@ -31,6 +31,9 @@ type imageRunMonitor struct {
 	uploaded func() int64
 	cancel   context.CancelFunc
 
+	// repository identifies the repository the run writes to
+	repository string
+
 	mu sync.Mutex
 	// +checklocks:mu
 	disk int
@@ -42,8 +45,9 @@ type imageRunMonitor struct {
 	wg       sync.WaitGroup
 }
 
-func startImageRunMonitor(ctx context.Context, stateDir string, start time.Time, volumes []string, disks int, progress *image.Progress, uploaded func() int64, cancel context.CancelFunc) *imageRunMonitor {
+func startImageRunMonitor(ctx context.Context, stateDir, repository string, start time.Time, volumes []string, disks int, progress *image.Progress, uploaded func() int64, cancel context.CancelFunc) *imageRunMonitor {
 	m := &imageRunMonitor{
+		repository:   repository,
 		progressPath: disksource.ProgressPathIn(stateDir),
 		stopPath:     disksource.StopPathIn(stateDir),
 		start:        start,
@@ -119,6 +123,7 @@ func (m *imageRunMonitor) update(ctx context.Context) {
 		ProgressSnapshot: m.progress.Snapshot(),
 		UploadedBytes:    m.uploaded(),
 		Stopping:         m.stopping.Load(),
+		Repository:       m.repository,
 	}
 	m.mu.Unlock()
 

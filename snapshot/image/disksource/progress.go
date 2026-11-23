@@ -41,6 +41,10 @@ type RunProgress struct {
 
 	// Stopping is set once the run saw a stop request.
 	Stopping bool `json:"stopping,omitempty"`
+
+	// Repository identifies the repository the run writes to, see
+	// recoverymedia.ConnectionDigest; empty in files written before.
+	Repository string `json:"repository,omitempty"`
 }
 
 // StopRequest asks the image run in progress to stop, see "kopia image stop".
