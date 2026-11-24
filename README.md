@@ -10,7 +10,7 @@ Kopia-Image (personal fork of Kopia with disk images and a Wails-based KopiaUI)
 What this fork adds
 ---
 
-### A lighter KopiaUI built with Wails
+### Kopia-Image: a lighter KopiaUI built with Wails
 
 The Kopia-Image desktop app (formerly KopiaUI-Wails), in the [`app-wails/`](app-wails) directory, is a replacement for the Electron-based KopiaUI shell, built with [Wails v3](https://v3.wails.io/). It uses the WebView2 runtime that ships with Windows, or WebKitGTK on Linux, and runs the same `kopia server` with this fork's web UI, with:
 
@@ -19,24 +19,26 @@ The Kopia-Image desktop app (formerly KopiaUI-Wails), in the [`app-wails/`](app-
 * remembered window size, position and active repository
 * an error page when the server fails to start, instead of a blank window
 * snapshots that run at background priority, so that they yield to whatever you are doing
-* on Windows, snapshots mounted as native drives through [WinFsp](https://winfsp.dev/) when it is installed (the installer offers it), falling back to WebDAV otherwise
+* on Windows, snapshots mounted as native drives through [WinFsp](https://winfsp.dev/) when it is installed (the installer offers it), falling back to WebDAV otherwise, and an **Unmount Kopia snapshot** entry in Explorer's context menu on the drives it mounts
 * a UAC prompt for each action that needs administrator rights, such as creating disk images or recovery media, rather than running KopiaUI elevated
 * a small per-user NSIS installer on Windows (no administrator rights needed), and a `.deb` on Linux; both share the repository configuration (`%APPDATA%\kopia` or `~/.config/kopia`) with upstream KopiaUI and the CLI
 
 The web UI comes from this fork's [htmlui](https://github.com/pletch/htmlui) and is served by `kopia server` too, so the browser sees the same changes:
 
-* a left sidebar instead of the top navigation bar, and a dark "linear" theme, the default when the system prefers dark mode; KopiaUI's title bar follows the theme's colors
+* a left sidebar instead of the top navigation bar, and a dark "linear" theme, the default when the system prefers dark mode; the app's title bar follows the theme's colors
 * reworked Snapshots, History, Policies and Tasks tables, with the new data and stored size of each snapshot
-* a **Disk Images** page, described [below](#block-level-disk-images-for-windows-kopia-image); file sources are listed under **File Snapshots**
+* **File Snapshots** lists the folders, with tabs for their Exclusions, Schedule, Actions and Advanced settings, each set for every computer or for this one; a folder's own policy is edited on its page, so the Policies page has left the sidebar
+* **Repository › Defaults** sets the retention of every folder and disk at once, and of each computer
+* a **Disk Images** page, described [below](#block-level-disk-images-for-windows-kopia-image)
 
-![File Snapshots in the dark "linear" theme, with the sidebar and the New Data and Stored columns](.github/readme/file-snapshots.png)
+![File Snapshots in the dark "linear" theme: the Folders tab with the New Data and Stored columns, and the settings tabs beside it](.github/readme/file-snapshots.png)
 
 **It uses less memory in most scenarios.** Closing the window shuts WebView2 down completely, whereas Electron keeps its main, GPU and helper processes running. Measured on Windows 11 (private memory, UI shell only; the `kopia.exe` server adds about 140 MB to both):
 
 | | Window open | Window closed (tray only) |
 |---|---|---|
 | Electron KopiaUI (upstream) | 219 MB | 178 MB |
-| Wails KopiaUI (this fork) | 237 MB | **59 MB** |
+| Kopia-Image (this fork) | 237 MB | **59 MB** |
 
 With a window open the two are about the same, since both render the page with Chromium. Because KopiaUI spends most of its time in the tray, this fork typically saves about 120 MB of RAM, plus about 350 MB of disk.
 
@@ -63,13 +65,13 @@ Upstream Kopia backs up files and folders only. This fork can also take block-le
   * every file's parent folder exists.
 
   This reads only file system metadata: about 7 seconds for a 1 TB system volume with 2.3 million files.
-* **Scheduled images and checks:** Task Scheduler tasks that run as SYSTEM. They wake the computer, keep it awake while running and retry on failure. A run whose connection to the repository breaks, for example when a laptop switches networks, images again after 30 seconds, 2 and 5 minutes without uploading again what it saved. The tasks also clean up shadow copies left over after a crash or power loss, and record each run's result for monitoring. A run can be paused, resumed or stopped, and shows its progress. Every user can read the tasks' status, so KopiaUI shows the next and last run without running as administrator.
+* **Scheduled images and checks:** Task Scheduler tasks that run as SYSTEM, each disk at its own time. They wake the computer, keep it awake while running and retry on failure. A run whose connection to the repository breaks, for example when a laptop switches networks, images again after 30 seconds, 2 and 5 minutes without uploading again what it saved. The tasks also clean up shadow copies left over after a crash or power loss, and record each run's result for monitoring. A run can be paused, resumed or stopped, and shows its progress. Every user can read the tasks' status, so the app shows the next and last run without running as administrator.
 * **Measure what an image adds.** `kopia image compare <old> <new>` compares two images of a disk chunk by chunk: how many chunks are new, how much data really changed, how much smaller chunks would have made the image, and which folders caused it.
-* **A Disk Images page** in KopiaUI and the web UI: the images of each disk with a partition map, Mount & Browse, a Files tab, the schedule with its tasks and progress, a Retention tab to set how many images of each disk are kept, the recovery media's status and the drivers stored with the images. It shows how much the images of each disk take in the repository, each chunk counted once, and the Unique Data of each image, which deleting it would free. Recovery media can be built from the page, also as an ISO file and with the drivers of every computer. Actions that need administrator rights ask through UAC.
+* **A Disk Images page** in the app and the web UI: the images of each disk with a partition map, Mount & Browse, a Files tab, the schedule with its tasks and progress, Settings for each disk (when it is imaged and how many of its images are kept, over the repository defaults), the recovery media's status and the drivers stored with the images. It shows how much the images of each disk take in the repository, each chunk counted once, and the Unique Data of each image, which deleting it would free. Recovery media can be built from the page, also as an ISO file and with the drivers of every computer. Actions that need administrator rights ask through UAC.
 
-  ![The Disk Images page: a partition map of the selected image, and the images of the disk with their size, read, new and stored data](.github/readme/disk-images.png)
+  ![The Disk Images page: a partition map of the selected image, and the images of the disk with how much each read, added and uploaded, and the Unique Data that deleting it would free](.github/readme/disk-images.png)
 
-  ![The Retention tab: how many images of the disk to keep, each setting next to its effective value and where it comes from](.github/readme/disk-images-retention.png)
+  ![A disk's Settings: its schedule, and how many of its images to keep, each setting next to its effective value and where it comes from](.github/readme/disk-settings.png)
 
 ```
 kopia image create C: --dry-run                 # preview the partitions, the zeroed space and what is left out
@@ -85,7 +87,7 @@ kopia image recovery-media create --usb 3       # erase USB disk 3 and make it b
 kopia image recovery-media create --iso D:\kopia-recovery.iso
 ```
 
-Run `kopia image create`, `kopia image schedule` and `kopia image recovery-media create` as administrator. Images use the source `user@host:image:disk:<GUID>`, so retention is a policy like any other: set it on the Retention tab or with `kopia policy set`. MBR disks, dynamic disks, Storage Spaces and ReFS volumes are refused. BitLocker volumes are imaged decrypted, like everything else on the disk including the Windows account database, and are protected only by the repository's encryption. Scheduled runs use a copy of kopia in `C:\ProgramData\kopia\image`: the installer updates it after a UAC prompt, or run `kopia image schedule update` after upgrading. See [Disk Images](site/content/docs/Advanced/Disk%20Images/_index.md) for the details.
+Run `kopia image create`, `kopia image schedule` and `kopia image recovery-media create` as administrator. Images use the source `user@host:image:disk:<GUID>`, so retention is a policy like any other: set it in the disk's Settings, on Repository › Defaults, or with `kopia policy set`. MBR disks, dynamic disks, Storage Spaces and ReFS volumes are refused. BitLocker volumes are imaged decrypted, like everything else on the disk including the Windows account database, and are protected only by the repository's encryption. Scheduled runs use a copy of kopia in `C:\ProgramData\kopia\image`: the installer updates it after a UAC prompt, or run `kopia image schedule update` after upgrading. See [Disk Images](site/content/docs/Advanced/Disk%20Images/_index.md) for the details.
 
 > [!WARNING]
 > Disk images are new. Restores and recovery media have been tested on virtual disks, in Hyper-V with Secure Boot, and once on real hardware: recovery media saved as an ISO file and written to a USB stick with Rufus restored a 1 TB system disk, which then booted Windows. Windows does not boot from a disk in a USB enclosure, so connect a disk restored that way internally. Restores over Wi-Fi are not yet tested. Test a restore on spare hardware or a virtual machine before relying on images.
@@ -184,18 +186,19 @@ When the server uses `--tls-cert-file` and `--tls-key-file`, it picks up renewed
 
 * **Reconnect after sleep:** fixes a gRPC `readLoop` deadlock and reconnects to a repository server cleanly after Windows resumes from sleep.
 * **Better failed-snapshot notifications** in the Electron KopiaUI as well (see [app/NOTIFICATIONS.md](app/NOTIFICATIONS.md)).
-* **Named snapshot drives on Windows:** a snapshot mounted as a drive letter, from KopiaUI or `kopia mount`, appears in Explorer under its source and snapshot time (or "Kopia - All Snapshots") instead of "DavWWWRoot". A drive mounted through WinFsp can be read only by the user who mounted it.
+* **Named snapshot drives on Windows:** a snapshot mounted as a drive letter, from the app or `kopia mount`, appears in Explorer under its source and snapshot time (or "Kopia - All Snapshots") instead of "DavWWWRoot". A drive mounted through WinFsp can be read only by the user who mounted it. A drive the app mounted is unmounted from its context menu in Explorer, or with `kopia server unmount X:`.
 * **Snapshots leave last access times alone on Windows.** Where NTFS keeps last access times, upstream kopia's every listing of a folder made NTFS write to the disk, which, every 30 minutes on a large tree, changed thousands of places of the disk that disk images then had to store again. Folders and files are now read without updating them.
 * **New data and stored size per snapshot:** every file snapshot and image records how much new data it added, before and after compression, also through a repository server, and the web UI shows both.
 * **Fixes not (yet) proposed upstream:**
   * a deleted snapshot manifest no longer comes back when its deletion was saved within the same clock tick as the manifest, which on Windows' coarse clock left stray checkpoint snapshots behind;
   * a content read through a damaged cache entry is fetched from storage again instead of failing until the cache is cleared;
-  * `kopia image ls` browses images again (it had been shadowed by an alias of `image list`).
+  * `kopia image ls` browses images again (it had been shadowed by an alias of `image list`);
+  * a WebDAV drive disconnected with Explorer's Disconnect can be unmounted again, instead of staying mounted until the server restarts.
 
 Installing
 ---
 
-Releases are numbered `<upstream version>-wails.<n>`: `v0.23.1-wails.1` is the first fork release based on upstream Kopia v0.23.1 (including upstream changes made after v0.23.1; each release's notes name the exact upstream commit).
+Releases are numbered `<upstream version>-image.<n>`: `v0.23.1-image.1` is the first Kopia-Image release based on upstream Kopia v0.23.1 (including upstream changes made after v0.23.1; each release's notes name the exact upstream commit). Releases before the rename were numbered `-wails.<n>`; since `image` sorts before `wails`, a `-wails` install does not offer the update, so install it by hand.
 
 Download `Kopia-Image-Setup-<version>.exe` (or the portable zip) from this fork's [Releases](https://github.com/pletch/kopia-image/releases) page. It installs per-user to `%LOCALAPPDATA%\Programs\Kopia-Image` and bundles a `kopia.exe` built from this fork. Existing repositories configured with upstream KopiaUI are picked up automatically. Installing it over KopiaUI-Wails, the app's name before, replaces it: its settings, window positions and "Launch At Startup" are kept, and the old copy is uninstalled.
 
