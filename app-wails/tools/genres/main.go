@@ -1,5 +1,5 @@
 // Command genres generates rsrc_windows_amd64.syso, which the Go linker embeds
-// in KopiaUI-Wails.exe. It contains:
+// in Kopia-Image.exe. It contains:
 //
 //   - the application icon as resource ID 3, which Wails uses for the window
 //     icon and Explorer uses for the executable;
@@ -38,8 +38,8 @@ func main() {
 	}
 
 	rs.SetManifest(winres.AppManifest{
-		Identity:            winres.AssemblyIdentity{Name: "io.kopia.kopiaui-wails", Version: [4]uint16{0, 1, 0, 0}},
-		Description:         "KopiaUI-Wails",
+		Identity:            winres.AssemblyIdentity{Name: "io.kopia.kopia-image", Version: [4]uint16{0, 1, 0, 0}},
+		Description:         "Kopia-Image",
 		Compatibility:       winres.Win10AndAbove,
 		DPIAwareness:        winres.DPIPerMonitorV2,
 		UseCommonControlsV6: true,

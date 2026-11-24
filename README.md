@@ -1,18 +1,18 @@
-Kopia (personal fork with a Wails-based KopiaUI)
-================================================
+Kopia-Image (personal fork of Kopia with disk images and a Wails-based KopiaUI)
+==============================================================================
 
 ![Kopia](icons/kopia.svg)
-[![Release](https://github.com/pletch/kopia-wailsUI/actions/workflows/release.yml/badge.svg)](https://github.com/pletch/kopia-wailsUI/actions/workflows/release.yml)
+[![Release](https://github.com/pletch/kopia-image/actions/workflows/release.yml/badge.svg)](https://github.com/pletch/kopia-image/actions/workflows/release.yml)
 
 > [!IMPORTANT]
-> This is a **personal fork** of [kopia/kopia](https://github.com/kopia/kopia). It is not an official Kopia release and is not supported by the Kopia maintainers. Please report problems with stock Kopia upstream, not here, and keep your own backups of anything that matters. Builds are unsigned, so Windows SmartScreen will warn the first time you run the installer.
+> Kopia-Image is a **personal fork** of [kopia/kopia](https://github.com/kopia/kopia). It is not an official Kopia release, is not affiliated with or endorsed by the Kopia project, and is not supported by the Kopia maintainers. Please report problems with stock Kopia upstream, not here, and keep your own backups of anything that matters. Builds are unsigned, so Windows SmartScreen will warn the first time you run the installer.
 
 What this fork adds
 ---
 
 ### A lighter KopiaUI built with Wails
 
-The [`app-wails/`](app-wails) directory is a replacement for the Electron-based KopiaUI shell, built with [Wails v3](https://v3.wails.io/). It uses the WebView2 runtime that ships with Windows, or WebKitGTK on Linux, and runs the same `kopia server` with this fork's web UI, with:
+The Kopia-Image desktop app (formerly KopiaUI-Wails), in the [`app-wails/`](app-wails) directory, is a replacement for the Electron-based KopiaUI shell, built with [Wails v3](https://v3.wails.io/). It uses the WebView2 runtime that ships with Windows, or WebKitGTK on Linux, and runs the same `kopia server` with this fork's web UI, with:
 
 * a tray icon that starts the `kopia` server, and a single window with a repository selector in its sidebar (one server per repository keeps running behind it)
 * native desktop notifications (Windows toasts, or the freedesktop notification service on Linux), including more detailed notices for failed snapshots
@@ -197,21 +197,21 @@ Installing
 
 Releases are numbered `<upstream version>-wails.<n>`: `v0.23.1-wails.1` is the first fork release based on upstream Kopia v0.23.1 (including upstream changes made after v0.23.1; each release's notes name the exact upstream commit).
 
-Download `KopiaUI-Wails-Setup-<version>.exe` (or the portable zip) from this fork's [Releases](https://github.com/pletch/kopia-wailsUI/releases) page. It installs per-user to `%LOCALAPPDATA%\Programs\KopiaUI-Wails` and bundles a `kopia.exe` built from this fork. Existing repositories configured with upstream KopiaUI are picked up automatically.
+Download `Kopia-Image-Setup-<version>.exe` (or the portable zip) from this fork's [Releases](https://github.com/pletch/kopia-image/releases) page. It installs per-user to `%LOCALAPPDATA%\Programs\Kopia-Image` and bundles a `kopia.exe` built from this fork. Existing repositories configured with upstream KopiaUI are picked up automatically. Installing it over KopiaUI-Wails, the app's name before, replaces it: its settings, window positions and "Launch At Startup" are kept, and the old copy is uninstalled.
 
 The same releases include the `kopia` command-line tool for Linux (`kopia-<version>-linux-x64.tar.gz` and `kopia-<version>-linux-arm64.tar.gz`), built from this fork with all of the changes above except the KopiaUI ones. They are static binaries with no dependencies: extract and run `kopia`.
 
 For Debian and Ubuntu on x64 there is also `kopia-wails_<version>_amd64.deb`, installed with `sudo apt install ./kopia-wails_<version>_amd64.deb`. It puts `kopia` in `/usr/bin` and replaces the upstream `kopia` package if that is installed. Because it has a different package name, an upstream Kopia apt repository will not silently switch you back; remove `kopia-wails` and install `kopia` to return to upstream.
 
-KopiaUI-Wails for Linux is `kopiaui-wails_<version>_amd64.deb`:
+Kopia-Image for Linux is `kopia-image_<version>_amd64.deb`, which replaces the `kopiaui-wails` package of earlier releases:
 
 ```sh
-sudo apt install ./kopiaui-wails_<version>_amd64.deb
+sudo apt install ./kopia-image_<version>_amd64.deb
 ```
 
-Like upstream KopiaUI, it includes its own copy of `kopia` (in `/usr/lib/kopiaui-wails/server/`), which it runs as its server, so it does not need `kopia-wails`. Install `kopia-wails` as well if you also want `kopia` in a terminal; the two packages do not conflict.
+Like upstream KopiaUI, it includes its own copy of `kopia` (in `/usr/lib/kopia-image/server/`), which it runs as its server, so it does not need `kopia-wails`. Install `kopia-wails` as well if you also want `kopia` in a terminal; the two packages do not conflict.
 
-It is built on Ubuntu 22.04 against GTK 3 and WebKitGTK 4.1, so it runs on Ubuntu 22.04 / Linux Mint 21 and newer and on Debian 12 and newer. Start it from the applications menu as "KopiaUI-Wails". Mounting a snapshot uses FUSE (the `fuse3` package). The tray icon needs a desktop that shows status notifier icons: KDE, Cinnamon and XFCE do, while GNOME needs the AppIndicator extension. Without a tray, starting KopiaUI-Wails again brings its window back.
+It is built on Ubuntu 22.04 against GTK 3 and WebKitGTK 4.1, so it runs on Ubuntu 22.04 / Linux Mint 21 and newer and on Debian 12 and newer. Start it from the applications menu as "Kopia-Image". Mounting a snapshot uses FUSE (the `fuse3` package). The tray icon needs a desktop that shows status notifier icons: KDE, Cinnamon and XFCE do, while GNOME needs the AppIndicator extension. Without a tray, starting Kopia-Image again brings its window back.
 
 There are no macOS builds, rpm packages or Docker images.
 
@@ -228,12 +228,12 @@ app-wails/build-installer.sh
 On Linux with Go, a C compiler and the GTK 3 / WebKitGTK 4.1 headers (`sudo apt install build-essential libgtk-3-dev libwebkit2gtk-4.1-dev`):
 
 ```sh
-app-wails/build-linux-deb.sh   # dist/kopiaui-wails_<version>_amd64.deb
+app-wails/build-linux-deb.sh   # dist/kopia-image_<version>_amd64.deb
 ```
 
 To run it from the source tree instead, build with `go build -tags gtk3` in `app-wails/`. Without the tag, Wails builds against GTK 4 and WebKitGTK 6.0.
 
-Pushing a `v<upstream version>-wails.<n>` tag runs the [Release](.github/workflows/release.yml) workflow, which builds the Windows installer and portable zip, the Linux CLI archives, and the `kopia-wails` and `kopiaui-wails` amd64 `.deb` packages, and publishes them as a GitHub release. See [BUILD.md](BUILD.md) for building the rest of Kopia.
+Pushing a `v<upstream version>-wails.<n>` tag runs the [Release](.github/workflows/release.yml) workflow, which builds the Windows installer and portable zip, the Linux CLI archives, and the `kopia-wails` and `kopia-image` amd64 `.deb` packages, and publishes them as a GitHub release. See [BUILD.md](BUILD.md) for building the rest of Kopia.
 
 About Kopia
 ---

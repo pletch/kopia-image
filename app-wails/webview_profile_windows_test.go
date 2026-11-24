@@ -5,7 +5,7 @@ package main
 import "testing"
 
 func TestCommandLineUsesProfile(t *testing.T) {
-	const dir = `c:\users\tim\appdata\local\kopiaui-wails\webview2`
+	const dir = `c:\users\tim\appdata\local\kopia-image\webview2`
 
 	uses := []string{
 		`"c:\program files (x86)\microsoft\edgewebview\msedgewebview2.exe" --user-data-dir="` + dir + `\ebwebview" --lang=en`,

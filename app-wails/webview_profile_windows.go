@@ -30,7 +30,7 @@ func webviewDataDir() string {
 		return ""
 	}
 
-	return filepath.Join(base, "KopiaUI-Wails", "WebView2")
+	return filepath.Join(base, "Kopia-Image", "WebView2")
 }
 
 // ensureWebViewProfileFree waits for WebView2 processes left behind by a

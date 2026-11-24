@@ -133,7 +133,7 @@ user:
   the tasks run that copy. The kopia you ran may be in a folder your account
   can write, such as a per-user installation, and whoever replaced it there
   would run as SYSTEM. **After upgrading kopia, update that copy**, or the
-  tasks keep running the old version: the KopiaUI-Wails installer does it after
+  tasks keep running the old version: the Kopia-Image installer does it after
   a UAC prompt, or run `kopia image schedule update` as administrator. It
   keeps the tasks' settings and saved password.
 * `C:\ProgramData\kopia\image` is owned by Administrators and only SYSTEM and

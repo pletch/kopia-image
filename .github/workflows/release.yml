@@ -1,8 +1,8 @@
 name: Release
 # Builds this fork's release files:
-#   - Windows: kopia.exe, KopiaUI-Wails.exe, the NSIS installer and a portable zip
+#   - Windows: kopia.exe, Kopia-Image.exe, the NSIS installer and a portable zip
 #   - Linux:   the kopia CLI for x64 and arm64 as .tar.gz, plus an amd64 .deb,
-#              and KopiaUI-Wails, with its own kopia, as an amd64 .deb (kopiaui-wails)
+#              and Kopia-Image, with its own kopia, as an amd64 .deb (kopia-image)
 #
 # - Pushing a tag v* publishes a GitHub release with all files and checksums.txt.
 # - Running the workflow manually builds the same files as workflow artifacts
@@ -70,17 +70,17 @@ jobs:
           -ldflags "-s -w -X github.com/kopia/kopia/repo.BuildVersion=$VERSION -X github.com/kopia/kopia/repo.BuildInfo=$GITHUB_SHA -X github.com/kopia/kopia/repo.BuildGitHubRepo=$GITHUB_REPOSITORY" \
           -o dist/kopia_windows_amd64/kopia.exe github.com/kopia/kopia
         dist/kopia_windows_amd64/kopia.exe --version
-    - name: Build KopiaUI-Wails and installer
+    - name: Build Kopia-Image and installer
       env:
         MAKENSIS: C:\Program Files (x86)\NSIS\makensis.exe
       run: app-wails/build-installer.sh
     - name: Package release files
       run: |
         mkdir -p release
-        cp "dist/KopiaUI-Wails-Setup-$VERSION.exe" release/
-        PORTABLE="KopiaUI-Wails-$VERSION-windows-x64"
+        cp "dist/Kopia-Image-Setup-$VERSION.exe" release/
+        PORTABLE="Kopia-Image-$VERSION-windows-x64"
         mkdir -p "dist/$PORTABLE"
-        cp dist/kopiaui-wails/KopiaUI-Wails.exe dist/kopiaui-wails/kopia.exe LICENSE README.md "dist/$PORTABLE/"
+        cp dist/kopia-image/Kopia-Image.exe dist/kopia-image/kopia.exe LICENSE README.md "dist/$PORTABLE/"
         (cd dist && 7z a -tzip "../release/$PORTABLE.zip" "$PORTABLE" > /dev/null)
         ls -la release
     - name: Upload artifact
@@ -155,7 +155,7 @@ jobs:
         if-no-files-found: error
 
   linux-ui:
-    name: Build Linux KopiaUI-Wails
+    name: Build Linux Kopia-Image
     needs: version
     # The binary links against the system GTK and WebKitGTK, so build on the
     # oldest release the package supports (Ubuntu 22.04 / Linux Mint 21).
@@ -182,7 +182,7 @@ jobs:
       run: |
         app-wails/build-linux-deb.sh
         mkdir -p release
-        cp dist/kopiaui-wails_*_amd64.deb release/
+        cp dist/kopia-image_*_amd64.deb release/
         ls -la release
     - name: Upload artifact
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds KopiaUI-Wails.exe and its NSIS installer.
+# Builds Kopia-Image.exe and its NSIS installer.
 #
 # Usage (from Git Bash, in app-wails/):
 #   ./build-installer.sh
@@ -13,13 +13,13 @@
 #   WINFSP_MSI  WinFsp installer to bundle (default: downloaded once to
 #               ../dist/cache/ and checked against its SHA-256)
 #
-# Output: ../dist/kopiaui-wails/ and ../dist/KopiaUI-Wails-Setup-<version>.exe
+# Output: ../dist/kopia-image/ and ../dist/Kopia-Image-Setup-<version>.exe
 set -euo pipefail
 
 cd "$(dirname "$0")"
 
 DIST=../dist
-OUT="$DIST/kopiaui-wails"
+OUT="$DIST/kopia-image"
 KOPIA_EXE=${KOPIA_EXE:-$DIST/kopia_windows_amd64/kopia.exe}
 
 if [ ! -f "$KOPIA_EXE" ]; then
@@ -50,9 +50,10 @@ if [ -z "${VERSION:-}" ]; then
   VERSION="$DATE.0.0-$COMMIT"
 fi
 # Windows file versions are four numbers of at most 65535 each. Release tags
-# like 0.23.1-wails.2 (upstream base version, fork release) map to 0.23.1.2.
-if [[ "$VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)-wails\.([0-9]+)$ ]]; then
-  VIVERSION="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}.${BASH_REMATCH[4]}"
+# like 0.23.1-wails.2 or 0.23.1-image.2 (upstream base version, fork release)
+# map to 0.23.1.2.
+if [[ "$VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)-(wails|image)\.([0-9]+)$ ]]; then
+  VIVERSION="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}.${BASH_REMATCH[5]}"
 else
   VIVERSION="${DATE:0:4}.$((10#${DATE:4:4})).0.0"
 fi
@@ -91,15 +92,15 @@ if [ "$SIGNER" != "$WINFSP_PUBLISHER" ]; then
   exit 1
 fi
 
-echo "Building KopiaUI-Wails $VERSION"
+echo "Building Kopia-Image $VERSION"
 
 go generate ./...
 mkdir -p "$OUT"
-go build -trimpath -ldflags "-s -w -H windowsgui -X main.buildVersion=$VERSION" -o "$OUT/KopiaUI-Wails.exe" .
+go build -trimpath -ldflags "-s -w -H windowsgui -X main.buildVersion=$VERSION" -o "$OUT/Kopia-Image.exe" .
 cp "$KOPIA_EXE" "$OUT/kopia.exe"
 
-SIZE_KB=$(( ( $(stat -c %s "$OUT/KopiaUI-Wails.exe") + $(stat -c %s "$OUT/kopia.exe") ) / 1024 ))
-SETUP="$DIST/KopiaUI-Wails-Setup-$VERSION.exe"
+SIZE_KB=$(( ( $(stat -c %s "$OUT/Kopia-Image.exe") + $(stat -c %s "$OUT/kopia.exe") ) / 1024 ))
+SETUP="$DIST/Kopia-Image-Setup-$VERSION.exe"
 
 "$MAKENSIS_EXE" -V2 \
   "-DVERSION=$VERSION" \
@@ -109,6 +110,6 @@ SETUP="$DIST/KopiaUI-Wails-Setup-$VERSION.exe"
   "-DESTIMATEDSIZEKB=$SIZE_KB" \
   "-DWINFSPMSI=$(cygpath -w "$WINFSP_MSI")" \
   "-DWINFSPVERSION=$WINFSP_VERSION" \
-  "$(cygpath -w installer/kopiaui-wails.nsi)"
+  "$(cygpath -w installer/kopia-image.nsi)"
 
 ls -la "$SETUP"

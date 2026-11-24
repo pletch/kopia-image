@@ -21,7 +21,10 @@ const (
 
 	// stateFileName holds which repository the window shows; it is this
 	// program's own.
-	stateFileName = "kopiaui-wails-state.json"
+	stateFileName = "kopia-image-state.json"
+
+	// legacyStateFileName is stateFileName before the rename to Kopia-Image.
+	legacyStateFileName = "kopiaui-wails-state.json"
 
 	stateFilePermissions = 0o600
 )
@@ -97,6 +100,9 @@ func newConfigStore() (*configStore, error) {
 		return nil, err
 	}
 
+	migrateLegacyFile(c.dir, legacyStateFileName, stateFileName)
+	migrateLegacyFile(c.dir, legacyWindowStateFileName, windowStateFileName)
+
 	entries, err := os.ReadDir(c.dir)
 	if err != nil {
 		return nil, err
@@ -117,6 +123,20 @@ func newConfigStore() (*configStore, error) {
 	c.loadState()
 
 	return c, nil
+}
+
+// migrateLegacyFile renames a file this program wrote as KopiaUI-Wails to its
+// new name, unless a file of the new name already exists. The installer does
+// it on an upgrade; this covers the portable zip.
+func migrateLegacyFile(dir, oldName, newName string) {
+	newPath := filepath.Join(dir, newName)
+	if _, err := os.Lstat(newPath); !os.IsNotExist(err) {
+		return
+	}
+
+	if err := os.Rename(filepath.Join(dir, oldName), newPath); err == nil {
+		slog.Info("renamed file of KopiaUI-Wails", "from", oldName, "to", newName)
+	}
 }
 
 // list returns repository IDs with the default repository first.

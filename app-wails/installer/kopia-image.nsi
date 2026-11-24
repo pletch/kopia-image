@@ -1,9 +1,9 @@
-; NSIS installer for KopiaUI-Wails.
+; NSIS installer for Kopia-Image (formerly KopiaUI-Wails).
 ;
 ; Built by ../build-installer.sh, which passes:
 ;   /DVERSION=<display version>   e.g. 20261113.0.0-232fe245
 ;   /DVIVERSION=<a.b.c.d>         numeric file version
-;   /DSRCDIR=<dir>                directory with KopiaUI-Wails.exe and kopia.exe
+;   /DSRCDIR=<dir>                directory with Kopia-Image.exe and kopia.exe
 ;   /DOUTFILE=<path>              installer output path
 ;   /DWINFSPMSI=<path>            WinFsp MSI offered during install
 ;   /DWINFSPVERSION=<version>     its version
@@ -20,22 +20,30 @@ RequestExecutionLevel user
 !include "LogicLib.nsh"
 !include "WordFunc.nsh"
 
-!define APPNAME      "KopiaUI Wails"
-!define DISPLAYNAME  "KopiaUI-Wails"
-; Start menu shortcut name used by builds before the rename.
+!define APPNAME      "Kopia-Image"
+!define DISPLAYNAME  "Kopia-Image"
+; Start menu shortcut name used by builds before the rename to KopiaUI-Wails.
 !define OLDSHORTCUT  "KopiaUI (Wails prototype)"
-!define EXENAME      "KopiaUI-Wails.exe"
+!define EXENAME      "Kopia-Image.exe"
 !define COMPANY      "Kopia"
-!define UNINSTKEY    "Software\Microsoft\Windows\CurrentVersion\Uninstall\KopiaUI-Wails"
+!define UNINSTKEY    "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kopia-Image"
 !define RUNKEY       "Software\Microsoft\Windows\CurrentVersion\Run"
-!define AUTOSTARTVAL "kopiaui-wails"
+; the value Wails names after APPNAME for "Launch At Startup"
+!define AUTOSTARTVAL "kopia-image"
 !define TOASTKEY     "Software\Classes\AppUserModelId\${APPNAME}"
-; Explorer context menu entry "Unmount Kopia snapshot" on drives KopiaUI mounted
-!define UNMOUNTKEY   "Software\Classes\Drive\shell\KopiaUIWailsUnmount"
+; Explorer context menu entry "Unmount Kopia snapshot" on drives the app mounted
+!define UNMOUNTKEY   "Software\Classes\Drive\shell\KopiaImageUnmount"
+
+; The app before its rename to Kopia-Image, which an install replaces.
+!define LEGACYNAME         "KopiaUI-Wails"
+!define LEGACYEXE          "KopiaUI-Wails.exe"
+!define LEGACYUNINSTKEY    "Software\Microsoft\Windows\CurrentVersion\Uninstall\KopiaUI-Wails"
+!define LEGACYAUTOSTARTVAL "kopiaui-wails"
+!define LEGACYUNMOUNTKEY   "Software\Classes\Drive\shell\KopiaUIWailsUnmount"
 
 Name "${DISPLAYNAME}"
 OutFile "${OUTFILE}"
-InstallDir "$LOCALAPPDATA\Programs\KopiaUI-Wails"
+InstallDir "$LOCALAPPDATA\Programs\Kopia-Image"
 InstallDirRegKey HKCU "${UNINSTKEY}" "InstallLocation"
 
 VIProductVersion "${VIVERSION}"
@@ -96,6 +104,92 @@ FunctionEnd
 
 !insertmacro StopRunningApp ""
 !insertmacro StopRunningApp "un."
+
+; MigrateFromLegacy replaces an install of KopiaUI-Wails, the app's name before
+; Kopia-Image: it quits it, carries over its settings, window positions, web UI
+; profile and "Launch At Startup", and runs its uninstaller, which removes its
+; files, shortcut, notification registration and startup entry. $R9 is set to
+; 1 when "Launch At Startup" was on.
+Function MigrateFromLegacy
+  StrCpy $R9 0
+
+  ReadRegStr $R0 HKCU "${LEGACYUNINSTKEY}" "InstallLocation"
+  ${If} $R0 == ""
+    Return
+  ${EndIf}
+
+  DetailPrint "Replacing ${LEGACYNAME} in $R0..."
+
+  ; --quit asks the running app to stop its Kopia servers and exit
+  ${If} ${FileExists} "$R0\${LEGACYEXE}"
+    nsExec::Exec '"$R0\${LEGACYEXE}" --quit'
+    Pop $0
+  ${EndIf}
+
+  StrCpy $1 0
+  ${Do}
+    ; exit code 0 means the process is still running
+    nsExec::Exec 'cmd /c tasklist /FI "IMAGENAME eq ${LEGACYEXE}" /NH | find /I "${LEGACYEXE}"'
+    Pop $0
+    ${If} $0 != 0
+      ${Break}
+    ${EndIf}
+    ${If} $1 >= 20
+      nsExec::Exec 'taskkill /F /IM ${LEGACYEXE}'
+      Pop $0
+      Sleep 1000
+      ${Break}
+    ${EndIf}
+    Sleep 500
+    IntOp $1 $1 + 1
+  ${Loop}
+
+  ReadRegStr $0 HKCU "${RUNKEY}" "${LEGACYAUTOSTARTVAL}"
+  ${If} $0 != ""
+    StrCpy $R9 1
+  ${EndIf}
+
+  ; the legacy uninstaller deletes these, so they are renamed first
+  ${IfNot} ${FileExists} "$APPDATA\kopia\kopia-image-state.json"
+    Rename "$APPDATA\kopia\kopiaui-wails-state.json" "$APPDATA\kopia\kopia-image-state.json"
+  ${EndIf}
+  ${IfNot} ${FileExists} "$APPDATA\kopia\kopia-image-windows.json"
+    Rename "$APPDATA\kopia\kopiaui-wails-windows.json" "$APPDATA\kopia\kopia-image-windows.json"
+  ${EndIf}
+
+  ; the web UI profile keeps the page's own settings; WebView2 can hold it for
+  ; a few seconds after the app exits
+  ${IfNot} ${FileExists} "$LOCALAPPDATA\Kopia-Image\*.*"
+  ${AndIf} ${FileExists} "$LOCALAPPDATA\${LEGACYNAME}\*.*"
+    StrCpy $1 0
+    ${Do}
+      ClearErrors
+      Rename "$LOCALAPPDATA\${LEGACYNAME}" "$LOCALAPPDATA\Kopia-Image"
+      ${IfNot} ${Errors}
+        ${Break}
+      ${EndIf}
+      ${If} $1 >= 20
+        DetailPrint "The web UI profile of ${LEGACYNAME} is in use; a new one is used"
+        ${Break}
+      ${EndIf}
+      Sleep 500
+      IntOp $1 $1 + 1
+    ${Loop}
+  ${EndIf}
+
+  ; _?= runs the uninstaller in place and waits for it
+  ${If} ${FileExists} "$R0\Uninstall.exe"
+    ExecWait '"$R0\Uninstall.exe" /S _?=$R0'
+    Delete "$R0\Uninstall.exe"
+    RMDir "$R0"
+  ${EndIf}
+
+  ; left behind by a legacy uninstaller that predates them, or a failed one
+  DeleteRegValue HKCU "${RUNKEY}" "${LEGACYAUTOSTARTVAL}"
+  DeleteRegKey HKCU "${LEGACYUNMOUNTKEY}"
+  DeleteRegKey HKCU "${LEGACYUNINSTKEY}"
+  Delete "$SMPROGRAMS\${LEGACYNAME}.lnk"
+FunctionEnd
 
 ; UpdateImageTasks makes the scheduled disk image tasks run the kopia just
 ; installed. The tasks run as SYSTEM a copy of kopia in a folder only
@@ -219,6 +313,7 @@ FunctionEnd
 Section "Install"
   SetShellVarContext current
   Call StopRunningApp
+  Call MigrateFromLegacy
 
   SetOutPath "$INSTDIR"
   File "${SRCDIR}\${EXENAME}"
@@ -246,6 +341,11 @@ Section "Install"
   WriteRegStr HKCU "${UNMOUNTKEY}" "Icon" "$INSTDIR\${EXENAME},0"
   WriteRegStr HKCU "${UNMOUNTKEY}" "AppliesTo" 'System.ItemNameDisplay:~<"Kopia - " OR System.ItemNameDisplay:~<"Kopia Snapshot"'
   WriteRegStr HKCU "${UNMOUNTKEY}\command" "" '"$INSTDIR\${EXENAME}" --unmount %1'
+
+  ; Wails finds its entry by the executable it starts, quoted or not
+  ${If} $R9 == 1
+    WriteRegStr HKCU "${RUNKEY}" "${AUTOSTARTVAL}" '"$INSTDIR\${EXENAME}"'
+  ${EndIf}
 
   Call UpdateImageTasks
   Call OfferWinFsp
@@ -276,11 +376,11 @@ Section "Uninstall"
   DeleteRegKey HKCU "${UNMOUNTKEY}"
 
   ; WebView2 profile and app-specific files; shared Kopia configuration stays.
-  RMDir /r "$LOCALAPPDATA\KopiaUI-Wails"
-  Delete "$APPDATA\kopia\kopiaui-wails.log"
-  Delete "$APPDATA\kopia\kopiaui-wails.log.1"
-  Delete "$APPDATA\kopia\kopiaui-wails-windows.json"
-  Delete "$APPDATA\kopia\kopiaui-wails-state.json"
+  RMDir /r "$LOCALAPPDATA\Kopia-Image"
+  Delete "$APPDATA\kopia\kopia-image.log"
+  Delete "$APPDATA\kopia\kopia-image.log.1"
+  Delete "$APPDATA\kopia\kopia-image-windows.json"
+  Delete "$APPDATA\kopia\kopia-image-state.json"
 
   DeleteRegKey HKCU "${UNINSTKEY}"
 SectionEnd

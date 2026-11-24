@@ -1,4 +1,5 @@
-// Command kopiaui-wails is a KopiaUI shell built with Wails v3.
+// Command kopia-image is Kopia-Image, a KopiaUI shell built with Wails v3,
+// formerly named KopiaUI-Wails.
 //
 // It replaces the Electron shell in app/ (tray, notifications, server process
 // management and repository windows) while using the system webview (WebView2
@@ -30,15 +31,15 @@ import (
 const (
 	// appName is used for toast notifications (shown as their source) and the
 	// launch-at-startup entry. It differs from Electron KopiaUI's on purpose.
-	appName          = "KopiaUI Wails"
-	windowTitle      = "KopiaUI-Wails"
-	singleInstanceID = "io.kopia.kopiaui-wails"
+	appName          = "Kopia-Image"
+	windowTitle      = "Kopia-Image"
+	singleInstanceID = "io.kopia.kopia-image"
 
 	// linuxApplicationID is the GTK application id. It names the .desktop file
 	// installed by the Linux package, which is how desktops find the window's icon.
 	// It must differ from singleInstanceID, which is a D-Bus name of its own.
-	linuxApplicationID = "io.kopia.KopiaUIWails"
-	logFileName        = "kopiaui-wails.log"
+	linuxApplicationID = "io.kopia.KopiaImage"
+	logFileName        = "kopia-image.log"
 
 	// quitArg asks a running instance to quit; used by the installer.
 	quitArg = "--quit"
@@ -159,7 +160,7 @@ func run() error {
 
 	s.app = application.New(application.Options{
 		Name:        appName,
-		Description: "KopiaUI-Wails backup UI",
+		Description: "Kopia-Image backup UI",
 		Icon:        appIcon(),
 		Logger:      logger,
 		LogLevel:    slog.LevelInfo,
@@ -219,7 +220,7 @@ func run() error {
 	closeLog := s.openLog(logOut)
 	defer closeLog()
 
-	slog.Info("KopiaUI-Wails", "version", buildVersion)
+	slog.Info(windowTitle, "version", buildVersion)
 
 	ensureWebViewProfileFree(webviewDir)
 
@@ -298,7 +299,7 @@ func (s *shell) startup() {
 	if !s.configs.portable && electronKopiaUIRunning() {
 		s.app.Dialog.Warning().
 			SetTitle(appName).
-			SetMessage("Electron KopiaUI is running.\n\nQuit it from its tray icon before using KopiaUI-Wails. " +
+			SetMessage("Electron KopiaUI is running.\n\nQuit it from its tray icon before using Kopia-Image. " +
 				"Both would start servers for the same repositories and could run scheduled snapshots twice.").
 			Show()
 		s.app.Quit()
@@ -785,7 +786,7 @@ func (s *shell) setupTray() {
 func (s *shell) rebuildTrayMenu() {
 	menu := s.app.NewMenu()
 
-	menu.Add("KopiaUI-Wails " + buildVersion).SetEnabled(false)
+	menu.Add(windowTitle + " " + buildVersion).SetEnabled(false)
 	menu.AddSeparator()
 
 	active := s.configs.activeRepository()

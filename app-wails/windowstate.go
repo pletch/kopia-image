@@ -15,8 +15,11 @@ import (
 )
 
 const (
-	windowStateFileName  = "kopiaui-wails-windows.json"
+	windowStateFileName  = "kopia-image-windows.json"
 	windowStateSaveDelay = time.Second
+
+	// legacyWindowStateFileName is windowStateFileName before the rename to Kopia-Image.
+	legacyWindowStateFileName = "kopiaui-wails-windows.json"
 
 	// a restored window must show at least this much of itself on some screen.
 	minVisibleWidth  = 120

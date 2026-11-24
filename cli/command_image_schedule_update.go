@@ -11,7 +11,7 @@ import (
 	"github.com/kopia/kopia/snapshot/image/schedule"
 )
 
-// Lines "kopia image schedule update --check" prints, for the KopiaUI-Wails
+// Lines "kopia image schedule update --check" prints, for the Kopia-Image
 // installer.
 const (
 	imageScheduleNotScheduled = "not-scheduled"
