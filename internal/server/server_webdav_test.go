@@ -149,6 +149,56 @@ func TestWebDAVMounts(t *testing.T) {
 	})
 }
 
+// The server control user, which KopiaUI holds, unmounts by path, as
+// Explorer's "Unmount" context menu entry does with a drive letter.
+func TestMounts_ControlUnmountByPath(t *testing.T) {
+	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
+	_, rootOID := mustCreateWebDAVTestSnapshot(t, ctx, env)
+
+	srvInfo := servertesting.StartServerContextWithOptions(ctx, t, env, servertesting.StartServerOptions{WebDAVMounts: true})
+
+	ui, err := apiclient.NewKopiaAPIClient(apiclient.Options{
+		BaseURL:  srvInfo.BaseURL,
+		Username: servertesting.TestUIUsername,
+		Password: servertesting.TestUIPassword,
+	})
+	require.NoError(t, err)
+	require.NoError(t, ui.FetchCSRFTokenForTesting(ctx))
+
+	control, err := apiclient.NewKopiaAPIClient(apiclient.Options{
+		BaseURL:  srvInfo.BaseURL,
+		Username: servertesting.TestServerControlUsername,
+		Password: servertesting.TestServerControlPassword,
+	})
+	require.NoError(t, err)
+
+	var mounted serverapi.MountedSnapshot
+
+	require.NoError(t, ui.Post(ctx, "mounts", &serverapi.MountSnapshotRequest{Root: rootOID.String()}, &mounted))
+
+	// another path is not unmounted
+	err = control.Post(ctx, "control/unmount", &serverapi.UnmountPathRequest{Path: srvInfo.BaseURL + "/webdav/other/"}, &serverapi.MountedSnapshot{})
+	require.ErrorContains(t, err, "nothing is mounted at")
+
+	// the UI user cannot use the control API
+	err = ui.Post(ctx, "control/unmount", &serverapi.UnmountPathRequest{Path: mounted.Path}, &serverapi.MountedSnapshot{})
+	require.Error(t, err)
+
+	// case and a trailing separator do not matter
+	var unmounted serverapi.MountedSnapshot
+
+	require.NoError(t, control.Post(ctx, "control/unmount", &serverapi.UnmountPathRequest{Path: strings.ToUpper(strings.TrimSuffix(mounted.Path, "/"))}, &unmounted))
+	require.Equal(t, rootOID, unmounted.Root)
+
+	var mounts serverapi.MountedSnapshots
+
+	require.NoError(t, ui.Get(ctx, "mounts", nil, &mounts))
+	require.Empty(t, mounts.Items)
+
+	err = control.Post(ctx, "control/unmount", &serverapi.UnmountPathRequest{Path: mounted.Path}, &serverapi.MountedSnapshot{})
+	require.ErrorContains(t, err, "nothing is mounted at")
+}
+
 func TestWebDAVMounts_Rejected(t *testing.T) {
 	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
 	_, rootOID := mustCreateWebDAVTestSnapshot(t, ctx, env)

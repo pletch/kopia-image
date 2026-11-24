@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/pkg/errors"
+	"golang.org/x/sys/windows"
 
 	"github.com/kopia/kopia/fs"
 	"github.com/kopia/kopia/internal/winfspmount"
@@ -96,9 +97,26 @@ func netUseMount(ctx context.Context, driveLetter, webdavURL string) (string, er
 	return "", errors.Errorf("unable to find windows drive letter name in successful 'net use' output (%v), this is a bug", out)
 }
 
+// netUseUnmount removes the drive. A drive already disconnected, for example
+// with Explorer's Disconnect, is not an error.
 func netUseUnmount(ctx context.Context, driveLetter string) error {
 	_, err := netUse(ctx, driveLetter, "/delete", "/y")
+	if err != nil && !driveExists(driveLetter) {
+		log(ctx).Debugf("drive %v is already disconnected", driveLetter)
+		return nil
+	}
+
 	return err
+}
+
+// driveExists tells whether a drive letter such as "X:" is in use.
+func driveExists(driveLetter string) bool {
+	root, err := windows.UTF16PtrFromString(driveLetter + `\`)
+	if err != nil {
+		return true
+	}
+
+	return windows.GetDriveType(root) != windows.DRIVE_NO_ROOT_DIR
 }
 
 func isWindowsDrive(s string) bool {

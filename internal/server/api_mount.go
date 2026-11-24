@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/kopia/kopia/internal/serverapi"
 	"github.com/kopia/kopia/repo/object"
@@ -75,6 +76,42 @@ func handleMountDelete(ctx context.Context, rc requestContext) (any, *apiError) 
 	rc.srv.deleteMount(oid)
 
 	return &serverapi.Empty{}, nil
+}
+
+// handleMountDeleteByPath unmounts the snapshot mounted at a path, such as a
+// drive letter, for a server control client: Explorer's context menu asks
+// KopiaUI, which holds only the server control credentials.
+func handleMountDeleteByPath(ctx context.Context, rc requestContext) (any, *apiError) {
+	req := &serverapi.UnmountPathRequest{}
+	if err := json.Unmarshal(rc.body, req); err != nil {
+		return nil, requestError(serverapi.ErrorMalformedRequest, "malformed request body")
+	}
+
+	if req.Path == "" {
+		return nil, requestError(serverapi.ErrorMalformedRequest, "missing path")
+	}
+
+	for oid, c := range rc.srv.listMounts() {
+		if !sameMountPath(c.MountPath(), req.Path) {
+			continue
+		}
+
+		if err := c.Unmount(ctx); err != nil {
+			return nil, internalServerError(err)
+		}
+
+		rc.srv.deleteMount(oid)
+
+		return &serverapi.MountedSnapshot{Path: c.MountPath(), Root: oid}, nil
+	}
+
+	return nil, notFoundError("nothing is mounted at " + req.Path)
+}
+
+// sameMountPath compares mount paths, ignoring case and a trailing separator,
+// so that "x:\" names the drive "X:".
+func sameMountPath(a, b string) bool {
+	return strings.EqualFold(strings.TrimRight(a, `/\`), strings.TrimRight(b, `/\`))
 }
 
 func handleMountList(_ context.Context, rc requestContext) (any, *apiError) {

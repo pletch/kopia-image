@@ -222,6 +222,12 @@ type UnmountSnapshotRequest struct {
 	Root string `json:"root"`
 }
 
+// UnmountPathRequest contains request to unmount the snapshot mounted at a path,
+// such as a drive letter.
+type UnmountPathRequest struct {
+	Path string `json:"path"`
+}
+
 // MountedSnapshot describes single mounted snapshot.
 type MountedSnapshot struct {
 	Path string    `json:"path"`

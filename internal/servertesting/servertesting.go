@@ -30,6 +30,9 @@ const (
 
 	TestUIUsername = "ui-user"
 	TestUIPassword = "123456"
+
+	TestServerControlUsername = "server-control"
+	TestServerControlPassword = "654321"
 )
 
 // StartServerOptions controls test server startup behavior.
@@ -70,12 +73,14 @@ func StartServerContextWithOptions(ctx context.Context, t *testing.T, env *repot
 		Authenticator: auth.CombineAuthenticators(
 			auth.AuthenticateSingleUser(TestUsername+"@"+TestHostname, TestPassword),
 			auth.AuthenticateSingleUser(TestUIUsername, TestUIPassword),
+			auth.AuthenticateSingleUser(TestServerControlUsername, TestServerControlPassword),
 		),
 		RefreshInterval:      1 * time.Minute,
 		GRPCKeepaliveMinTime: opts.GRPCKeepaliveMinTime,
 		GRPCKeepaliveTime:    opts.GRPCKeepaliveTime,
 		GRPCKeepaliveTimeout: opts.GRPCKeepaliveTimeout,
 		UIUser:               TestUIUsername,
+		ServerControlUser:    TestServerControlUsername,
 		UIPreferencesFile:    filepath.Join(testutil.TempDirectory(t), "ui-pref.json"),
 		WebDAVMounts:         opts.WebDAVMounts,
 		ImageHost:            opts.ImageHost,

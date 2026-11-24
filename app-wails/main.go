@@ -188,6 +188,12 @@ func run() error {
 					return
 				}
 
+				if path, ok := unmountArgPath(data.Args); ok {
+					go s.handleUnmountRequest(path)
+
+					return
+				}
+
 				s.showAllWindows()
 			},
 		},
@@ -201,6 +207,13 @@ func run() error {
 	// arguments to the first one and exits inside application.New.
 	if hasArg(os.Args[1:], quitArg) {
 		return nil // nothing to quit, no other instance is running
+	}
+
+	if path, ok := unmountArgPath(os.Args[1:]); ok {
+		// with no instance running, no server of KopiaUI mounted anything
+		showMessage(windowTitle, unmountMessage(path, errNotMountedHere))
+
+		return nil
 	}
 
 	closeLog := s.openLog(logOut)

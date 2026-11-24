@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -34,6 +35,9 @@ const (
 	errorPageLogLines    = 40
 	serverControlUser    = "server-control"
 	uiUser               = "kopia"
+
+	// maxControlResponseBytes bounds a server control API response read by controlPost.
+	maxControlResponseBytes = 1 << 20
 )
 
 // serverStatus is the subset of /api/v1/control/status used by the tray menu.
@@ -598,6 +602,47 @@ func (s *repoServer) pollLoop(stop, kick chan struct{}) {
 
 		s.pollOnce()
 	}
+}
+
+// errServerNotRunning is returned by controlPost while the server is not up.
+var errServerNotRunning = errors.New("the server is not running")
+
+// controlPost sends a request to the server control API, which needs no CSRF
+// token, and returns the status code and the response body.
+func (s *repoServer) controlPost(ctx context.Context, apiPath string, request any) (int, []byte, error) {
+	s.mu.Lock()
+	address, controlPassword, transport := s.address, s.controlPassword, s.transport
+	s.mu.Unlock()
+
+	if address == "" || controlPassword == "" || transport == nil {
+		return 0, nil, errServerNotRunning
+	}
+
+	body, err := json.Marshal(request)
+	if err != nil {
+		return 0, nil, fmt.Errorf("unable to encode request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, address+"/api/v1/control/"+apiPath, bytes.NewReader(body))
+	if err != nil {
+		return 0, nil, fmt.Errorf("unable to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth(serverControlUser, controlPassword)
+
+	resp, err := (&http.Client{Transport: transport}).Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("unable to reach the server: %w", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxControlResponseBytes))
+	if err != nil {
+		return 0, nil, fmt.Errorf("unable to read the response: %w", err)
+	}
+
+	return resp.StatusCode, respBody, nil
 }
 
 func (s *repoServer) pollOnce() {

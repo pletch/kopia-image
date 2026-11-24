@@ -4,6 +4,8 @@ package main
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"os/exec"
 	"time"
 )
@@ -30,4 +32,9 @@ func kopiaStateDir() (string, error) {
 // runElevatedDetached is used only on Windows.
 func runElevatedDetached(string, []string) error {
 	return errors.New("disk images are created only on Windows")
+}
+
+// showMessage writes the message to stderr: message boxes are used only on Windows.
+func showMessage(title, text string) {
+	fmt.Fprintln(os.Stderr, title+": "+text)
 }

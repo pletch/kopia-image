@@ -218,6 +218,7 @@ func (s *Server) SetupControlAPIHandlers(m *mux.Router) {
 	m.HandleFunc("/api/v1/control/resume-source", s.handleServerControlAPI(handleResume)).Methods(http.MethodPost)
 	m.HandleFunc("/api/v1/control/throttle", s.handleServerControlAPI(handleRepoGetThrottle)).Methods(http.MethodGet)
 	m.HandleFunc("/api/v1/control/throttle", s.handleServerControlAPI(handleRepoSetThrottle)).Methods(http.MethodPut)
+	m.HandleFunc("/api/v1/control/unmount", s.handleServerControlAPIPossiblyNotConnected(handleMountDeleteByPath)).Methods(http.MethodPost)
 }
 
 func (s *Server) rootContext() context.Context {

@@ -30,6 +30,8 @@ RequestExecutionLevel user
 !define RUNKEY       "Software\Microsoft\Windows\CurrentVersion\Run"
 !define AUTOSTARTVAL "kopiaui-wails"
 !define TOASTKEY     "Software\Classes\AppUserModelId\${APPNAME}"
+; Explorer context menu entry "Unmount Kopia snapshot" on drives KopiaUI mounted
+!define UNMOUNTKEY   "Software\Classes\Drive\shell\KopiaUIWailsUnmount"
 
 Name "${DISPLAYNAME}"
 OutFile "${OUTFILE}"
@@ -237,6 +239,14 @@ Section "Install"
   WriteRegDWORD HKCU "${UNINSTKEY}" "NoRepair" 1
   WriteRegDWORD HKCU "${UNINSTKEY}" "EstimatedSize" ${ESTIMATEDSIZEKB}
 
+  ; Shown only on drives named like a mounted snapshot ("Kopia - <source> - <time>",
+  ; or "Kopia Snapshot" without one). The running app unmounts the drive. %1, a
+  ; drive root such as X:\, is not quoted: in "X:\" the \" would escape the quote.
+  WriteRegStr HKCU "${UNMOUNTKEY}" "MUIVerb" "Unmount Kopia snapshot"
+  WriteRegStr HKCU "${UNMOUNTKEY}" "Icon" "$INSTDIR\${EXENAME},0"
+  WriteRegStr HKCU "${UNMOUNTKEY}" "AppliesTo" 'System.ItemNameDisplay:~<"Kopia - " OR System.ItemNameDisplay:~<"Kopia Snapshot"'
+  WriteRegStr HKCU "${UNMOUNTKEY}\command" "" '"$INSTDIR\${EXENAME}" --unmount %1'
+
   Call UpdateImageTasks
   Call OfferWinFsp
 SectionEnd
@@ -262,6 +272,8 @@ Section "Uninstall"
     DeleteRegKey HKCU "Software\Classes\CLSID\$0"
   ${EndIf}
   DeleteRegKey HKCU "${TOASTKEY}"
+
+  DeleteRegKey HKCU "${UNMOUNTKEY}"
 
   ; WebView2 profile and app-specific files; shared Kopia configuration stays.
   RMDir /r "$LOCALAPPDATA\KopiaUI-Wails"

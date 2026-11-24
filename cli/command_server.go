@@ -20,6 +20,7 @@ type commandServer struct {
 	throttle commandServerThrottle
 	upload   commandServerUpload
 	shutdown commandServerShutdown
+	unmount  commandServerUnmount
 }
 
 type serverFlags struct {
@@ -66,6 +67,7 @@ func (c *commandServer) setup(svc advancedAppServices, parent commandParent) {
 	c.refresh.setup(svc, cmd)
 	c.flush.setup(svc, cmd)
 	c.shutdown.setup(svc, cmd)
+	c.unmount.setup(svc, cmd)
 
 	c.upload.setup(svc, cmd)
 	c.cancel.setup(svc, cmd)

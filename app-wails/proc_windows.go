@@ -215,3 +215,15 @@ func runElevatedDetached(exe string, args []string) error {
 
 	return nil
 }
+
+// showMessage shows a message box, for a process that has no window of its own.
+func showMessage(title, text string) {
+	t, err1 := windows.UTF16PtrFromString(title)
+	m, err2 := windows.UTF16PtrFromString(text)
+
+	if err1 != nil || err2 != nil {
+		return
+	}
+
+	_, _ = windows.MessageBox(0, m, t, windows.MB_OK|windows.MB_ICONINFORMATION)
+}
