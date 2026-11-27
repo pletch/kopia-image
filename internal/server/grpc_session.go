@@ -38,21 +38,34 @@ import (
 )
 
 type grpcServerState struct {
-	sendMutex sync.RWMutex
-
 	grpcapi.UnimplementedKopiaRepositoryServer
 
-	sem *semaphore.Weighted
+	// sem limits requests handled at once across all sessions, and
+	// perSessionLimit how many of them one session may hold.
+	sem             *semaphore.Weighted
+	perSessionLimit int64
 
 	// GRPC server instance for graceful shutdown
 	grpcServer *grpc.Server
 	grpcMutex  sync.RWMutex
 }
 
+// sessionSender serializes sends on one session's stream.
+//
+// Each session has its own: a send blocks while the client is slow to read
+// (HTTP/2 flow control), and with one lock for the whole server a single
+// stalled client blocked every other session's responses.
+type sessionSender struct {
+	mu  sync.Mutex
+	srv grpcapi.KopiaRepository_SessionServer
+}
+
 // send sends the provided session response with the provided request ID.
-func (s *Server) send(srv grpcapi.KopiaRepository_SessionServer, requestID int64, resp *grpcapi.SessionResponse) error {
-	s.sendMutex.Lock()
-	defer s.sendMutex.Unlock()
+func (ss *sessionSender) send(requestID int64, resp *grpcapi.SessionResponse) error {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+
+	srv := ss.srv
 
 	resp.RequestId = requestID
 
@@ -116,7 +129,9 @@ func (s *Server) Session(srv grpcapi.KopiaRepository_SessionServer) error {
 	userLog(ctx).Infof("starting session for user %q from %v", usernameAtHostname, p.Addr)
 	defer userLog(ctx).Infof("session ended for user %q from %v", usernameAtHostname, p.Addr)
 
-	opt, err := s.handleInitialSessionHandshake(srv, dr)
+	sender := &sessionSender{srv: srv}
+
+	opt, err := s.handleInitialSessionHandshake(srv, sender, dr)
 	if err != nil {
 		userLog(ctx).Errorf("session handshake error: %v", err)
 		return err
@@ -126,6 +141,16 @@ func (s *Server) Session(srv grpcapi.KopiaRepository_SessionServer) error {
 	return repo.DirectWriteSession(ctx, dr, opt, func(ctx context.Context, dw repo.DirectRepositoryWriter) error {
 		// channel to which workers will be sending errors, only holds 1 slot and sends are non-blocking.
 		lastErr := make(chan error, 1)
+
+		// one session may hold only part of the server's capacity, so a client
+		// that stalls with requests in flight can't take every slot.
+		sessionSem := semaphore.NewWeighted(s.perSessionLimit)
+
+		// handlers still running when the stream ends must finish before the
+		// write session is flushed and closed. Only on a normal end: after an
+		// error a handler may be blocked sending to a stalled client, which
+		// unblocks only once this function returns.
+		var handlers sync.WaitGroup
 
 		for req, err := srv.Recv(); err == nil; req, err = srv.Recv() {
 			// propagate any error from the goroutines
@@ -142,16 +167,25 @@ func (s *Server) Session(srv grpcapi.KopiaRepository_SessionServer) error {
 			default:
 			}
 
-			// enforce limit on concurrent handling
+			// enforce limits on concurrent handling
+			if err := sessionSem.Acquire(ctx, 1); err != nil {
+				return errors.Wrap(err, "unable to acquire session semaphore")
+			}
+
 			if err := s.sem.Acquire(ctx, 1); err != nil {
+				sessionSem.Release(1)
 				return errors.Wrap(err, "unable to acquire semaphore")
 			}
 
+			handlers.Add(1)
+
 			go func() {
+				defer handlers.Done()
+				defer sessionSem.Release(1)
 				defer s.sem.Release(1)
 
 				s.handleSessionRequest(ctx, dw, authz, usernameAtHostname, req, func(resp *grpcapi.SessionResponse) {
-					if err := s.send(srv, req.GetRequestId(), resp); err != nil {
+					if err := sender.send(req.GetRequestId(), resp); err != nil {
 						select {
 						case lastErr <- err:
 						default:
@@ -160,6 +194,8 @@ func (s *Server) Session(srv grpcapi.KopiaRepository_SessionServer) error {
 				})
 			}()
 		}
+
+		handlers.Wait()
 
 		return nil
 	})
@@ -624,7 +660,7 @@ func makeEntryMetadata(em *manifest.EntryMetadata) *grpcapi.ManifestEntryMetadat
 	}
 }
 
-func (s *Server) handleInitialSessionHandshake(srv grpcapi.KopiaRepository_SessionServer, dr repo.DirectRepository) (repo.WriteSessionOptions, error) {
+func (s *Server) handleInitialSessionHandshake(srv grpcapi.KopiaRepository_SessionServer, sender *sessionSender, dr repo.DirectRepository) (repo.WriteSessionOptions, error) {
 	initializeReq, err := srv.Recv()
 	if err != nil {
 		return repo.WriteSessionOptions{}, errors.Wrap(err, "unable to read initialization request")
@@ -637,7 +673,7 @@ func (s *Server) handleInitialSessionHandshake(srv grpcapi.KopiaRepository_Sessi
 
 	scc := dr.ContentReader().SupportsContentCompression()
 
-	if err := s.send(srv, initializeReq.GetRequestId(), &grpcapi.SessionResponse{
+	if err := sender.send(initializeReq.GetRequestId(), &grpcapi.SessionResponse{
 		Response: &grpcapi.SessionResponse_InitializeSession{
 			InitializeSession: &grpcapi.InitializeSessionResponse{
 				Parameters: &grpcapi.RepositoryParameters{
@@ -666,7 +702,14 @@ func (s *Server) RegisterGRPCHandlers(r grpc.ServiceRegistrar) {
 // default. Requests mostly wait for storage, not for a processor: an image
 // restore fetches 64 chunks of 1 MiB at once, and on a server with few cores
 // twice their number would make it wait for the server instead.
-const minDefaultConcurrency = 64
+//
+// It is a little above 64 so that one such client still gets all 64 within
+// the per-session share below.
+const minDefaultConcurrency = 72
+
+// sessionShareOfConcurrency is the fraction of the server's request slots one
+// session may hold: the rest stays available to other clients.
+const sessionShareOfConcurrency = 7.0 / 8
 
 func makeGRPCServerState(maxConcurrency int) grpcServerState {
 	if maxConcurrency == 0 {
@@ -674,7 +717,8 @@ func makeGRPCServerState(maxConcurrency int) grpcServerState {
 	}
 
 	return grpcServerState{
-		sem: semaphore.NewWeighted(int64(maxConcurrency)),
+		sem:             semaphore.NewWeighted(int64(maxConcurrency)),
+		perSessionLimit: max(1, int64(float64(maxConcurrency)*sessionShareOfConcurrency)),
 	}
 }
 
