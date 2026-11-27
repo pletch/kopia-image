@@ -121,9 +121,11 @@ jobs:
         dist/kopia_linux_x64/kopia --version
     - name: Build amd64 .deb
       run: |
-        # Named kopia-wails so that an upstream kopia apt repository never
-        # silently swaps it back; it provides and replaces the kopia package.
-        PKG=kopia-wails
+        # The command-line kopia only (the desktop app is kopia-image). Named
+        # apart from kopia so that an upstream kopia apt repository never
+        # silently swaps it back; it provides and replaces the kopia package,
+        # and kopia-wails, its name before v0.23.1-image.4.
+        PKG=kopia-image-cli
         ROOT="dist/deb/${PKG}_${VERSION}_amd64"
         install -Dm755 dist/kopia_linux_x64/kopia "$ROOT/usr/bin/kopia"
         install -Dm644 LICENSE "$ROOT/usr/share/doc/$PKG/copyright"
@@ -134,15 +136,16 @@ jobs:
         Architecture: amd64
         Maintainer: $GITHUB_REPOSITORY_OWNER <$GITHUB_REPOSITORY_OWNER@users.noreply.github.com>
         Installed-Size: $(du -sk "$ROOT/usr" | cut -f1)
-        Provides: kopia
-        Conflicts: kopia
-        Replaces: kopia
+        Provides: kopia, kopia-wails
+        Conflicts: kopia, kopia-wails
+        Replaces: kopia, kopia-wails
         Section: utils
         Priority: optional
         Homepage: https://github.com/$GITHUB_REPOSITORY
-        Description: Fast and secure open source backup (personal fork)
-         Kopia command-line tool built from $GITHUB_REPOSITORY, a personal fork
-         of kopia/kopia carrying unmerged upstream fixes.
+        Description: Kopia command-line tool from Kopia-Image (unofficial fork)
+         The kopia command-line tool built from $GITHUB_REPOSITORY, a personal
+         fork of kopia/kopia with disk images and unmerged upstream fixes. It
+         has no desktop app; that is the kopia-image package.
         EOF
         dpkg-deb --root-owner-group --build "$ROOT" release/
         dpkg-deb --info "release/${PKG}_${VERSION}_amd64.deb"

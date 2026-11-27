@@ -238,7 +238,7 @@ Download `Kopia-Image-Setup-<version>.exe` (or the portable zip) from this fork'
 
 The same releases include the `kopia` command-line tool for Linux (`kopia-<version>-linux-x64.tar.gz` and `kopia-<version>-linux-arm64.tar.gz`), built from this fork with all of the changes above except the KopiaUI ones. They are static binaries with no dependencies: extract and run `kopia`.
 
-For Debian and Ubuntu on x64 there is also `kopia-wails_<version>_amd64.deb`, installed with `sudo apt install ./kopia-wails_<version>_amd64.deb`. It puts `kopia` in `/usr/bin` and replaces the upstream `kopia` package if that is installed. Because it has a different package name, an upstream Kopia apt repository will not silently switch you back; remove `kopia-wails` and install `kopia` to return to upstream.
+For Debian and Ubuntu on x64 there is also `kopia-image-cli_<version>_amd64.deb`, the command-line tool only, with no desktop app. Install it with `sudo apt install ./kopia-image-cli_<version>_amd64.deb`. It puts `kopia` in `/usr/bin` and replaces the upstream `kopia` package if that is installed. It also replaces `kopia-wails`, its name before `v0.23.1-image.4`. Because it has a different package name, an upstream Kopia apt repository will not silently switch you back; remove `kopia-image-cli` and install `kopia` to return to upstream.
 
 Kopia-Image for Linux is `kopia-image_<version>_amd64.deb`, which replaces the `kopiaui-wails` package of earlier releases:
 
@@ -246,7 +246,7 @@ Kopia-Image for Linux is `kopia-image_<version>_amd64.deb`, which replaces the `
 sudo apt install ./kopia-image_<version>_amd64.deb
 ```
 
-Like upstream KopiaUI, it includes its own copy of `kopia` (in `/usr/lib/kopia-image/server/`), which it runs as its server, so it does not need `kopia-wails`. Install `kopia-wails` as well if you also want `kopia` in a terminal; the two packages do not conflict.
+Like upstream KopiaUI, it includes its own copy of `kopia` (in `/usr/lib/kopia-image/server/`), which it runs as its server, so it does not need `kopia-image-cli`. Install `kopia-image-cli` as well if you also want `kopia` in a terminal; the two packages do not conflict.
 
 It is built on Ubuntu 22.04 against GTK 3 and WebKitGTK 4.1, so it runs on Ubuntu 22.04 / Linux Mint 21 and newer and on Debian 12 and newer. Start it from the applications menu as "Kopia-Image". Mounting a snapshot uses FUSE (the `fuse3` package). The tray icon needs a desktop that shows status notifier icons: KDE, Cinnamon and XFCE do, while GNOME needs the AppIndicator extension. Without a tray, starting Kopia-Image again brings its window back.
 
@@ -270,7 +270,7 @@ app-wails/build-linux-deb.sh   # dist/kopia-image_<version>_amd64.deb
 
 To run it from the source tree instead, build with `go build -tags gtk3` in `app-wails/`. Without the tag, Wails builds against GTK 4 and WebKitGTK 6.0.
 
-Pushing a `v<upstream version>-wails.<n>` tag runs the [Release](.github/workflows/release.yml) workflow, which builds the Windows installer and portable zip, the Linux CLI archives, and the `kopia-wails` and `kopia-image` amd64 `.deb` packages, and publishes them as a GitHub release. See [BUILD.md](BUILD.md) for building the rest of Kopia.
+Pushing a `v<upstream version>-image.<n>` tag runs the [Release](.github/workflows/release.yml) workflow, which builds the Windows installer and portable zip, the Linux CLI archives, and the `kopia-image` and `kopia-image-cli` amd64 `.deb` packages, and publishes them as a GitHub release. See [BUILD.md](BUILD.md) for building the rest of Kopia.
 
 About Kopia
 ---

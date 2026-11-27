@@ -10,7 +10,7 @@
 # the package should support; CI builds on Ubuntu 22.04 (Linux Mint 21).
 #
 # Like upstream KopiaUI, the package carries a private kopia that the app runs as
-# its server, so it does not depend on the kopia-wails (CLI) package and does not
+# its server, so it does not depend on the kopia-image-cli package and does not
 # clash with it:
 #   /usr/lib/kopia-image/kopia-image     the app
 #   /usr/lib/kopia-image/server/kopia    its kopia (found next to the app)
@@ -103,7 +103,7 @@ Homepage: https://github.com/${GITHUB_REPOSITORY:-pletch/kopia-image}
 Description: Kopia desktop app with disk images (unofficial fork)
  Desktop shell for Kopia with a tray icon, notifications and repository
  windows, built from a personal fork of kopia/kopia. It includes its own
- kopia, which it runs as its server; install kopia-wails as well to use
+ kopia, which it runs as its server; install kopia-image-cli as well to use
  kopia from a terminal.
 EOF
 
