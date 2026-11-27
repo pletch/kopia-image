@@ -286,6 +286,16 @@ func shouldRefreshConnectionAfterSessionError(conn grpcConnection, establishCtx 
 	return conn == nil || conn.GetState() != connectivity.Ready
 }
 
+// serverAnswered reports whether a failed session establishment reached the
+// server, rather than failing to connect or timing out. Only a server that
+// answered can have turned compression down; retrying a server that can't
+// be reached would only double the time it takes to fail.
+func serverAnswered(conn grpcConnection, establishCtx context.Context, err error) bool {
+	return establishCtx.Err() == nil &&
+		!errors.Is(err, ErrServerUnreachable) &&
+		conn != nil && conn.GetState() == connectivity.Ready
+}
+
 func (m *grpcConnectionManager) markForRefresh() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1610,11 +1620,11 @@ func (r *grpcRepositoryClient) getOrEstablishInnerSession(ctx context.Context) (
 	case err == nil && compress:
 		r.connManager.wireCompressionConfirmed.Store(true)
 
-	case err != nil && compress && !r.connManager.wireCompressionConfirmed.Load() && establishCtx.Err() == nil:
+	case err != nil && compress && !r.connManager.wireCompressionConfirmed.Load() && serverAnswered(r.connManager.current(), establishCtx, err):
 		// A server without the codec turns the session down, but how that
 		// reaches the client is racy: sometimes as "Decompressor is not
 		// installed", sometimes as a bare EOF. So until compression has worked
-		// once, a session that fails promptly is tried again uncompressed.
+		// once, a session the server turned down is tried again uncompressed.
 		plain, plainErr := r.establishInnerSession(ctx, establishCtx, false)
 		if plainErr == nil {
 			log(ctx).Debugf("repository server does not support wire compression, continuing without it: %v", err)

@@ -1480,3 +1480,24 @@ func compressionRejectingStreamHandler(rejection error, compressedAttempts, plai
 		return stream, nil
 	}
 }
+
+// A server that can't be reached hasn't turned compression down: retrying it
+// uncompressed would only double the time it takes to fail.
+func TestServerAnswered(t *testing.T) {
+	t.Parallel()
+
+	ready := &fakeGRPCConn{state: connectivity.Ready}
+	failing := &fakeGRPCConn{state: connectivity.TransientFailure}
+
+	live := context.Background()
+
+	expired, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	<-expired.Done()
+
+	require.True(t, serverAnswered(ready, live, io.EOF))
+	require.False(t, serverAnswered(failing, live, io.EOF), "not connected")
+	require.False(t, serverAnswered(ready, live, stderrors.Join(ErrServerUnreachable, io.EOF)))
+	require.False(t, serverAnswered(ready, expired, io.EOF), "timed out")
+	require.False(t, serverAnswered(nil, live, io.EOF))
+}
