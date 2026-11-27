@@ -118,18 +118,9 @@ func Open(ctx context.Context, configFile, password string, options *Options) (r
 		}
 	}
 
-	configFile, err = filepath.Abs(configFile)
-	if err != nil {
-		return nil, errors.Wrap(err, "error resolving config file path")
-	}
-
-	lc, err := LoadConfigFromFile(configFile)
+	configFile, lc, err := loadConfigForOpen(configFile)
 	if err != nil {
 		return nil, err
-	}
-
-	if lc.PermissiveCacheLoading && !lc.ReadOnly {
-		return nil, ErrCannotWriteToRepoConnectionWithPermissiveCacheLoading
 	}
 
 	if lc.APIServer != nil {
@@ -251,10 +242,109 @@ func openDirect(ctx context.Context, configFile string, lc *LocalConfig, passwor
 	return r, nil
 }
 
-// openWithConfig opens the repository with a given configuration, avoiding the need for a config file.
+func loadConfigForOpen(configFile string) (string, *LocalConfig, error) {
+	configFile, err := filepath.Abs(configFile)
+	if err != nil {
+		return "", nil, errors.Wrap(err, "error resolving config file path")
+	}
+
+	lc, err := LoadConfigFromFile(configFile)
+	if err != nil {
+		return "", nil, err
+	}
+
+	if lc.PermissiveCacheLoading && !lc.ReadOnly {
+		return "", nil, ErrCannotWriteToRepoConnectionWithPermissiveCacheLoading
+	}
+
+	return configFile, lc, nil
+}
+
+// BlobAccess is read-only access to the blobs and format of a
+// directly-connected repository, for callers that copy or inspect raw blobs
+// and don't need contents, objects or manifests.
 //
-//nolint:funlen,gocyclo
-func openWithConfig(ctx context.Context, st blob.Storage, cliOpts ClientOptions, password string, options *Options, cacheOpts *content.CachingOptions, configFile string) (DirectRepository, error) {
+// Unlike Open it does not load the repository's indexes, so opening is quick
+// and cheap even for very large repositories. The password is still verified,
+// required features are still checked, the connection's throttling limits
+// apply, and access fails while an upgrade is in progress, as with Open.
+type BlobAccess struct {
+	Storage       blob.Storage
+	FormatManager *format.Manager
+
+	closer *refCountedCloser
+}
+
+// Close releases the storage.
+func (a *BlobAccess) Close(ctx context.Context) error {
+	return a.closer.Close(ctx)
+}
+
+// OpenBlobAccess opens read-only blob-level access to the directly-connected
+// repository specified in the configuration file.
+func OpenBlobAccess(ctx context.Context, configFile, password string, options *Options) (*BlobAccess, error) {
+	if options == nil {
+		options = &Options{}
+	}
+
+	if options.OnFatalError == nil {
+		options.OnFatalError = func(err error) {
+			log(ctx).Errorf("FATAL: %v", err)
+			os.Exit(1)
+		}
+	}
+
+	configFile, lc, err := loadConfigForOpen(configFile)
+	if err != nil {
+		return nil, err
+	}
+
+	if lc.APIServer != nil {
+		return nil, errors.New("blob access requires a directly-connected repository")
+	}
+
+	if lc.Storage == nil {
+		return nil, errors.New("storage not set in the configuration file")
+	}
+
+	st, err := blob.NewStorage(ctx, *lc.Storage, false)
+	if err != nil {
+		return nil, errors.Wrap(err, "cannot open storage")
+	}
+
+	st = readonly.NewWrapper(st)
+
+	cliOpts := lc.ApplyDefaults(ctx, "Repository in "+st.DisplayName())
+
+	sl, err := openStorageLayers(ctx, st, cliOpts, password, options, lc.Caching, configFile)
+	if err != nil {
+		st.Close(ctx) //nolint:errcheck
+		return nil, err
+	}
+
+	return &BlobAccess{
+		Storage:       sl.st,
+		FormatManager: sl.fmgr,
+		closer:        newRefCountedCloser(sl.mr.Close, sl.st.Close),
+	}, nil
+}
+
+// storageLayers is the storage stack with format, throttling, retention and
+// upgrade-lock handling shared by full repositories and BlobAccess.
+type storageLayers struct {
+	st        blob.Storage
+	fmgr      *format.Manager
+	throttler throttling.SettableThrottler
+	mr        *metrics.Registry
+	cmOpts    *content.ManagerOptions
+	cacheOpts *content.CachingOptions
+}
+
+// openStorageLayers verifies the password and required features and wraps
+// the storage with metrics, throttling, retention and upgrade-lock handling.
+//
+//nolint:funlen
+func openStorageLayers(ctx context.Context, st blob.Storage, cliOpts ClientOptions, password string, options *Options, cacheOpts *content.CachingOptions, configFile string) (*storageLayers, error) {
 	cacheOpts = cacheOpts.CloneOrDefault()
 	cmOpts := &content.ManagerOptions{
 		TimeNow:                defaultTime(options.TimeNowFunc),
@@ -279,7 +369,7 @@ func openWithConfig(ctx context.Context, st blob.Storage, cliOpts ClientOptions,
 		return nil, ferr
 	}
 
-	limits := throttlingLimitsFromConnectionInfo(ctx, st.ConnectionInfo())
+	limits := ThrottlingLimitsFromConnectionInfo(ctx, st.ConnectionInfo())
 	if cliOpts.Throttling != nil {
 		limits = *cliOpts.Throttling
 	}
@@ -335,6 +425,25 @@ func openWithConfig(ctx context.Context, st blob.Storage, cliOpts ClientOptions,
 		// background/interleaving upgrade lock storage monitor
 		st = upgradeLockMonitor(fmgr, options.UpgradeOwnerID, st, cmOpts.TimeNow, options.OnFatalError, options.TestOnlyIgnoreMissingRequiredFeatures)
 	}
+
+	return &storageLayers{
+		st:        st,
+		fmgr:      fmgr,
+		throttler: throttler,
+		mr:        mr,
+		cmOpts:    cmOpts,
+		cacheOpts: cacheOpts,
+	}, nil
+}
+
+// openWithConfig opens the repository with a given configuration, avoiding the need for a config file.
+func openWithConfig(ctx context.Context, st blob.Storage, cliOpts ClientOptions, password string, options *Options, cacheOpts *content.CachingOptions, configFile string) (DirectRepository, error) {
+	sl, err := openStorageLayers(ctx, st, cliOpts, password, options, cacheOpts, configFile)
+	if err != nil {
+		return nil, err
+	}
+
+	st, fmgr, throttler, mr, cmOpts, cacheOpts := sl.st, sl.fmgr, sl.throttler, sl.mr, sl.cmOpts, sl.cacheOpts
 
 	dw := repodiag.NewWriter(st, fmgr)
 
@@ -451,6 +560,14 @@ func wrapLockingStorage(st blob.Storage, r format.BlobStorageConfiguration) blob
 	})
 }
 
+// WrapWithConnectionThrottling applies the throttling limits from the
+// storage's own connection configuration, as Open does for a repository.
+func WrapWithConnectionThrottling(ctx context.Context, st blob.Storage) (blob.Storage, error) {
+	st, _, err := addThrottler(st, ThrottlingLimitsFromConnectionInfo(ctx, st.ConnectionInfo()))
+
+	return st, err
+}
+
 func addThrottler(st blob.Storage, limits throttling.Limits) (blob.Storage, throttling.SettableThrottler, error) {
 	throttler, err := throttling.NewThrottler(limits, throttlingWindow, throttleBucketInitialFill)
 	if err != nil {
@@ -518,7 +635,9 @@ func upgradeLockMonitor(
 	return beforeop.NewUniformWrapper(st, cb)
 }
 
-func throttlingLimitsFromConnectionInfo(ctx context.Context, ci blob.ConnectionInfo) throttling.Limits {
+// ThrottlingLimitsFromConnectionInfo returns the throttling limits stored in
+// a storage connection's configuration, such as --max-upload-speed.
+func ThrottlingLimitsFromConnectionInfo(ctx context.Context, ci blob.ConnectionInfo) throttling.Limits {
 	v, err := json.Marshal(ci.Config)
 	if err != nil {
 		return throttling.Limits{}

@@ -36,6 +36,17 @@ func TestRepositorySync(t *testing.T) {
 	dir3 := testutil.TempDirectory(t)
 	e.RunAndExpectFailure(t, "repo", "sync-to", "filesystem", "--path", dir3, "--must-exist")
 
+	// --dry-run never writes, not even the format blob.
+	e.RunAndExpectSuccess(t, "repo", "sync-to", "filesystem", "--path", dir3, "--dry-run")
+	e.RunAndExpectFailure(t, "repo", "sync-to", "filesystem", "--path", dir3, "--must-exist")
+
+	// --delete is refused where there is no copy of this repository yet.
+	e.RunAndExpectFailure(t, "repo", "sync-to", "filesystem", "--path", dir3, "--delete")
+
+	// a throttled sync to a fresh location produces a usable copy.
+	e.RunAndExpectSuccess(t, "repo", "sync-to", "filesystem", "--path", dir3, "--max-upload-speed", "1000000000")
+	e.RunAndExpectSuccess(t, "repo", "sync-to", "filesystem", "--path", dir3, "--must-exist", "--delete")
+
 	// now connect to the new repository in new location
 	e.RunAndExpectSuccess(t, "repo", "connect", "filesystem", "--path", dir2)
 
