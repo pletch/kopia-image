@@ -206,6 +206,15 @@ These fixes go beyond upstream Kopia. Each came out of a review of the code path
 * **A slow client can't freeze the server.** All responses used to wait on one server-wide lock, so a single stalled client blocked everyone. Each session now sends on its own, and requests still running when a client disconnects finish before its data is flushed.
 * **Faster over a WAN.** The server allowed only 1 MiB in flight per connection, which capped uploads at about 33 MB/s at 30 ms of latency. It now allows 32 MiB, enough for about 2.5 Gbit/s at 100 ms. It also pings idle connections, so clients that vanish are noticed.
 * **Flush can be cancelled, and no longer crashes.** A client's flush now honors cancellation and timeouts, and it no longer risks a crash when it overlaps with uploads still starting, as during an image's periodic flush.
+* **Compressed on the wire.** Clients send contents uncompressed and the server compresses them for storage, so everything crossed the network at full size, restores included. The session stream is now compressed with a fast zstd codec in both directions. With a server that doesn't support it, such as upstream Kopia, the client continues uncompressed.
+* **Fewer round trips.** Before uploading a chunk, a client asked whether the server already had it. On a first image almost nothing exists, so a 1 TB image made about a million checks that found nothing. A session now stops checking while checks rarely find anything, and tests one chunk in 16 to notice when they start to. Verifying an image, `image check` and space accounting also look up 256 chunks at once instead of 32 to 64, about 3 minutes per TB at 50 ms of latency instead of 13.
+* **Bandwidth limits.** `kopia repository throttle set --upload-bytes-per-second` and `--download-bytes-per-second` now work for a connection to a repository server, which upstream refused, so images sent through a server can be limited. The limits apply to the network connection from its next connection on, counting every byte after compression. Scheduled image tasks copy the connection when they're installed, so run `kopia image schedule install` again after changing a limit.
+
+**Storage and disk images:**
+
+* **Restores leave the cache alone.** A restore wrote every chunk it fetched to the local content cache, which spares entries younger than 10 minutes, so a fast restore grew the cache by tens of gigabytes and pushed out useful entries. Restores now read chunks straight from storage or the server.
+* **Durable filesystem writes.** A filesystem repository, including one behind a repository server, synced each new blob's data but not its directory. After a power loss on Linux, macOS or FreeBSD, a blob that indexes already pointed at could disappear. The directory is now synced too.
+* **A failing disk isn't mistaken for a dropped network.** A short read from the disk being imaged looked like a broken server connection, so scheduled runs retried three times over 7 minutes. It now fails at once with its own error.
 
 ### Other personal changes
 
