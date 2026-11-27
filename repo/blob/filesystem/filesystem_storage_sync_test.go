@@ -2,6 +2,7 @@ package filesystem
 
 import (
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -162,4 +163,60 @@ func TestPutBlob_FailsOnSyncError(t *testing.T) {
 
 	_, err = st.GetMetadata(ctx, "blob-sync-fail")
 	require.ErrorIs(t, err, blob.ErrBlobNotFound)
+}
+
+type mockOSRecordingSyncDir struct {
+	osInterface
+
+	mu sync.Mutex
+	// +checklocks:mu
+	dirs []string
+}
+
+func (osi *mockOSRecordingSyncDir) SyncDir(dirname string) error {
+	osi.mu.Lock()
+	osi.dirs = append(osi.dirs, dirname)
+	osi.mu.Unlock()
+
+	return osi.osInterface.SyncDir(dirname)
+}
+
+func (osi *mockOSRecordingSyncDir) synced() []string {
+	osi.mu.Lock()
+	defer osi.mu.Unlock()
+
+	return append([]string(nil), osi.dirs...)
+}
+
+// A blob renamed into place is durable only once its directory is synced,
+// and a newly created shard directory only once its parents are.
+func TestPutBlob_SyncsDirectories(t *testing.T) {
+	t.Parallel()
+
+	ctx := testlogging.Context(t)
+	root := testutil.TempDirectory(t)
+	osi := &mockOSRecordingSyncDir{osInterface: realOS{}}
+
+	st, err := New(ctx, &Options{
+		Path:            root,
+		DirectoryShards: []int{1, 1},
+
+		osInterfaceOverride: osi,
+	}, true)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = st.Close(testlogging.ContextForCleanup(t)) })
+
+	// the first blob in a new shard: its directory and every parent up to the root.
+	require.NoError(t, st.PutBlob(ctx, "abcdef0123456789abcdef0123456789", gather.FromSlice([]byte("hello")), blob.PutOptions{}))
+
+	// (the first put may also write the .shards file at the root first.)
+	shardDir := filepath.Join(root, "a", "b")
+	first := osi.synced()
+	require.GreaterOrEqual(t, len(first), 3)
+	require.Equal(t, []string{shardDir, filepath.Join(root, "a"), filepath.Clean(root)}, first[len(first)-3:])
+
+	// another blob in the same shard: just its directory.
+	require.NoError(t, st.PutBlob(ctx, "abzzzz0123456789abcdef0123456789", gather.FromSlice([]byte("hello")), blob.PutOptions{}))
+	require.Equal(t, append(first, shardDir), osi.synced())
 }

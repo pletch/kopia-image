@@ -690,7 +690,7 @@ func TestFileStorage_CreateTempFileWithData_Success(t *testing.T) {
 
 	data := gather.FromSlice([]byte{1, 2, 3, 4, 5})
 	testPath := filepath.Join(dataDir, "someb", "lo", "b1234567812345678.f")
-	tempFile, err := asFsImpl(t, st).createTempFileWithData(testPath, data)
+	tempFile, _, err := asFsImpl(t, st).createTempFileWithData(testPath, data)
 
 	require.NoError(t, err)
 	require.NotEmpty(t, tempFile)
@@ -729,7 +729,7 @@ func TestFileStorage_CreateTempFileWithData_WriteError(t *testing.T) {
 
 	data := gather.FromSlice([]byte{1, 2, 3, 4, 5})
 	testPath := filepath.Join(dataDir, "someb", "lo", "b1234567812345678.f")
-	tempFile, err := asFsImpl(t, st).createTempFileWithData(testPath, data)
+	tempFile, _, err := asFsImpl(t, st).createTempFileWithData(testPath, data)
 
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "can't write temporary file")
@@ -762,7 +762,7 @@ func TestFileStorage_CreateTempFileWithData_SyncError(t *testing.T) {
 
 	data := gather.FromSlice([]byte{1, 2, 3, 4, 5})
 	testPath := filepath.Join(dataDir, "someb", "lo", "b1234567812345678.f")
-	tempFile, err := asFsImpl(t, st).createTempFileWithData(testPath, data)
+	tempFile, _, err := asFsImpl(t, st).createTempFileWithData(testPath, data)
 
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "can't sync temporary file data")
@@ -794,7 +794,7 @@ func TestFileStorage_CreateTempFileWithData_CloseError(t *testing.T) {
 
 	data := gather.FromSlice([]byte{1, 2, 3, 4, 5})
 	testPath := filepath.Join(dataDir, "someb", "lo", "b1234567812345678.f")
-	tempFile, err := asFsImpl(t, st).createTempFileWithData(testPath, data)
+	tempFile, _, err := asFsImpl(t, st).createTempFileWithData(testPath, data)
 
 	require.Error(t, err)
 	require.ErrorContains(t, err, "can't close temporary file")

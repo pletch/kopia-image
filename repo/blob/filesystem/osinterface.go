@@ -28,6 +28,10 @@ type osInterface interface {
 	Chtimes(fname string, atime, mtime time.Time) error
 	Geteuid() int
 	Chown(fname string, uid, gid int) error
+
+	// SyncDir makes a directory's entries durable, such as a file just
+	// renamed into it. It does nothing where that isn't needed or supported.
+	SyncDir(dirname string) error
 }
 
 type osReadFile interface {

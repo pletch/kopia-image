@@ -174,7 +174,7 @@ func (fs *fsImpl) PutBlobInPath(ctx context.Context, dirPath, path string, data 
 	const maxAttempts = 2
 
 	_, err := retry.WithExponentialBackoffMaxRetries(ctx, maxAttempts, "PutBlobInPath:"+path, retry.NoValueFn(func() error {
-		tempFile, err := fs.createTempFileWithData(path, data)
+		tempFile, createdDirs, err := fs.createTempFileWithData(path, data)
 		if err != nil {
 			return err
 		}
@@ -185,6 +185,13 @@ func (fs *fsImpl) PutBlobInPath(ctx context.Context, dirPath, path string, data 
 				log(ctx).Errorf("can't remove temp file: %v", removeErr)
 			}
 
+			return err
+		}
+
+		// the file's data was synced before the rename; without syncing the
+		// directory too, a power loss can still lose the blob after the caller
+		// was told it was written (and indexes already point at it).
+		if err := fs.syncDirs(path, createdDirs); err != nil {
 			return err
 		}
 
@@ -237,17 +244,41 @@ func renameBlob(ctx context.Context, osi osInterface, oldPath, newPath string) e
 // createTempFileWithData creates a temporary file, writes data to it, syncs and closes it.
 // Returns the name of the temporary file and an error.
 // If there is an error writing, syncing, or closing the file, the temporary file is removed.
-func (fs *fsImpl) createTempFileWithData(path string, data blob.Bytes) (name string, err error) {
+// syncDirs syncs the directory holding path and, when createdDirs is set,
+// the directories above it up to the storage root, whose entries for newly
+// created directories must be durable too.
+func (fs *fsImpl) syncDirs(path string, createdDirs bool) error {
+	dir := filepath.Dir(path)
+
+	for {
+		if err := fs.osi.SyncDir(dir); err != nil {
+			return errors.Wrapf(err, "can't sync directory %q", dir)
+		}
+
+		if !createdDirs {
+			return nil
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir || len(dir) <= len(filepath.Clean(fs.Path)) {
+			return nil
+		}
+
+		dir = parent
+	}
+}
+
+func (fs *fsImpl) createTempFileWithData(path string, data blob.Bytes) (name string, createdDirs bool, err error) {
 	randSuffix := make([]byte, tempFileRandomSuffixLen)
 	if _, err := rand.Read(randSuffix); err != nil {
-		return "", errors.Wrap(err, "can't get random bytes for temporary filename")
+		return "", false, errors.Wrap(err, "can't get random bytes for temporary filename")
 	}
 
 	tempFile := fmt.Sprintf("%s.tmp.%x", path, randSuffix)
 
-	f, err := fs.createTempFileAndDir(tempFile)
+	f, createdDirs, err := fs.createTempFileAndDir(tempFile)
 	if err != nil {
-		return "", errors.Wrap(err, "cannot create temporary file")
+		return "", false, errors.Wrap(err, "cannot create temporary file")
 	}
 
 	defer func() {
@@ -266,35 +297,33 @@ func (fs *fsImpl) createTempFileWithData(path string, data blob.Bytes) (name str
 	}()
 
 	if _, err = data.WriteTo(f); err != nil {
-		return "", errors.Wrap(err, "can't write temporary file")
+		return "", false, errors.Wrap(err, "can't write temporary file")
 	}
 
 	if err = f.Sync(); err != nil {
-		return "", errors.Wrap(err, "can't sync temporary file data")
+		return "", false, errors.Wrap(err, "can't sync temporary file data")
 	}
 
 	// f closed in deferred cleanup function
 
-	return tempFile, nil
+	return tempFile, createdDirs, nil
 }
 
-func (fs *fsImpl) createTempFileAndDir(tempFile string) (osWriteFile, error) {
-	f, err := fs.osi.CreateNewFile(tempFile, fs.fileMode())
+func (fs *fsImpl) createTempFileAndDir(tempFile string) (f osWriteFile, createdDirs bool, err error) {
+	f, err = fs.osi.CreateNewFile(tempFile, fs.fileMode())
 	if fs.osi.IsNotExist(err) {
 		if err = dirutil.MkSubdirAll(fs.osi, fs.Path, filepath.Dir(tempFile), fs.dirMode()); err != nil {
-			return nil, errors.Wrap(err, "cannot create directory")
+			return nil, false, errors.Wrap(err, "cannot create directory")
 		}
 
+		f, err = fs.osi.CreateNewFile(tempFile, fs.fileMode())
+
 		//nolint:wrapcheck
-		return fs.osi.CreateNewFile(tempFile, fs.fileMode())
+		return f, err == nil, err
 	}
 
-	if err != nil {
-		//nolint:wrapcheck
-		return nil, err
-	}
-
-	return f, nil
+	//nolint:wrapcheck
+	return f, false, err
 }
 
 func (fs *fsImpl) DeleteBlobInPath(ctx context.Context, dirPath, path string) error {
