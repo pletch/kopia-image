@@ -65,12 +65,25 @@ VIAddVersionKey "LegalCopyright" "Apache License 2.0"
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW BringInstallerToFront
 !insertmacro MUI_PAGE_FINISH
 
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
 
 !insertmacro MUI_LANGUAGE "English"
+
+; BringInstallerToFront raises the installer window above the others. After
+; a UAC prompt (for the scheduled tasks or WinFsp) Windows gives the focus to
+; some other window and refuses to hand it back, so the finish page ended up
+; behind it. Making the window topmost and then not topmost raises it even
+; when Windows won't make it the foreground window.
+Function BringInstallerToFront
+  System::Call 'user32::ShowWindow(p $HWNDPARENT, i 9)'                       ; SW_RESTORE
+  System::Call 'user32::SetWindowPos(p $HWNDPARENT, p -1, i 0, i 0, i 0, i 0, i 0x13)' ; HWND_TOPMOST, NOSIZE|NOMOVE|NOACTIVATE
+  System::Call 'user32::SetWindowPos(p $HWNDPARENT, p -2, i 0, i 0, i 0, i 0, i 0x13)' ; HWND_NOTOPMOST
+  BringToFront
+FunctionEnd
 
 ; Asks a running instance to quit (it stops its Kopia servers cleanly), then
 ; force-kills it if it is still running after 10 seconds.
@@ -217,6 +230,7 @@ Function UpdateImageTasks
   ${WordFind} $1 " " "+2" $3
 
   ExecShellWait "runas" "$INSTDIR\kopia.exe" "image schedule update" SW_HIDE
+  Call BringInstallerToFront
 
   nsExec::ExecToStack '"$INSTDIR\kopia.exe" image schedule update --check'
   Pop $0
@@ -294,6 +308,7 @@ Function OfferWinFsp
   File "/oname=$PLUGINSDIR\winfsp.msi" "${WINFSPMSI}"
   DetailPrint "Installing WinFsp ${WINFSPVERSION}..."
   ExecShellWait "runas" "msiexec.exe" '/i "$PLUGINSDIR\winfsp.msi" /qb /norestart'
+  Call BringInstallerToFront
 
   Call InstalledWinFspVersion
   Pop $1
