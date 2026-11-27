@@ -92,13 +92,68 @@ type grpcConnectionManager struct {
 	refreshOnNextUse bool
 	closed           bool
 	dialGroup        singleflight.Group
+
+	// sessions counts open session streams per connection. A connection
+	// that has been replaced is only closed once its last session ends,
+	// so replacing it doesn't kill other writers' streams mid-upload.
+	sessions map[grpcConnection]int
+	retired  map[grpcConnection]bool
 }
 
 func newGRPCConnectionManager(conn grpcConnection, dialer grpcConnectionDialer) *grpcConnectionManager {
 	return &grpcConnectionManager{
-		conn:   conn,
-		dialer: dialer,
+		conn:     conn,
+		dialer:   dialer,
+		sessions: map[grpcConnection]int{},
+		retired:  map[grpcConnection]bool{},
 	}
+}
+
+// acquireSession records a session stream opened on conn and returns the
+// function that releases it. A connection with no sessions left that has
+// been replaced is closed on release.
+func (m *grpcConnectionManager) acquireSession(conn grpcConnection) func() {
+	m.mu.Lock()
+	m.sessions[conn]++
+	m.mu.Unlock()
+
+	var once sync.Once
+
+	return func() {
+		once.Do(func() {
+			m.mu.Lock()
+
+			m.sessions[conn]--
+
+			closeIt := m.sessions[conn] <= 0 && m.retired[conn]
+			if m.sessions[conn] <= 0 {
+				delete(m.sessions, conn)
+			}
+
+			if closeIt {
+				delete(m.retired, conn)
+			}
+
+			m.mu.Unlock()
+
+			if closeIt {
+				_ = conn.Close()
+			}
+		})
+	}
+}
+
+// retireLocked closes a replaced connection now if no session uses it, or
+// once its last session ends.
+//
+// +checklocks:m.mu
+func (m *grpcConnectionManager) retireLocked(conn grpcConnection) (closeNow bool) {
+	if m.sessions[conn] > 0 {
+		m.retired[conn] = true
+		return false
+	}
+
+	return true
 }
 
 func (m *grpcConnectionManager) current() grpcConnection {
@@ -200,13 +255,29 @@ func (m *grpcConnectionManager) dialAndInstall(ctx context.Context) (grpcConnect
 	oldConn := m.conn
 	m.conn = newConn
 	m.refreshOnNextUse = false
+
+	closeOld := oldConn != nil && m.retireLocked(oldConn)
 	m.mu.Unlock()
 
-	if oldConn != nil {
+	if closeOld {
 		_ = oldConn.Close()
 	}
 
 	return newConn, nil
+}
+
+// shouldRefreshConnectionAfterSessionError reports whether a failure to
+// establish a session points at the connection rather than the session.
+// Replacing the connection ends every other session on it, so a connection
+// that is Ready and answered promptly (with access denied, say, or a server
+// whose repository isn't open yet) is kept. A timeout still refreshes it,
+// because a half-open connection looks Ready until keepalive notices.
+func shouldRefreshConnectionAfterSessionError(conn grpcConnection, establishCtx context.Context) bool {
+	if errors.Is(establishCtx.Err(), context.DeadlineExceeded) {
+		return true
+	}
+
+	return conn == nil || conn.GetState() != connectivity.Ready
 }
 
 func (m *grpcConnectionManager) markForRefresh() {
@@ -222,7 +293,14 @@ func (m *grpcConnectionManager) close() error {
 	m.conn = nil
 	m.refreshOnNextUse = false
 	m.closed = true
+
+	retired := m.retired
+	m.retired = map[grpcConnection]bool{}
 	m.mu.Unlock()
+
+	for c := range retired {
+		_ = c.Close()
+	}
 
 	if conn == nil {
 		return nil
@@ -288,6 +366,9 @@ type grpcInnerSession struct {
 	repoParams *apipb.RepositoryParameters
 	cancelFunc context.CancelFunc
 	router     *sessionResponseRouter
+
+	// releaseConn releases the session's hold on its connection, may be nil.
+	releaseConn func()
 
 	wg sync.WaitGroup
 
@@ -668,6 +749,10 @@ func (r *grpcInnerSession) shutdown() {
 	if r.router != nil {
 		<-r.router.done
 	}
+
+	if r.releaseConn != nil {
+		r.releaseConn()
+	}
 }
 
 // Description returns description associated with a repository client.
@@ -972,6 +1057,20 @@ func (r *grpcRepositoryClient) Time() time.Time {
 
 func (r *grpcRepositoryClient) Refresh(_ context.Context) error {
 	return nil
+}
+
+// Close ends this client's own gRPC session and then releases its reference
+// to the shared connection.
+//
+// Every writer opened with NewWriter has its own stream and server-side
+// session. Releasing only the shared reference left the stream, its client
+// goroutines and the server's write session alive until the whole connection
+// closed. A long-running client leaked one per writer until the server's
+// per-connection stream limit was reached and new sessions hung.
+func (r *grpcRepositoryClient) Close(ctx context.Context) error {
+	r.killInnerSession()
+
+	return r.immutableServerRepositoryParameters.Close(ctx)
 }
 
 func (r *grpcRepositoryClient) Flush(ctx context.Context) error {
@@ -1474,7 +1573,9 @@ func (r *grpcRepositoryClient) getOrEstablishInnerSession(ctx context.Context) (
 
 	newSession, err := r.establishInnerSession(ctx, establishCtx)
 	if err != nil {
-		r.connManager.markForRefresh()
+		if shouldRefreshConnectionAfterSessionError(r.connManager.current(), establishCtx) {
+			r.connManager.markForRefresh()
+		}
 
 		if errors.Is(establishCtx.Err(), context.DeadlineExceeded) {
 			return nil, errors.Wrap(err, "session establishment timed out")
@@ -1494,10 +1595,13 @@ func (r *grpcRepositoryClient) establishInnerSession(ctx, establishCtx context.C
 		return nil, errors.Wrap(err, "unable to (re)create gRPC connection")
 	}
 
+	releaseConn := r.connManager.acquireSession(conn)
+
 	conn.ResetConnectBackoff()
 	conn.Connect()
 
 	if err := waitForGRPCConnectionReady(establishCtx, conn); err != nil {
+		releaseConn()
 		return nil, err
 	}
 
@@ -1511,6 +1615,8 @@ func (r *grpcRepositoryClient) establishInnerSession(ctx, establishCtx context.C
 	sessionClient, err := r.openSessionStream(sessCtx, establishCtx, client)
 	if err != nil {
 		sessCancel()
+		releaseConn()
+
 		return nil, err
 	}
 
@@ -1519,6 +1625,7 @@ func (r *grpcRepositoryClient) establishInnerSession(ctx, establishCtx context.C
 		nextRequestID: 1,
 		cancelFunc:    sessCancel,
 		router:        newSessionResponseRouter(sessCtx),
+		releaseConn:   releaseConn,
 	}
 
 	newSession.wg.Add(1)

@@ -1271,3 +1271,104 @@ func TestDoRetryEOFKillsAndReEstablishesSession(t *testing.T) {
 
 	client.killInnerSession()
 }
+
+func TestGRPCConnectionManagerReplaceKeepsConnectionUntilLastSessionEnds(t *testing.T) {
+	t.Parallel()
+
+	oldConn := &fakeGRPCConn{state: connectivity.Ready}
+	newConn := &fakeGRPCConn{state: connectivity.Ready}
+
+	mgr := newGRPCConnectionManager(oldConn, func(context.Context) (grpcConnection, error) {
+		return newConn, nil
+	})
+
+	release1 := mgr.acquireSession(oldConn)
+	release2 := mgr.acquireSession(oldConn)
+
+	got, err := mgr.replace(context.Background())
+	require.NoError(t, err)
+	require.Same(t, newConn, got)
+	require.Equal(t, 0, oldConn.closeCalls, "sessions still use the old connection")
+
+	release1()
+	release1() // releasing twice is harmless
+	require.Equal(t, 0, oldConn.closeCalls)
+
+	release2()
+	require.Equal(t, 1, oldConn.closeCalls, "closed once its last session ended")
+
+	// sessions on the current connection never close it.
+	release3 := mgr.acquireSession(newConn)
+	release3()
+	require.Equal(t, 0, newConn.closeCalls)
+
+	require.NoError(t, mgr.close())
+	require.Equal(t, 1, newConn.closeCalls)
+}
+
+func TestGRPCConnectionManagerCloseClosesRetiredConnections(t *testing.T) {
+	t.Parallel()
+
+	oldConn := &fakeGRPCConn{state: connectivity.Ready}
+	newConn := &fakeGRPCConn{state: connectivity.Ready}
+
+	mgr := newGRPCConnectionManager(oldConn, func(context.Context) (grpcConnection, error) {
+		return newConn, nil
+	})
+
+	release := mgr.acquireSession(oldConn)
+
+	_, err := mgr.replace(context.Background())
+	require.NoError(t, err)
+
+	require.NoError(t, mgr.close())
+	require.Equal(t, 1, oldConn.closeCalls)
+	require.Equal(t, 1, newConn.closeCalls)
+
+	release()
+	require.Equal(t, 1, oldConn.closeCalls)
+}
+
+func TestShouldRefreshConnectionAfterSessionError(t *testing.T) {
+	t.Parallel()
+
+	ready := &fakeGRPCConn{state: connectivity.Ready}
+	failing := &fakeGRPCConn{state: connectivity.TransientFailure}
+
+	live := context.Background()
+
+	expired, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	<-expired.Done()
+
+	require.False(t, shouldRefreshConnectionAfterSessionError(ready, live), "a ready connection that answered is kept")
+	require.True(t, shouldRefreshConnectionAfterSessionError(ready, expired), "a timeout may mean a half-open connection")
+	require.True(t, shouldRefreshConnectionAfterSessionError(failing, live))
+	require.True(t, shouldRefreshConnectionAfterSessionError(nil, live))
+}
+
+func TestCloseWriterEndsItsOwnSession(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sess := &grpcInnerSession{cancelFunc: cancel}
+
+	released := false
+	sess.releaseConn = func() { released = true }
+
+	client := &grpcRepositoryClient{
+		innerSession: sess,
+		immutableServerRepositoryParameters: &immutableServerRepositoryParameters{
+			refCountedCloser: newRefCountedCloser(),
+		},
+	}
+
+	// another reference (the parent repository) keeps the connection.
+	client.addRef()
+
+	require.NoError(t, client.Close(context.Background()))
+	require.Error(t, ctx.Err(), "the writer's stream must be canceled")
+	require.True(t, released)
+	require.Nil(t, client.innerSession)
+	require.False(t, client.closed.Load(), "the shared connection stays open for other references")
+}
