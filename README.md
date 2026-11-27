@@ -122,7 +122,7 @@ This fork carries the following open pull requests from [kopia/kopia](https://gi
 
 These are for running `kopia server start` as a shared repository server, for example on a home server that other machines back up to.
 
-On Linux the server runs at background priority by default (nice 10 and the lowest normal disk priority), so it yields to other services and still runs at full speed on an idle machine; a lower priority set by systemd's `Nice=` or `IOSchedulingClass=` is kept, and `--no-background` turns it off. It handles at least 64 requests at once by default (`--max-concurrency`), so that disk images uploading many chunks in parallel don't wait on a small server.
+On Linux the server runs at background priority by default (nice 10 and the lowest normal disk priority), so it yields to other services and still runs at full speed on an idle machine; a lower priority set by systemd's `Nice=` or `IOSchedulingClass=` is kept, and `--no-background` turns it off. It handles at least 72 requests at once by default (`--max-concurrency`), so that disk images uploading many chunks in parallel don't wait on a small server; one client may use at most 7/8 of them, so the others always get a share.
 
 #### Snapshots served over WebDAV (`--webdav-mounts`)
 
@@ -181,6 +181,31 @@ The token is never written to the log or to the ACME storage directory. If the s
 #### Certificate file reload
 
 When the server uses `--tls-cert-file` and `--tls-key-file`, it picks up renewed files within 10 seconds, or straight away on `SIGHUP`, without restarting. An external tool such as certbot or lego can therefore renew the certificate without interrupting backups.
+
+### Robustness and performance fixes
+
+These fixes go beyond upstream Kopia. Each came out of a review of the code paths a backup depends on.
+
+**Repository replication (`kopia repository sync-to`):**
+
+* **Crash-safe copies.** Blobs are copied in dependency order: data packs first, then indexes, then the repository's configuration, with the format blob (`kopia.repository`) last. An interrupted or failed sync therefore never leaves a copy that connects but can't restore, which upstream could do when indexes landed before the packs they point at.
+* **Deletes happen last.** With `--delete`, nothing is deleted until every copy has succeeded, and indexes go before the packs they reference. Upstream could delete old blobs while their replacements were still uploading. `--delete` is refused unless the destination already holds a copy of this repository, so it can't wipe an unrelated bucket.
+* **Safe while the source is in use.** Indexes are listed before packs, so a snapshot or maintenance running during the sync can't leave an index pointing at a pack that wasn't copied. If blobs disappear mid-copy, the sync fails without deleting anything and asks to be run again, instead of reporting success.
+* **Smaller fixes.** `--dry-run` no longer writes to the destination. Configuration blobs are compared by content, not by timestamps from two different clocks. Object-lock retention carries over to destinations that support it, and destinations that don't get a warning. `--max-upload-speed` is honored.
+* **Faster.**
+  * The source and destination are listed at the same time, each split into prefixes listed in parallel.
+  * Copies run 8 at a time instead of 1.
+  * The source opens without loading its indexes.
+  * Each listed blob takes about a third of the memory.
+
+**Repository server (`kopia server` and clients connected to it):**
+
+* **Re-uploads data marked deleted.** When a client sent data the server reported as already present, it skipped the upload even if that data was marked deleted, so a new snapshot could point at data maintenance later removes. This is rare, but it is a silent loss, and multi-day disk images are where it could happen. The client now uploads such data again, which un-deletes it, as a direct connection does. Image verification also rejects deleted chunks.
+* **No more leaked sessions.** Every snapshot or image a long-running client made left a stream open on the server, until after about 250 new sessions hung. Writers now close their own session.
+* **One failure no longer drops every upload.** A session that failed to start, for example with access denied, made the client reconnect, which cut every other upload sharing the connection. The client now reconnects only when the connection itself is broken, and a replaced connection stays open until its last session ends.
+* **A slow client can't freeze the server.** All responses used to wait on one server-wide lock, so a single stalled client blocked everyone. Each session now sends on its own, and requests still running when a client disconnects finish before its data is flushed.
+* **Faster over a WAN.** The server allowed only 1 MiB in flight per connection, which capped uploads at about 33 MB/s at 30 ms of latency. It now allows 32 MiB, enough for about 2.5 Gbit/s at 100 ms. It also pings idle connections, so clients that vanish are noticed.
+* **Flush can be cancelled, and no longer crashes.** A client's flush now honors cancellation and timeouts, and it no longer risks a crash when it overlaps with uploads still starting, as during an image's periodic flush.
 
 ### Other personal changes
 
