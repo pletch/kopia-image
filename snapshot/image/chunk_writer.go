@@ -93,7 +93,7 @@ func (opt *CreateOptions) writeImageObject(ctx context.Context, rep repo.Reposit
 
 			if m, err := readChunk(r, masked, isMasked, chunk, entry.Start); err != nil {
 				buffers <- buf
-				return errors.Wrapf(err, "error reading volume at offset %v of %v", entry.Start+int64(m), size)
+				return localReadError(err, entry.Start+int64(m), size)
 			}
 
 			if isZeroChunk(chunk) {
@@ -297,4 +297,17 @@ func (opt *CreateOptions) chunkSize() int64 {
 
 func isZeroChunk(b []byte) bool {
 	return bytes.Equal(b, zeroChunk[:len(b)])
+}
+
+// localReadError describes a failed read of the volume being imaged. A short
+// read is reported as io.ErrUnexpectedEOF, which repo.IsConnectionLost takes
+// for a broken connection to a repository server, so a failing local disk
+// made scheduled runs retry three times as if the network had dropped. The
+// end-of-file error is therefore kept as text only.
+func localReadError(err error, offset, size int64) error {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return errors.Errorf("error reading volume at offset %v of %v: short read (%v)", offset, size, err)
+	}
+
+	return errors.Wrapf(err, "error reading volume at offset %v of %v", offset, size)
 }
