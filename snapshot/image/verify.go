@@ -12,6 +12,15 @@ import (
 	"github.com/kopia/kopia/repo/object"
 )
 
+// ContentLookups is how many content lookups to make at once. Through a
+// repository server each is a round trip, but a small one that the server
+// answers from its index in microseconds, so many can be in flight over the
+// session's stream: with 1 MiB chunks a terabyte has about a million, which
+// at 50 ms of latency took about 13 minutes 64 at a time, and takes about 3
+// at 256. A direct connection looks them up locally, where it makes no
+// difference.
+const ContentLookups = 256
+
 // VerifyObject checks that the repository holds every content of an image
 // object, its chunk list and its chunks, and returns their index entries. It
 // asks about parallel contents at once: through a repository server each

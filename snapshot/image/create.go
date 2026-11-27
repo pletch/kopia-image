@@ -262,7 +262,7 @@ func (opt *CreateOptions) writeVolumes(ctx context.Context, rep repo.RepositoryW
 			}
 		}
 
-		if _, err := VerifyObject(ctx, rep, oid, ParallelChunks(opt.chunkSize()), opt.Progress.checkedChunks); err != nil {
+		if _, err := VerifyObject(ctx, rep, oid, ContentLookups, opt.Progress.checkedChunks); err != nil {
 			return nil, errors.Wrapf(err, "image of partition %v is incomplete", v.PartitionNumber)
 		}
 

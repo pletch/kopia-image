@@ -140,11 +140,7 @@ func checkVolume(ctx context.Context, rep repo.Repository, v *image.Volume, pack
 		r.addProblemf("image is %v bytes, image.json says %v", length, v.Size)
 	}
 
-	// as many lookups at once as chunks are fetched in a restore
-	lookups := opt.Parallel
-	if len(chunks) > 0 {
-		lookups = max(lookups, image.ParallelChunks(chunks[0].Length))
-	}
+	lookups := max(opt.Parallel, image.ContentLookups)
 
 	infos, err := image.VerifyObject(ctx, rep, v.ObjectID, lookups, nil)
 	if err != nil {

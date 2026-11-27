@@ -19,7 +19,7 @@ import (
 
 // spaceLookups is how many content sizes are looked up at once: through a
 // repository server each is a round trip.
-const spaceLookups = 32
+const spaceLookups = ContentLookups
 
 // Space is the repository space that a set of images, usually those of one
 // disk, takes. Images share the chunks that did not change between them, so
