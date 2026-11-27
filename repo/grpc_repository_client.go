@@ -337,6 +337,10 @@ type grpcRepositoryClient struct {
 
 	asyncWritesWG *asyncWrites
 
+	// existenceChecks decides whether large contents are checked before
+	// they are sent.
+	existenceChecks existenceCheckPolicy
+
 	*immutableServerRepositoryParameters
 
 	serverSupportsContentCompression bool
@@ -1316,12 +1320,17 @@ func (r *grpcRepositoryClient) doWriteAsync(ctx context.Context, contentID conte
 	// if content is large enough, perform existence check on the server,
 	// for small contents we skip the check, since the server-side existence
 	// check is fast and we avoid double round trip.
-	if len(data) >= writeContentCheckExistenceAboveSize {
+	if len(data) >= writeContentCheckExistenceAboveSize && r.existenceChecks.shouldCheck() {
 		// a soft-deleted content must still be written: the server's write
 		// un-deletes it and refreshes its timestamp, exactly as a direct writer
 		// does. Skipping it would leave the new snapshot pointing at a content
 		// that maintenance may drop.
-		if ci, err := r.ContentInfo(ctx, contentID); err == nil && !ci.Deleted {
+		ci, err := r.ContentInfo(ctx, contentID)
+		found := err == nil && !ci.Deleted
+
+		r.existenceChecks.record(found)
+
+		if found {
 			// content already exists
 			return nil
 		}
