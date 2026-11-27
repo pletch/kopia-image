@@ -15,7 +15,6 @@ import (
 	"github.com/pkg/errors"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
-	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
@@ -336,7 +335,7 @@ type grpcRepositoryClient struct {
 	// per-client time budget for creating a streaming session.
 	sessionEstablishmentTimeout time.Duration
 
-	asyncWritesWG *errgroup.Group
+	asyncWritesWG *asyncWrites
 
 	*immutableServerRepositoryParameters
 
@@ -1074,7 +1073,7 @@ func (r *grpcRepositoryClient) Close(ctx context.Context) error {
 }
 
 func (r *grpcRepositoryClient) Flush(ctx context.Context) error {
-	if err := r.asyncWritesWG.Wait(); err != nil {
+	if err := r.asyncWritesWG.Wait(ctx); err != nil {
 		return errors.Wrap(err, "error waiting for async writes")
 	}
 
@@ -1369,7 +1368,7 @@ func (r *grpcRepositoryClient) WriteContent(ctx context.Context, data gather.Byt
 	return contentID, nil
 }
 
-func (r *grpcInnerSession) writeContentAsyncAndVerify(ctx context.Context, contentID content.ID, data []byte, prefix content.IDPrefix, comp compression.HeaderID, eg *errgroup.Group) {
+func (r *grpcInnerSession) writeContentAsyncAndVerify(ctx context.Context, contentID content.ID, data []byte, prefix content.IDPrefix, comp compression.HeaderID, eg *asyncWrites) {
 	rid, ch := r.sendRequest(ctx, &apipb.SessionRequest{
 		Request: &apipb.SessionRequest_WriteContent{
 			WriteContent: &apipb.WriteContentRequest{
@@ -1763,7 +1762,7 @@ func newGRPCAPIRepositoryForConnection(
 		transparentRetries:                  transparentRetries,
 		opt:                                 opt,
 		isReadOnly:                          par.cliOpts.ReadOnly,
-		asyncWritesWG:                       new(errgroup.Group),
+		asyncWritesWG:                       newAsyncWrites(),
 		findManifestsPageSize:               defaultFindManifestsPageSize,
 		sessionEstablishmentTimeout:         defaultSessionEstablishmentTimeout,
 	}
