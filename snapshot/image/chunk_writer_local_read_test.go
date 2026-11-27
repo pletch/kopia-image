@@ -13,7 +13,7 @@ import (
 
 func TestLocalReadErrorIsNotConnectionLost(t *testing.T) {
 	short := localReadError(io.ErrUnexpectedEOF, 4096, 1<<20)
-	require.ErrorContains(t, short, "short read")
+	require.ErrorIs(t, short, ErrShortRead)
 	require.False(t, repo.IsConnectionLost(short), "a short local read is not a lost connection")
 
 	other := localReadError(syscall.EIO, 4096, 1<<20)

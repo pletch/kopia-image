@@ -259,7 +259,7 @@ func TestCreate_failureSavesNoSnapshot(t *testing.T) {
 		mutate func(o *CreateOptions)
 		want   error
 	}{
-		{"short volume", func(o *CreateOptions) { o.Volumes[0].Size++ }, io.ErrUnexpectedEOF},
+		{"short volume", func(o *CreateOptions) { o.Volumes[0].Size++ }, ErrShortRead},
 		{"open error", func(o *CreateOptions) {
 			o.Volumes[0].Open = func() (io.ReadCloser, error) { return nil, errBoom }
 		}, errBoom},

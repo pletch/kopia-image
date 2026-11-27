@@ -96,7 +96,7 @@ func TestWriteImageObject_readError(t *testing.T) {
 	data := randomBytes(7, 3*DefaultChunkSize-10) // the volume ends mid-chunk
 
 	_, _, err := opt.writeImageObject(ctx, env.RepositoryWriter, bytes.NewReader(data), int64(len(data))+1, "p3-C.img")
-	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	require.ErrorIs(t, err, ErrShortRead)
 
 	_, _, err = opt.writeImageObject(ctx, env.RepositoryWriter, bytes.NewReader(nil), 0, "p3-C.img")
 	require.Error(t, err)

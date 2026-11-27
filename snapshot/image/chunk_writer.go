@@ -299,14 +299,17 @@ func isZeroChunk(b []byte) bool {
 	return bytes.Equal(b, zeroChunk[:len(b)])
 }
 
+// ErrShortRead means the volume being imaged ended before its expected size.
+var ErrShortRead = errors.New("short read")
+
 // localReadError describes a failed read of the volume being imaged. A short
 // read is reported as io.ErrUnexpectedEOF, which repo.IsConnectionLost takes
 // for a broken connection to a repository server, so a failing local disk
-// made scheduled runs retry three times as if the network had dropped. The
-// end-of-file error is therefore kept as text only.
+// made scheduled runs retry three times as if the network had dropped. It is
+// therefore reported as ErrShortRead instead.
 func localReadError(err error, offset, size int64) error {
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-		return errors.Errorf("error reading volume at offset %v of %v: short read (%v)", offset, size, err)
+		return errors.Wrapf(ErrShortRead, "error reading volume at offset %v of %v (%v)", offset, size, err)
 	}
 
 	return errors.Wrapf(err, "error reading volume at offset %v of %v", offset, size)
