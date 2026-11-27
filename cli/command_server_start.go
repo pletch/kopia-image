@@ -278,6 +278,7 @@ func (c *commandServerStart) run(ctx context.Context) (reterr error) {
 		BaseContext: func(_ net.Listener) context.Context {
 			return ctx
 		},
+		HTTP2: serverHTTP2Config(),
 	}
 
 	srv.OnShutdown = func(ctx context.Context) error {
@@ -465,4 +466,27 @@ User accounts can be added using 'kopia server user add'.
 	authenticators = append(authenticators, auth.AuthenticateRepositoryUsers())
 
 	return auth.CombineAuthenticators(authenticators...), nil
+}
+
+const (
+	// serverHTTP2ConnectionWindow and serverHTTP2StreamWindow are how much
+	// data a client may send ahead of the server reading it. gRPC is served
+	// through net/http, whose default of 1 MiB per connection, never grown,
+	// capped uploads to 1 MiB per round trip: about 33 MB/s at 30 ms of
+	// latency. These allow about 2.5 Gbit/s at 100 ms.
+	serverHTTP2ConnectionWindow = 32 << 20
+	serverHTTP2StreamWindow     = 16 << 20
+
+	// serverHTTP2PingInterval is how long a connection may be silent before
+	// the server pings it, so clients that vanished without closing are
+	// noticed. gRPC's own keepalive settings don't apply under net/http.
+	serverHTTP2PingInterval = 30 * time.Second
+)
+
+func serverHTTP2Config() *http.HTTP2Config {
+	return &http.HTTP2Config{
+		MaxReceiveBufferPerConnection: serverHTTP2ConnectionWindow,
+		MaxReceiveBufferPerStream:     serverHTTP2StreamWindow,
+		SendPingTimeout:               serverHTTP2PingInterval,
+	}
 }
