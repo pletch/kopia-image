@@ -1510,25 +1510,33 @@ func openGRPCAPIRepository(ctx context.Context, si *APIServerInfo, password stri
 		keepaliveTimeout = par.grpcKeepaliveTimeout
 	}
 
+	var extraDialOptions []grpc.DialOption
+
+	if d := throttledDialer(uri, par.cliOpts.Throttling); d != nil {
+		extraDialOptions = append(extraDialOptions, grpc.WithContextDialer(d))
+	}
+
 	dialGRPCConnection := func(_ context.Context) (grpcConnection, error) {
 		conn, err := grpc.NewClient(
 			uri,
-			grpc.WithPerRPCCredentials(creds),
-			grpc.WithTransportCredentials(transportCreds),
-			grpc.WithDefaultCallOptions(
-				grpc.MaxCallRecvMsgSize(MaxGRPCMessageSize),
-				grpc.MaxCallSendMsgSize(MaxGRPCMessageSize),
-			),
-			// Keepalive detects dead TCP connections when the server becomes unreachable.
-			// Time is the interval between pings; Timeout is how long to wait for a response.
-			// PermitWithoutStream enables pings even when no active RPCs exist, which is
-			// needed to detect failures during idle periods between backup operations.
-			// See https://github.com/kopia/kopia/issues/3073
-			grpc.WithKeepaliveParams(keepalive.ClientParameters{
-				Time:                keepaliveTime,
-				Timeout:             keepaliveTimeout,
-				PermitWithoutStream: true,
-			}),
+			append([]grpc.DialOption{
+				grpc.WithPerRPCCredentials(creds),
+				grpc.WithTransportCredentials(transportCreds),
+				grpc.WithDefaultCallOptions(
+					grpc.MaxCallRecvMsgSize(MaxGRPCMessageSize),
+					grpc.MaxCallSendMsgSize(MaxGRPCMessageSize),
+				),
+				// Keepalive detects dead TCP connections when the server becomes unreachable.
+				// Time is the interval between pings; Timeout is how long to wait for a response.
+				// PermitWithoutStream enables pings even when no active RPCs exist, which is
+				// needed to detect failures during idle periods between backup operations.
+				// See https://github.com/kopia/kopia/issues/3073
+				grpc.WithKeepaliveParams(keepalive.ClientParameters{
+					Time:                keepaliveTime,
+					Timeout:             keepaliveTimeout,
+					PermitWithoutStream: true,
+				}),
+			}, extraDialOptions...)...,
 		)
 		if err != nil {
 			return nil, errors.Wrap(err, "gRPC client creation error")

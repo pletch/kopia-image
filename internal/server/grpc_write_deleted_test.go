@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"io"
 	"io/fs"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/kopia/kopia/internal/servertesting"
 	"github.com/kopia/kopia/internal/testutil"
 	"github.com/kopia/kopia/repo"
+	"github.com/kopia/kopia/repo/blob/throttling"
 	"github.com/kopia/kopia/repo/content"
 	"github.com/kopia/kopia/repo/object"
 )
@@ -173,4 +175,50 @@ func TestServerClientUsesWireCompression(t *testing.T) {
 	}))
 
 	require.True(t, repo.WireCompressionInUse(rep))
+}
+
+// A server client with upload and download limits connects through its
+// throttled connection, TLS included, and works.
+func TestServerClientWithBandwidthLimits(t *testing.T) {
+	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
+
+	apiServerInfo := servertesting.StartServer(t, env, true)
+
+	rep, err := servertesting.ConnectAndOpenAPIServer(t, ctx, apiServerInfo, repo.ClientOptions{
+		Username:   servertesting.TestUsername,
+		Hostname:   servertesting.TestHostname,
+		Throttling: &throttling.Limits{UploadBytesPerSecond: 50 << 20, DownloadBytesPerSecond: 50 << 20},
+	}, content.CachingOptions{CacheDirectory: testutil.TempDirectory(t)}, servertesting.TestPassword, &repo.Options{})
+	require.NoError(t, err)
+
+	defer rep.Close(ctx)
+
+	data := make([]byte, 1<<20)
+	_, err = rand.Read(data)
+	require.NoError(t, err)
+
+	var oid object.ID
+
+	require.NoError(t, repo.WriteSession(ctx, rep, repo.WriteSessionOptions{Purpose: "test"}, func(ctx context.Context, rw repo.RepositoryWriter) error {
+		ow := rw.NewObjectWriter(ctx, object.WriterOptions{})
+		defer ow.Close()
+
+		if _, werr := ow.Write(data); werr != nil {
+			return werr
+		}
+
+		var rerr error
+
+		oid, rerr = ow.Result()
+
+		return rerr
+	}))
+
+	r, err := rep.OpenObject(ctx, oid)
+	require.NoError(t, err)
+
+	got, err := io.ReadAll(r)
+	require.NoError(t, err)
+	require.NoError(t, r.Close())
+	require.Equal(t, data, got)
 }
