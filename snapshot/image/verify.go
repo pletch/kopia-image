@@ -60,6 +60,12 @@ func VerifyObject(ctx context.Context, rep repo.Repository, oid object.ID, paral
 				return errors.Wrapf(err, "error getting content info for %v", id)
 			}
 
+			// a content marked deleted is still readable today, but maintenance
+			// drops it once it is old enough, so the image would lose it.
+			if info.Deleted {
+				return errors.Errorf("content %v is marked deleted", id)
+			}
+
 			mu.Lock()
 			infos[id] = info
 			checked++

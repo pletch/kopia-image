@@ -42,6 +42,15 @@ func TestVerifyObject(t *testing.T) {
 	missing := object.DirectObjectID(mustContentID(t, "0123456789abcdef0123456789abcdef"))
 	_, err = VerifyObject(ctx, env.RepositoryWriter, missing, 8, nil)
 	require.Error(t, err)
+
+	// a chunk marked deleted is still readable but will be dropped by maintenance.
+	ids, err := objectContents(ctx, env.RepositoryWriter, oid)
+	require.NoError(t, err)
+	require.NoError(t, env.RepositoryWriter.ContentManager().DeleteContent(ctx, ids[len(ids)-1]))
+	require.NoError(t, env.RepositoryWriter.Flush(ctx))
+
+	_, err = VerifyObject(ctx, env.RepositoryWriter, oid, 8, nil)
+	require.ErrorContains(t, err, "marked deleted")
 }
 
 func mustContentID(t *testing.T, s string) content.ID {
