@@ -1262,7 +1262,7 @@ func (r *grpcRepositoryClient) GetContent(ctx context.Context, contentID content
 	var b gather.WriteBuffer
 	defer b.Close()
 
-	err := r.contentCache.GetOrLoad(ctx, contentID.String(), func(output *gather.WriteBuffer) error {
+	load := func(output *gather.WriteBuffer) error {
 		v, err := maybeRetry(ctx, r, func(ctx context.Context, sess *grpcInnerSession) ([]byte, error) {
 			return sess.GetContent(ctx, contentID)
 		})
@@ -1274,7 +1274,15 @@ func (r *grpcRepositoryClient) GetContent(ctx context.Context, contentID content
 
 		//nolint:wrapcheck
 		return err
-	}, &b)
+	}
+
+	var err error
+
+	if !contentID.HasPrefix() && content.DataCacheBypassed(ctx) {
+		err = load(&b)
+	} else {
+		err = r.contentCache.GetOrLoad(ctx, contentID.String(), load, &b)
+	}
 
 	if err == nil && contentID.HasPrefix() {
 		r.recent.add(contentID)

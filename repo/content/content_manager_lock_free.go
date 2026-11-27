@@ -122,6 +122,14 @@ func (sm *SharedManager) getContentDataReadLocked(ctx context.Context, pp *pendi
 		return sm.decryptContentAndVerify(payload.Bytes(), bi, output)
 	}
 
+	if !bi.ContentID.HasPrefix() && DataCacheBypassed(ctx) {
+		if err := sm.st.GetBlob(ctx, bi.PackBlobID, int64(bi.PackOffset), int64(bi.PackedLength), &payload); err != nil {
+			return errors.Wrapf(err, "error getting content from blob %q", bi.PackBlobID)
+		}
+
+		return sm.decryptContentAndVerify(payload.Bytes(), bi, output)
+	}
+
 	cc := sm.getCacheForContentID(bi.ContentID)
 
 	if err := cc.GetContent(ctx, contentCacheKeyForInfo(bi), bi.PackBlobID, int64(bi.PackOffset), int64(bi.PackedLength), &payload); err != nil {

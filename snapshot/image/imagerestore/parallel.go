@@ -17,6 +17,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/kopia/kopia/repo"
+	"github.com/kopia/kopia/repo/content"
 	"github.com/kopia/kopia/repo/object"
 	"github.com/kopia/kopia/snapshot/image"
 )
@@ -203,7 +204,8 @@ func WriteObject(ctx context.Context, rep repo.Repository, oid object.ID, w io.W
 
 	w2 := &objectWriter{rep: rep, w: w, base: base, opt: opt.withDefaults(chunks)}
 
-	if err := w2.writeGroups(ctx, groups); err != nil {
+	// each chunk is fetched once: caching it would only fill the local cache.
+	if err := w2.writeGroups(content.WithoutDataCache(ctx), groups); err != nil {
 		return stats, err
 	}
 
