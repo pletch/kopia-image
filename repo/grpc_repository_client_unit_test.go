@@ -1379,40 +1379,58 @@ func TestCloseWriterEndsItsOwnSession(t *testing.T) {
 func TestSessionFallsBackWhenServerLacksWireCompression(t *testing.T) {
 	t.Parallel()
 
+	// how a server without the codec turns a session down reaches the client
+	// in either form, depending on timing
+	for name, rejection := range map[string]error{
+		"status": status.Error(codes.Unimplemented, `grpc: Decompressor is not installed for grpc-encoding "zstd"`),
+		"eof":    io.EOF,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var compressedAttempts, plainAttempts atomic.Int32
+
+			conn := &fakeGRPCConn{
+				state:            connectivity.Ready,
+				newStreamHandler: compressionRejectingStreamHandler(rejection, &compressedAttempts, &plainAttempts),
+			}
+
+			client := &grpcRepositoryClient{
+				connManager:                 newGRPCConnectionManager(conn, nil),
+				opt:                         WriteSessionOptions{Purpose: "test"},
+				sessionEstablishmentTimeout: 5 * time.Second,
+			}
+
+			sess, err := client.getOrEstablishInnerSession(context.Background())
+			require.NoError(t, err)
+			require.NotNil(t, sess)
+			require.Equal(t, int32(1), compressedAttempts.Load())
+			require.Equal(t, int32(1), plainAttempts.Load())
+			require.True(t, client.connManager.noWireCompression.Load())
+			require.Equal(t, 0, conn.closeCalls, "a server that answered keeps its connection")
+
+			// later sessions don't ask again
+			client.killInnerSession()
+
+			_, err = client.getOrEstablishInnerSession(context.Background())
+			require.NoError(t, err)
+			require.Equal(t, int32(1), compressedAttempts.Load())
+
+			client.killInnerSession()
+		})
+	}
+}
+
+// Once compression has worked, a later failure is not taken for a server
+// without the codec.
+func TestSessionKeepsWireCompressionOnceConfirmed(t *testing.T) {
+	t.Parallel()
+
 	var compressedAttempts, plainAttempts atomic.Int32
 
 	conn := &fakeGRPCConn{
-		state: connectivity.Ready,
-		newStreamHandler: func(ctx context.Context, _ *grpc.StreamDesc, _ string, opts ...grpc.CallOption) (grpc.ClientStream, error) {
-			for _, o := range opts {
-				if c, ok := o.(grpc.CompressorCallOption); ok && c.CompressorType == grpczstd.Name {
-					compressedAttempts.Add(1)
-
-					// what a server without the codec answers
-					return nil, status.Error(codes.Unimplemented, `grpc: Decompressor is not installed for grpc-encoding "zstd"`)
-				}
-			}
-
-			plainAttempts.Add(1)
-
-			stream := &fakeSessionStream{
-				ctx:    ctx,
-				recvCh: make(chan *apipb.SessionResponse, 1),
-			}
-
-			stream.onSend = func(req *apipb.SessionRequest) {
-				if req.GetInitializeSession() != nil {
-					stream.recvCh <- &apipb.SessionResponse{
-						RequestId: req.GetRequestId(),
-						Response: &apipb.SessionResponse_InitializeSession{
-							InitializeSession: &apipb.InitializeSessionResponse{Parameters: &apipb.RepositoryParameters{}},
-						},
-					}
-				}
-			}
-
-			return stream, nil
-		},
+		state:            connectivity.Ready,
+		newStreamHandler: compressionRejectingStreamHandler(io.EOF, &compressedAttempts, &plainAttempts),
 	}
 
 	client := &grpcRepositoryClient{
@@ -1421,20 +1439,44 @@ func TestSessionFallsBackWhenServerLacksWireCompression(t *testing.T) {
 		sessionEstablishmentTimeout: 5 * time.Second,
 	}
 
-	sess, err := client.getOrEstablishInnerSession(context.Background())
-	require.NoError(t, err)
-	require.NotNil(t, sess)
-	require.Equal(t, int32(1), compressedAttempts.Load())
-	require.Equal(t, int32(1), plainAttempts.Load())
-	require.True(t, client.connManager.noWireCompression.Load())
-	require.Equal(t, 0, conn.closeCalls, "a server that answered keeps its connection")
+	client.connManager.wireCompressionConfirmed.Store(true)
 
-	// later sessions don't ask again
-	client.killInnerSession()
+	_, err := client.getOrEstablishInnerSession(context.Background())
+	require.Error(t, err)
+	require.Equal(t, int32(0), plainAttempts.Load())
+	require.False(t, client.connManager.noWireCompression.Load())
+}
 
-	_, err = client.getOrEstablishInnerSession(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, int32(1), compressedAttempts.Load())
+// compressionRejectingStreamHandler fails compressed session streams with
+// rejection and serves uncompressed ones.
+func compressionRejectingStreamHandler(rejection error, compressedAttempts, plainAttempts *atomic.Int32) func(ctx context.Context, desc *grpc.StreamDesc, method string, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+	return func(ctx context.Context, _ *grpc.StreamDesc, _ string, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+		for _, o := range opts {
+			if c, ok := o.(grpc.CompressorCallOption); ok && c.CompressorType == grpczstd.Name {
+				compressedAttempts.Add(1)
 
-	client.killInnerSession()
+				return nil, rejection
+			}
+		}
+
+		plainAttempts.Add(1)
+
+		stream := &fakeSessionStream{
+			ctx:    ctx,
+			recvCh: make(chan *apipb.SessionResponse, 1),
+		}
+
+		stream.onSend = func(req *apipb.SessionRequest) {
+			if req.GetInitializeSession() != nil {
+				stream.recvCh <- &apipb.SessionResponse{
+					RequestId: req.GetRequestId(),
+					Response: &apipb.SessionResponse_InitializeSession{
+						InitializeSession: &apipb.InitializeSessionResponse{Parameters: &apipb.RepositoryParameters{}},
+					},
+				}
+			}
+		}
+
+		return stream, nil
+	}
 }

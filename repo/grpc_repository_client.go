@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/url"
 	"runtime"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -101,8 +100,10 @@ type grpcConnectionManager struct {
 	retired  map[grpcConnection]bool
 
 	// noWireCompression is set once the server turned down compressing the
-	// session stream, as servers older than this one do.
-	noWireCompression atomic.Bool
+	// session stream, as servers older than this one do, and
+	// wireCompressionConfirmed once a compressed session worked.
+	noWireCompression        atomic.Bool
+	wireCompressionConfirmed atomic.Bool
 }
 
 func newGRPCConnectionManager(conn grpcConnection, dialer grpcConnectionDialer) *grpcConnectionManager {
@@ -283,12 +284,6 @@ func shouldRefreshConnectionAfterSessionError(conn grpcConnection, establishCtx 
 	}
 
 	return conn == nil || conn.GetState() != connectivity.Ready
-}
-
-// isWireCompressionUnsupported reports whether a session failed because the
-// server can't decompress what the client compressed.
-func isWireCompressionUnsupported(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "Decompressor is not installed")
 }
 
 func (m *grpcConnectionManager) markForRefresh() {
@@ -1607,11 +1602,26 @@ func (r *grpcRepositoryClient) getOrEstablishInnerSession(ctx context.Context) (
 
 	defer cancelEstablish()
 
-	newSession, err := r.establishInnerSession(ctx, establishCtx)
-	if err != nil && isWireCompressionUnsupported(err) && !r.connManager.noWireCompression.Swap(true) {
-		log(ctx).Debugf("repository server does not support wire compression, continuing without it: %v", err)
+	compress := !r.connManager.noWireCompression.Load()
 
-		newSession, err = r.establishInnerSession(ctx, establishCtx)
+	newSession, err := r.establishInnerSession(ctx, establishCtx, compress)
+
+	switch {
+	case err == nil && compress:
+		r.connManager.wireCompressionConfirmed.Store(true)
+
+	case err != nil && compress && !r.connManager.wireCompressionConfirmed.Load() && establishCtx.Err() == nil:
+		// A server without the codec turns the session down, but how that
+		// reaches the client is racy: sometimes as "Decompressor is not
+		// installed", sometimes as a bare EOF. So until compression has worked
+		// once, a session that fails promptly is tried again uncompressed.
+		plain, plainErr := r.establishInnerSession(ctx, establishCtx, false)
+		if plainErr == nil {
+			log(ctx).Debugf("repository server does not support wire compression, continuing without it: %v", err)
+			r.connManager.noWireCompression.Store(true)
+
+			newSession, err = plain, nil
+		}
 	}
 
 	if err != nil {
@@ -1631,7 +1641,7 @@ func (r *grpcRepositoryClient) getOrEstablishInnerSession(ctx context.Context) (
 	return r.innerSession, nil
 }
 
-func (r *grpcRepositoryClient) establishInnerSession(ctx, establishCtx context.Context) (*grpcInnerSession, error) {
+func (r *grpcRepositoryClient) establishInnerSession(ctx, establishCtx context.Context, compress bool) (*grpcInnerSession, error) {
 	conn, err := r.connManager.currentOrDial(establishCtx)
 	if err != nil {
 		return nil, errors.Wrap(err, "unable to (re)create gRPC connection")
@@ -1654,7 +1664,7 @@ func (r *grpcRepositoryClient) establishInnerSession(ctx, establishCtx context.C
 	// killInnerSession can terminate it.
 	sessCtx, sessCancel := context.WithCancel(context.WithoutCancel(ctx))
 
-	sessionClient, err := r.openSessionStream(sessCtx, establishCtx, client)
+	sessionClient, err := r.openSessionStream(sessCtx, establishCtx, client, compress)
 	if err != nil {
 		sessCancel()
 		releaseConn()
@@ -1684,7 +1694,7 @@ func (r *grpcRepositoryClient) establishInnerSession(ctx, establishCtx context.C
 	return newSession, nil
 }
 
-func (r *grpcRepositoryClient) openSessionStream(sessCtx, establishCtx context.Context, client apipb.KopiaRepositoryClient) (apipb.KopiaRepository_SessionClient, error) {
+func (r *grpcRepositoryClient) openSessionStream(sessCtx, establishCtx context.Context, client apipb.KopiaRepositoryClient, compress bool) (apipb.KopiaRepository_SessionClient, error) {
 	type sessionResult struct {
 		sess apipb.KopiaRepository_SessionClient
 		err  error
@@ -1693,7 +1703,7 @@ func (r *grpcRepositoryClient) openSessionStream(sessCtx, establishCtx context.C
 	resultCh := make(chan sessionResult, 1)
 	go func() {
 		var opts []grpc.CallOption
-		if !r.connManager.noWireCompression.Load() {
+		if compress {
 			opts = append(opts, grpc.UseCompressor(grpczstd.Name))
 		}
 
