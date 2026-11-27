@@ -11,11 +11,14 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
 	apipb "github.com/kopia/kopia/internal/grpcapi"
+	"github.com/kopia/kopia/internal/grpczstd"
 )
 
 // fakeSessionClient implements apipb.KopiaRepository_SessionClient for testing.
@@ -1371,4 +1374,67 @@ func TestCloseWriterEndsItsOwnSession(t *testing.T) {
 	require.True(t, released)
 	require.Nil(t, client.innerSession)
 	require.False(t, client.closed.Load(), "the shared connection stays open for other references")
+}
+
+func TestSessionFallsBackWhenServerLacksWireCompression(t *testing.T) {
+	t.Parallel()
+
+	var compressedAttempts, plainAttempts atomic.Int32
+
+	conn := &fakeGRPCConn{
+		state: connectivity.Ready,
+		newStreamHandler: func(ctx context.Context, _ *grpc.StreamDesc, _ string, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+			for _, o := range opts {
+				if c, ok := o.(grpc.CompressorCallOption); ok && c.CompressorType == grpczstd.Name {
+					compressedAttempts.Add(1)
+
+					// what a server without the codec answers
+					return nil, status.Error(codes.Unimplemented, `grpc: Decompressor is not installed for grpc-encoding "zstd"`)
+				}
+			}
+
+			plainAttempts.Add(1)
+
+			stream := &fakeSessionStream{
+				ctx:    ctx,
+				recvCh: make(chan *apipb.SessionResponse, 1),
+			}
+
+			stream.onSend = func(req *apipb.SessionRequest) {
+				if req.GetInitializeSession() != nil {
+					stream.recvCh <- &apipb.SessionResponse{
+						RequestId: req.GetRequestId(),
+						Response: &apipb.SessionResponse_InitializeSession{
+							InitializeSession: &apipb.InitializeSessionResponse{Parameters: &apipb.RepositoryParameters{}},
+						},
+					}
+				}
+			}
+
+			return stream, nil
+		},
+	}
+
+	client := &grpcRepositoryClient{
+		connManager:                 newGRPCConnectionManager(conn, nil),
+		opt:                         WriteSessionOptions{Purpose: "test"},
+		sessionEstablishmentTimeout: 5 * time.Second,
+	}
+
+	sess, err := client.getOrEstablishInnerSession(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	require.Equal(t, int32(1), compressedAttempts.Load())
+	require.Equal(t, int32(1), plainAttempts.Load())
+	require.True(t, client.connManager.noWireCompression.Load())
+	require.Equal(t, 0, conn.closeCalls, "a server that answered keeps its connection")
+
+	// later sessions don't ask again
+	client.killInnerSession()
+
+	_, err = client.getOrEstablishInnerSession(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, int32(1), compressedAttempts.Load())
+
+	client.killInnerSession()
 }

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/url"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/kopia/kopia/internal/clock"
 	"github.com/kopia/kopia/internal/gather"
 	apipb "github.com/kopia/kopia/internal/grpcapi"
+	"github.com/kopia/kopia/internal/grpczstd"
 	"github.com/kopia/kopia/internal/retry"
 	"github.com/kopia/kopia/internal/tlsutil"
 	"github.com/kopia/kopia/repo/blob"
@@ -97,6 +99,10 @@ type grpcConnectionManager struct {
 	// so replacing it doesn't kill other writers' streams mid-upload.
 	sessions map[grpcConnection]int
 	retired  map[grpcConnection]bool
+
+	// noWireCompression is set once the server turned down compressing the
+	// session stream, as servers older than this one do.
+	noWireCompression atomic.Bool
 }
 
 func newGRPCConnectionManager(conn grpcConnection, dialer grpcConnectionDialer) *grpcConnectionManager {
@@ -277,6 +283,12 @@ func shouldRefreshConnectionAfterSessionError(conn grpcConnection, establishCtx 
 	}
 
 	return conn == nil || conn.GetState() != connectivity.Ready
+}
+
+// isWireCompressionUnsupported reports whether a session failed because the
+// server can't decompress what the client compressed.
+func isWireCompressionUnsupported(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "Decompressor is not installed")
 }
 
 func (m *grpcConnectionManager) markForRefresh() {
@@ -1588,6 +1600,12 @@ func (r *grpcRepositoryClient) getOrEstablishInnerSession(ctx context.Context) (
 	defer cancelEstablish()
 
 	newSession, err := r.establishInnerSession(ctx, establishCtx)
+	if err != nil && isWireCompressionUnsupported(err) && !r.connManager.noWireCompression.Swap(true) {
+		log(ctx).Debugf("repository server does not support wire compression, continuing without it: %v", err)
+
+		newSession, err = r.establishInnerSession(ctx, establishCtx)
+	}
+
 	if err != nil {
 		if shouldRefreshConnectionAfterSessionError(r.connManager.current(), establishCtx) {
 			r.connManager.markForRefresh()
@@ -1666,7 +1684,12 @@ func (r *grpcRepositoryClient) openSessionStream(sessCtx, establishCtx context.C
 
 	resultCh := make(chan sessionResult, 1)
 	go func() {
-		sess, sessionErr := client.Session(sessCtx)
+		var opts []grpc.CallOption
+		if !r.connManager.noWireCompression.Load() {
+			opts = append(opts, grpc.UseCompressor(grpczstd.Name))
+		}
+
+		sess, sessionErr := client.Session(sessCtx, opts...)
 		resultCh <- sessionResult{sess, sessionErr}
 	}()
 
@@ -1807,4 +1830,13 @@ func newGRPCAPIRepositoryForConnection(
 
 		return rr, nil
 	})
+}
+
+// WireCompressionInUse reports whether a repository server client
+// compresses its session stream on the wire; false for any other repository
+// or once the server turned compression down.
+func WireCompressionInUse(r Repository) bool {
+	c, ok := r.(*grpcRepositoryClient)
+
+	return ok && !c.connManager.noWireCompression.Load()
 }

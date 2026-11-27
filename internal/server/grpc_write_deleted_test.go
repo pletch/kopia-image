@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"io/fs"
@@ -143,4 +144,33 @@ func cachedFileCount(t *testing.T, dir string) int {
 	}))
 
 	return n
+}
+
+// The session stream is compressed on the wire: the server understands the
+// client's codec, so the client never falls back.
+func TestServerClientUsesWireCompression(t *testing.T) {
+	ctx, env := repotesting.NewEnvironment(t, repotesting.FormatNotImportant)
+
+	apiServerInfo := servertesting.StartServer(t, env, true)
+
+	rep, err := servertesting.ConnectAndOpenAPIServer(t, ctx, apiServerInfo, repo.ClientOptions{
+		Username: servertesting.TestUsername,
+		Hostname: servertesting.TestHostname,
+	}, content.CachingOptions{CacheDirectory: testutil.TempDirectory(t)}, servertesting.TestPassword, &repo.Options{})
+	require.NoError(t, err)
+
+	defer rep.Close(ctx)
+
+	data := bytes.Repeat([]byte("compressible "), 100_000)
+
+	require.NoError(t, repo.WriteSession(ctx, rep, repo.WriteSessionOptions{Purpose: "test"}, func(ctx context.Context, rw repo.RepositoryWriter) error {
+		ow := rw.NewObjectWriter(ctx, object.WriterOptions{})
+		defer ow.Close()
+
+		_, werr := ow.Write(data)
+
+		return werr
+	}))
+
+	require.True(t, repo.WireCompressionInUse(rep))
 }
